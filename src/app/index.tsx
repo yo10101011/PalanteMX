@@ -1,0 +1,311 @@
+import { Ionicons } from '@expo/vector-icons';
+import * as LocalAuthentication from 'expo-local-authentication';
+import { router } from 'expo-router';
+import * as SecureStore from 'expo-secure-store';
+import { useState } from 'react';
+import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+
+// FIREBASE
+// @ts-ignore
+import { sendPasswordResetEmail, signInWithEmailAndPassword } from 'firebase/auth';
+import { collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore'; // SE AGREGÓ doc, getDoc PARA LEER EL ROL
+import { auth, db } from '../../firebaseConfig';
+
+export default function LoginScreen() {
+  const [identificador, setIdentificador] = useState(''); 
+  const [password, setPassword] = useState('');
+  const [mostrarPassword, setMostrarPassword] = useState(false);
+  const [cargando, setCargando] = useState(false);
+
+  const [modalAdminVisible, setModalAdminVisible] = useState(false);
+  const [adminPin, setAdminPin] = useState('');
+
+  // ESTADOS PARA RECUPERAR CONTRASEÑA
+  const [modalRecuperarVisible, setModalRecuperarVisible] = useState(false);
+  const [correoRecuperar, setCorreoRecuperar] = useState('');
+
+  // 1. INICIO DE SESIÓN MANUAL (CON REDIRECCIÓN INTELIGENTE)
+  const handleLoginReal = async () => {
+    if (!identificador || !password) {
+      Alert.alert("Aviso", "Ingresa tus datos para continuar."); return;
+    }
+
+    setCargando(true);
+    let correoFinalParaLogin = identificador.trim();
+
+    try {
+      if (!correoFinalParaLogin.includes('@')) {
+        const usuariosRef = collection(db, "Usuarios");
+        const contratistasRef = collection(db, "Contratistas");
+        
+        const qUsuario = query(usuariosRef, where("nombre_usuario", "==", correoFinalParaLogin));
+        const qTelefono = query(usuariosRef, where("numero_telefono", "==", correoFinalParaLogin));
+        
+        let querySnapshot = await getDocs(qUsuario);
+        if (querySnapshot.empty) querySnapshot = await getDocs(qTelefono);
+
+        if (querySnapshot.empty) {
+            const qContraUser = query(contratistasRef, where("nombre_usuario", "==", correoFinalParaLogin));
+            const qContraTel = query(contratistasRef, where("numero_telefono", "==", correoFinalParaLogin));
+            querySnapshot = await getDocs(qContraUser);
+            if (querySnapshot.empty) querySnapshot = await getDocs(qContraTel);
+        }
+
+        if (!querySnapshot.empty) {
+          correoFinalParaLogin = querySnapshot.docs[0].data().correo;
+        } else {
+          setCargando(false);
+          Alert.alert("Error", "No encontramos ninguna cuenta con ese usuario o teléfono.");
+          return;
+        }
+      }
+
+      // LOGEO EN FIREBASE
+      const userCredential = await signInWithEmailAndPassword(auth, correoFinalParaLogin, password);
+      const uid = userCredential.user.uid; // Tomamos el ID del usuario que acaba de entrar
+
+      /* --- CÓDIGO APAGADO TEMPORALMENTE (VERIFICACIÓN DE CORREO Y BIOMETRÍA) ---
+      if (!userCredential.user.emailVerified) {
+        setCargando(false);
+        Alert.alert("Cuenta No Verificada", "Te enviamos un enlace de seguridad...");
+        return;
+      }
+      
+      Alert.alert("¡Acceso Concedido!", "¿Deseas habilitar tu Huella / FaceID...?", [ ... ]);
+      --------------------------------------------------------------------------- */
+
+      // LÓGICA DE REDIRECCIÓN AUTOMÁTICA
+      const contratistaDoc = await getDoc(doc(db, 'Contratistas', uid));
+      setCargando(false);
+
+      if (contratistaDoc.exists()) {
+        // SI ES CONTRATISTA, LO MANDA A SU DASHBOARD
+        router.replace('/dashboard-contratista' as any);
+      } else {
+        // SI ES TRABAJADOR, LO MANDA AL SUYO
+        router.replace('/dashboard-trabajador' as any);
+      }
+
+    } catch (error: any) {
+      setCargando(false);
+      Alert.alert("Error de acceso", "Contraseña incorrecta o usuario no válido.");
+    }
+  };
+
+  // 2. INICIO DE SESIÓN BIOMÉTRICO (OPCIONAL DESDE EL BOTÓN)
+  const handleBiometria = async () => {
+    try {
+      const hardwareDisponible = await LocalAuthentication.hasHardwareAsync();
+      if (!hardwareDisponible) { Alert.alert("Error", "Dispositivo sin lector biométrico."); return; }
+      
+      const biometricosGuardados = await LocalAuthentication.isEnrolledAsync();
+      if (!biometricosGuardados) { Alert.alert("Aviso", "No tienes huellas registradas en el celular."); return; }
+
+      const authResult = await LocalAuthentication.authenticateAsync({
+        promptMessage: 'Acceso seguro a PalanteMX',
+        cancelLabel: 'Cancelar',
+        disableDeviceFallback: true,
+      });
+
+      if (authResult.success) {
+        const emailGuardado = await SecureStore.getItemAsync('palante_correo');
+        const passGuardada = await SecureStore.getItemAsync('palante_password');
+
+        if (emailGuardado && passGuardada) {
+          setCargando(true);
+          const userCredential = await signInWithEmailAndPassword(auth, emailGuardado, passGuardada);
+          const uid = userCredential.user.uid;
+
+          /* --- CÓDIGO APAGADO (VERIFICACIÓN DE CORREO) ---
+          if (!userCredential.user.emailVerified) { setCargando(false); return; }
+          -------------------------------------------------- */
+
+          // REDIRECCIÓN INTELIGENTE TAMBIÉN CON HUELLA
+          const contratistaDoc = await getDoc(doc(db, 'Contratistas', uid));
+          setCargando(false);
+
+          if (contratistaDoc.exists()) {
+            router.replace('/dashboard-contratista' as any);
+          } else {
+            router.replace('/dashboard-trabajador' as any);
+          }
+
+        } else {
+          Alert.alert("Vínculo Requerido", "Inicia sesión manualmente la primera vez para vincular tu huella.");
+        }
+      }
+    } catch (error) {
+      setCargando(false);
+      Alert.alert("Error", "Problema con el sensor biométrico.");
+    }
+  };
+
+  // RECUPERACIÓN DE CONTRASEÑA REAL
+  const enviarCorreoRecuperacion = async () => {
+    if (!correoRecuperar || !correoRecuperar.includes('@')) {
+      Alert.alert("Error", "Ingresa un correo electrónico válido."); return;
+    }
+    try {
+      await sendPasswordResetEmail(auth, correoRecuperar.trim());
+      Alert.alert("✅ Correo Enviado", "Revisa tu bandeja de entrada o spam. Te hemos enviado un enlace para crear una nueva contraseña.");
+      setModalRecuperarVisible(false);
+      setCorreoRecuperar('');
+    } catch (error: any) {
+      if(error.code === 'auth/user-not-found') {
+        Alert.alert("Usuario no encontrado", "No existe ninguna cuenta registrada con este correo.");
+      } else {
+        Alert.alert("Error", "Hubo un problema. Verifica tu conexión.");
+      }
+    }
+  };
+
+  const verificarAdmin = () => {
+    if (adminPin === '123456') {
+      setModalAdminVisible(false); setAdminPin(''); router.push('/admin' as any); 
+    } else {
+      Alert.alert("Bloqueo", "PIN incorrecto."); setAdminPin('');
+    }
+  };
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
+        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+          
+          <View style={styles.topSection}>
+            <View style={styles.header}>
+              <Text style={styles.trabajoSeguro}>🛡️ SISTEMA DE ACCESO</Text>
+              <Text style={styles.subtitle}>BIENVENIDO A</Text>
+              <Text style={styles.title}>Palante<Text style={styles.titleAccent}>MX</Text></Text>
+            </View>
+
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Inicia sesión</Text>
+              <Text style={styles.cardSubtitle}>Ingresa tus datos operativos</Text>
+
+              <View style={styles.inputContainer}>
+                <Ionicons name="person" size={20} color="#9CA3AF" style={styles.inputIcon} />
+                <TextInput style={styles.input} placeholder="Correo, Teléfono o Usuario" value={identificador} onChangeText={setIdentificador} autoCapitalize="none" />
+              </View>
+
+              <View style={styles.inputContainer}>
+                <Ionicons name="lock-closed" size={20} color="#9CA3AF" style={styles.inputIcon} />
+                <TextInput style={styles.input} placeholder="Contraseña de seguridad" value={password} onChangeText={setPassword} secureTextEntry={!mostrarPassword} />
+                <TouchableOpacity onPress={() => setMostrarPassword(!mostrarPassword)} style={{padding: 5}}>
+                  <Ionicons name={mostrarPassword ? "eye-off" : "eye"} size={20} color="#9CA3AF" />
+                </TouchableOpacity>
+              </View>
+
+              <TouchableOpacity onPress={() => setModalRecuperarVisible(true)}>
+                <Text style={styles.forgotPassword}>¿Olvidaste tu contraseña?</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity style={styles.mainButton} onPress={handleLoginReal} disabled={cargando}>
+                {cargando ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.mainButtonText}>ENTRAR</Text>}
+              </TouchableOpacity>
+
+              <View style={styles.separatorContainer}>
+                <View style={styles.line} /><Text style={styles.separatorText}>ACCESO BIOMÉTRICO</Text><View style={styles.line} />
+              </View>
+
+              <TouchableOpacity style={styles.biometricButton} onPress={handleBiometria}>
+                <Text style={styles.biometricText}>👆 Ingresar con Huella / FaceID</Text>
+                <Text style={styles.biometricSub}>Rápido, privado y protegido</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          <View style={styles.footer}>
+            <Text style={styles.footerText}>¿Eres nuevo en la plataforma? </Text>
+            <TouchableOpacity onPress={() => router.push('/registro' as any)} style={{padding: 5}}>
+              <Text style={styles.registerText}>Regístrate aquí</Text>
+            </TouchableOpacity>
+          </View>
+
+          <TouchableOpacity style={styles.adminButton} onPress={() => setModalAdminVisible(true)}>
+            <Ionicons name="shield-checkmark" size={14} color="#6B7280" style={{marginRight: 5}} />
+            <Text style={styles.adminButtonText}>Portal de Administración</Text>
+          </TouchableOpacity>
+          
+        </ScrollView>
+      </KeyboardAvoidingView>
+
+      {/* MODAL RECUPERAR CONTRASEÑA */}
+      <Modal visible={modalRecuperarVisible} transparent animationType="slide">
+        <View style={styles.modalBackground}>
+          <View style={styles.modalBox}>
+            <Text style={styles.modalTitle}>Recuperar Contraseña</Text>
+            <Text style={styles.modalSubtitle}>Ingresa tu correo oficial de registro para enviarte un enlace de recuperación.</Text>
+            <TextInput style={[styles.modalInput, { letterSpacing: 1, textAlign: 'left' }]} placeholder="tu-correo@ejemplo.com" value={correoRecuperar} onChangeText={setCorreoRecuperar} keyboardType="email-address" autoCapitalize="none" />
+            <View style={styles.modalButtons}>
+              <TouchableOpacity style={styles.modalBtnCancel} onPress={() => setModalRecuperarVisible(false)}>
+                <Text style={styles.modalBtnTextCancel}>CANCELAR</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.modalBtnSubmit} onPress={enviarCorreoRecuperacion}>
+                <Text style={styles.modalBtnTextSubmit}>ENVIAR</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* MODAL ADMIN */}
+      <Modal visible={modalAdminVisible} transparent animationType="fade">
+        <View style={styles.modalBackground}>
+          <View style={styles.modalBox}>
+            <View style={styles.modalHeader}><Ionicons name="lock-closed" size={32} color="#FFFFFF" /></View>
+            <Text style={styles.modalTitle}>Acceso Restringido</Text>
+            <TextInput style={styles.modalInput} placeholder="PIN de Seguridad" value={adminPin} onChangeText={setAdminPin} keyboardType="numeric" secureTextEntry maxLength={6} />
+            <View style={styles.modalButtons}>
+              <TouchableOpacity style={styles.modalBtnCancel} onPress={() => { setModalAdminVisible(false); setAdminPin(''); }}><Text style={styles.modalBtnTextCancel}>CANCELAR</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.modalBtnSubmit} onPress={verificarAdmin}><Text style={styles.modalBtnTextSubmit}>VERIFICAR</Text></TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#0D2340' },
+  content: { flexGrow: 1, justifyContent: 'space-between', padding: 20 },
+  topSection: { flex: 1, justifyContent: 'center' },
+  header: { alignItems: 'center', marginBottom: 30, marginTop: 20 },
+  trabajoSeguro: { color: '#00D06C', fontWeight: 'bold', fontSize: 12, marginBottom: 10, letterSpacing: 1 },
+  subtitle: { color: '#00D06C', fontWeight: 'bold', fontSize: 12, letterSpacing: 2, marginBottom: 5 },
+  title: { fontSize: 45, fontWeight: 'bold', color: '#FFFFFF' },
+  titleAccent: { color: '#00D06C' },
+  card: { backgroundColor: '#FFFFFF', borderRadius: 24, padding: 25, shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 10, elevation: 5 },
+  cardTitle: { fontSize: 24, fontWeight: 'bold', color: '#0D2340', textAlign: 'center' },
+  cardSubtitle: { fontSize: 14, color: '#6B7280', textAlign: 'center', marginBottom: 25, marginTop: 5 },
+  inputContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 12, paddingHorizontal: 15, marginBottom: 15 },
+  inputIcon: { marginRight: 10 },
+  input: { flex: 1, paddingVertical: 16, fontSize: 15, color: '#1F2937' },
+  forgotPassword: { color: '#0D2340', textAlign: 'right', fontWeight: 'bold', marginBottom: 20, fontSize: 13 },
+  mainButton: { backgroundColor: '#0D2340', borderRadius: 12, paddingVertical: 18, alignItems: 'center' },
+  mainButtonText: { color: '#FFFFFF', fontSize: 16, fontWeight: 'bold', letterSpacing: 1 },
+  separatorContainer: { flexDirection: 'row', alignItems: 'center', marginVertical: 25 },
+  line: { flex: 1, height: 1, backgroundColor: '#E5E7EB' },
+  separatorText: { marginHorizontal: 10, color: '#9CA3AF', fontSize: 11, fontWeight: 'bold', letterSpacing: 1 },
+  biometricButton: { backgroundColor: '#F0FDF4', borderWidth: 1, borderColor: '#BBEFD3', borderRadius: 12, padding: 16, alignItems: 'center' },
+  biometricText: { color: '#005530', fontWeight: 'bold', fontSize: 15 },
+  biometricSub: { color: '#6B7280', fontSize: 11, marginTop: 4 },
+  footer: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginTop: 30, marginBottom: 15 },
+  footerText: { color: '#D1D5DB', fontSize: 15 },
+  registerText: { color: '#00D06C', fontSize: 15, fontWeight: 'bold' },
+  adminButton: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginTop: 10, marginBottom: 20 },
+  adminButtonText: { color: '#6B7280', fontSize: 12, fontWeight: 'bold', letterSpacing: 0.5 },
+  modalBackground: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center', padding: 20 },
+  modalBox: { width: '100%', backgroundColor: '#FFFFFF', borderRadius: 20, overflow: 'hidden' },
+  modalHeader: { backgroundColor: '#D32F2F', padding: 20, alignItems: 'center' },
+  modalTitle: { fontSize: 20, fontWeight: 'bold', color: '#0D2340', textAlign: 'center', marginTop: 20 },
+  modalSubtitle: { fontSize: 13, color: '#6B7280', textAlign: 'center', paddingHorizontal: 20, marginTop: 8, marginBottom: 20 },
+  modalInput: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 12, padding: 15, marginHorizontal: 20, fontSize: 18, textAlign: 'center', letterSpacing: 5, marginBottom: 20 },
+  modalButtons: { flexDirection: 'row', borderTopWidth: 1, borderColor: '#E5E7EB' },
+  modalBtnCancel: { flex: 1, padding: 15, alignItems: 'center', borderRightWidth: 1, borderColor: '#E5E7EB' },
+  modalBtnSubmit: { flex: 1, padding: 15, alignItems: 'center', backgroundColor: '#0D2340' },
+  modalBtnTextCancel: { color: '#6B7280', fontWeight: 'bold' },
+  modalBtnTextSubmit: { color: '#FFFFFF', fontWeight: 'bold' }
+});

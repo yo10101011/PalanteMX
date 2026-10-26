@@ -1,0 +1,5 @@
+# Copia este archivo como `.dev.vars` SOLO para probar en tu computadora con `npm run dev`.
+# `.dev.vars` está en .gitignore: nunca lo subas ni lo compartas.
+OCR_KEY=tu_llave_nueva_de_ocr_space
+FACE_KEY=tu_api_key_nueva_de_faceplusplus
+FACE_SECRET=tu_api_secret_nuevo_de_faceplusplus

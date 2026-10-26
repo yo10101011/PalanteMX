@@ -1,0 +1,10 @@
+# Configuración del Worker de verificación de identidad (KYC) de PalanteMX.
+# Las llaves secretas NO van aquí: se guardan con `npx wrangler secret put <NOMBRE>`.
+name = "palantemx-kyc"
+main = "src/index.ts"
+compatibility_date = "2025-02-14"
+
+[vars]
+# Valores públicos (no son secretos).
+FIREBASE_PROJECT_ID = "palantemx-2a5aa"
+CLOUDINARY_CLOUD_NAME = "ylqsvel1"

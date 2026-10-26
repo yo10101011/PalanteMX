@@ -1,0 +1,737 @@
+import { Ionicons } from '@expo/vector-icons';
+import { Picker } from '@react-native-picker/picker';
+import * as DocumentPicker from 'expo-document-picker';
+import * as ImagePicker from 'expo-image-picker';
+import { router, useLocalSearchParams } from 'expo-router';
+import { useEffect, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  FlatList,
+  Image,
+  KeyboardAvoidingView,
+  LogBox,
+  Modal,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View
+} from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+
+// IGNORAR EL ERROR FALSO DE FIREBASE WEBCHANNEL EN EXPO
+LogBox.ignoreLogs(['@firebase/firestore', "WebChannelConnection RPC", "Name: undefined Message: undefined"]);
+
+// FIREBASE
+// @ts-ignore
+import {
+  addDoc,
+  arrayUnion,
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  onSnapshot,
+  query,
+  updateDoc,
+  where
+} from 'firebase/firestore';
+import { auth, db } from '../../firebaseConfig';
+
+export default function Mensajes() {
+  const params = useLocalSearchParams(); 
+  const insets = useSafeAreaInsets(); 
+  
+  const [cargando, setCargando] = useState(true);
+  const [procesando, setProcesando] = useState(false);
+  const [miPerfil, setMiPerfil] = useState<any>(null);
+  
+  // BANDEJA DE ENTRADA (INBOX)
+  const [chats, setChats] = useState<any[]>([]);
+  const [chatActivo, setChatActivo] = useState<any>(null); 
+  
+  // CHAT INDIVIDUAL
+  const [mensajes, setMensajes] = useState<any[]>([]);
+  const [nuevoMensaje, setNuevoMensaje] = useState('');
+  const flatListRef = useRef<FlatList>(null);
+
+  // ESTADOS DEL NUEVO MENÚ DE ADJUNTOS
+  const [modalAdjuntos, setModalAdjuntos] = useState(false);
+  const [archivoSeleccionado, setArchivoSeleccionado] = useState<{uri: string, nombre: string, tipo: 'imagen' | 'archivo' | 'audio'} | null>(null);
+
+  // ESTADOS DEL MENÚ DE OPCIONES Y REPORTES
+  const [modalOpciones, setModalOpciones] = useState(false);
+  const [modalReporte, setModalReporte] = useState(false);
+  const [reporteMotivo, setReporteMotivo] = useState('Spam / Fraude');
+  const [reporteDesc, setReporteDesc] = useState('');
+
+  // ESTADOS PARA BUSCADOR INTELIGENTE DE NUEVO CHAT
+  const [modalNuevoChat, setModalNuevoChat] = useState(false);
+  const [listaUsuariosSistema, setListaUsuariosSistema] = useState<any[]>([]);
+  const [busquedaUsuario, setBusquedaUsuario] = useState('');
+
+  useEffect(() => {
+    cargarMisChats();
+  }, []);
+
+  useEffect(() => {
+    // BLINDAJE: Verificamos que los datos existan antes de usar includes
+    if (!cargando && params.autoOpenId && miPerfil && chats) {
+      const autoOpenStr = String(params.autoOpenId);
+      const chatExistente = chats.find(c => c.usuarios_ids && Array.isArray(c.usuarios_ids) && c.usuarios_ids.includes(autoOpenStr));
+      
+      if (chatExistente) {
+        if (!chatActivo || chatActivo.id !== chatExistente.id) abrirChat(chatExistente);
+      } else {
+        if (!chatActivo && params.autoOpenNombre) crearYabrirChatDirecto();
+      }
+    }
+  }, [cargando, params.autoOpenId, chats, miPerfil]);
+
+  const crearYabrirChatDirecto = async () => {
+    setProcesando(true);
+    try {
+      const nuevoChatObj = {
+        usuarios_ids: [miPerfil.id, String(params.autoOpenId)],
+        datos_usuarios: {
+          [miPerfil.id]: { nombre: `${miPerfil.nombre} ${miPerfil.apellidos}`, foto: miPerfil.foto_rostro_url || 'https://via.placeholder.com/150', rol: miPerfil.rol },
+          [String(params.autoOpenId)]: { nombre: params.autoOpenNombre, foto: params.autoOpenFoto || 'https://via.placeholder.com/150', rol: params.autoOpenRol || 'Usuario' }
+        },
+        ultimo_mensaje: 'Iniciando conexión...',
+        leido: true,
+        bloqueado: false,
+        timestamp: new Date().getTime()
+      };
+      const docRef = await addDoc(collection(db, 'Chats'), nuevoChatObj);
+      abrirChat({ id: docRef.id, ...nuevoChatObj });
+    } catch (error) { console.log("Error creando auto-chat", error); }
+    setProcesando(false);
+  };
+
+  const cargarMisChats = async () => {
+    try {
+      const usuarioActual = auth.currentUser;
+      if (!usuarioActual) { router.replace('/' as any); return; }
+
+      let miRol = 'Trabajador';
+      let userDoc = await getDoc(doc(db, 'Usuarios', usuarioActual.uid));
+      if (!userDoc.exists()) {
+        userDoc = await getDoc(doc(db, 'Contratistas', usuarioActual.uid));
+        miRol = 'Contratista';
+      }
+
+      if (userDoc.exists()) {
+        const datos = userDoc.data();
+        setMiPerfil({ id: userDoc.id, rol: miRol, ...datos });
+        
+        const qChats = query(collection(db, 'Chats'), where('usuarios_ids', 'array-contains', usuarioActual.uid));
+        const unsubscribe = onSnapshot(qChats, (snapshot) => {
+          const listaChats = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+          listaChats.sort((a: any, b: any) => (b.timestamp || 0) - (a.timestamp || 0));
+          setChats(listaChats);
+          setCargando(false);
+        });
+
+        return () => unsubscribe();
+      }
+    } catch (error) { console.log("Error cargando perfil", error); setCargando(false); }
+  };
+
+  const abrirChat = async (chat: any) => {
+    setChatActivo(chat);
+    if (chat.ultimo_emisor_id !== miPerfil.id && chat.leido === false) {
+      await updateDoc(doc(db, 'Chats', chat.id), { leido: true });
+    }
+    const qMensajes = query(collection(db, 'Chats', chat.id, 'Mensajes'));
+    onSnapshot(qMensajes, (snapshot) => {
+      const listaMensajes = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      listaMensajes.sort((a: any, b: any) => (a.timestamp || 0) - (b.timestamp || 0));
+      setMensajes(listaMensajes);
+      setTimeout(() => { if (flatListRef.current) flatListRef.current.scrollToEnd({ animated: true }); }, 200);
+    });
+  };
+
+  const subirFotoACloudinary = async (base64String: string) => {
+    const CLOUD_NAME = "ylqsvel1"; const UPLOAD_PRESET = "palante_fotos"; 
+    const data = new FormData(); 
+    data.append('file', base64String); data.append('upload_preset', UPLOAD_PRESET); data.append('cloud_name', CLOUD_NAME);
+    const response = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`, { method: 'POST', body: data });
+    const result = await response.json(); return result.secure_url; 
+  };
+
+  const subirArchivoACloudinary = async (archivo: any) => {
+    const CLOUD_NAME = "ylqsvel1"; const UPLOAD_PRESET = "palante_fotos"; 
+    const data = new FormData(); 
+    data.append('file', { uri: archivo.uri, name: archivo.nombre, type: 'application/octet-stream' } as any);
+    data.append('upload_preset', UPLOAD_PRESET); data.append('cloud_name', CLOUD_NAME);
+    const response = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/auto/upload`, { method: 'POST', body: data });
+    const result = await response.json(); return result.secure_url; 
+  };
+
+  const seleccionarImagen = async () => {
+    setModalAdjuntos(false);
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsEditing: true, quality: 0.5, base64: true });
+    if (!result.canceled && result.assets[0].base64) {
+      setArchivoSeleccionado({ uri: `data:image/jpeg;base64,${result.assets[0].base64}`, nombre: 'Imagen adjunta', tipo: 'imagen' });
+    }
+  };
+
+  const seleccionarDocumento = async (tipo: 'archivo' | 'audio') => {
+    setModalAdjuntos(false);
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: tipo === 'audio' ? 'audio/*' : '*/*',
+        copyToCacheDirectory: true
+      });
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        const doc = result.assets[0];
+        setArchivoSeleccionado({ uri: doc.uri, nombre: doc.name, tipo: tipo });
+      }
+    } catch (error) { console.log("Error al seleccionar documento", error); }
+  };
+
+  const enviarMensaje = async () => {
+    if (!nuevoMensaje.trim() && !archivoSeleccionado) return;
+    if (!chatActivo || !miPerfil) return;
+
+    setProcesando(true);
+    const textoMensaje = nuevoMensaje;
+    const archivoEnviar = archivoSeleccionado;
+    
+    setNuevoMensaje('');
+    setArchivoSeleccionado(null);
+
+    const timestampActual = new Date().getTime();
+    const horaLegible = new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
+
+    try {
+      let urlArchivo = null;
+      if (archivoEnviar) {
+        if (archivoEnviar.tipo === 'imagen' && archivoEnviar.uri.startsWith('data:image')) {
+          urlArchivo = await subirFotoACloudinary(archivoEnviar.uri);
+        } else {
+          urlArchivo = await subirArchivoACloudinary(archivoEnviar);
+        }
+      }
+
+      await addDoc(collection(db, 'Chats', chatActivo.id, 'Mensajes'), {
+        emisor_id: miPerfil.id,
+        texto: textoMensaje,
+        archivo_url: urlArchivo,
+        archivo_nombre: archivoEnviar?.nombre || null,
+        archivo_tipo: archivoEnviar?.tipo || null,
+        hora: horaLegible,
+        timestamp: timestampActual
+      });
+
+      let textoPortada = textoMensaje;
+      if (!textoMensaje.trim() && urlArchivo) {
+        textoPortada = archivoEnviar?.tipo === 'imagen' ? '📸 Imagen enviada' : archivoEnviar?.tipo === 'audio' ? '🎤 Audio enviado' : '📄 Archivo enviado';
+      }
+
+      await updateDoc(doc(db, 'Chats', chatActivo.id), {
+        ultimo_mensaje: textoPortada,
+        ultimo_emisor_id: miPerfil.id,
+        leido: false, 
+        timestamp: timestampActual
+      });
+
+    } catch (error) { Alert.alert("Error", "No se pudo enviar el mensaje por problemas de conexión."); }
+    setProcesando(false);
+  };
+
+  const abrirModalReporteChat = () => {
+    setModalOpciones(false);
+    setReporteMotivo('Spam / Fraude');
+    setReporteDesc('');
+    setModalReporte(true);
+  };
+
+  const enviarReporteChat = async () => {
+    if (!reporteDesc) { Alert.alert("Aviso", "Por favor describe brevemente el problema."); return; }
+    setProcesando(true);
+    try {
+      const otroUsuarioId = chatActivo.usuarios_ids?.find((id: string) => id !== miPerfil.id);
+      const otroUsuarioData = otroUsuarioId ? chatActivo.datos_usuarios?.[otroUsuarioId] : { nombre: 'Usuario Desconocido' };
+      
+      await addDoc(collection(db, "Quejas_Soporte"), {
+        id_reportante: miPerfil.id, rol_reportante: miPerfil.rol,
+        id_acusado: otroUsuarioId || 'Desconocido', acusado: otroUsuarioData.nombre,
+        motivo: reporteMotivo, descripcion: reporteDesc,
+        chat_origen_id: chatActivo.id, fecha_reporte: new Date().toISOString(), estado: "En Revisión"
+      });
+      
+      Alert.alert("Reporte Enviado", "El administrador revisará el caso inmediatamente.");
+      setModalReporte(false);
+    } catch (error) { Alert.alert("Error", "No se pudo enviar el reporte."); }
+    setProcesando(false);
+  };
+
+  const bloquearUsuario = () => {
+    setModalOpciones(false);
+    Alert.alert(
+      "Bloquear Usuario", 
+      "El chat se cerrará permanentemente. Ninguno de los dos podrá enviar o recibir mensajes. ¿Continuar?", 
+      [
+        { text: "Cancelar", style: "cancel" },
+        { text: "Sí, Bloquear", style: "destructive", onPress: async () => {
+            setProcesando(true);
+            try {
+              const otroUsuarioId = chatActivo.usuarios_ids?.find((id: string) => id !== miPerfil.id);
+              
+              await updateDoc(doc(db, 'Chats', chatActivo.id), {
+                bloqueado: true,
+                bloqueado_por: miPerfil.id
+              });
+
+              if (otroUsuarioId) {
+                await updateDoc(doc(db, miPerfil.rol === 'Trabajador' ? 'Usuarios' : 'Contratistas', miPerfil.id), {
+                  bloqueados: arrayUnion(otroUsuarioId)
+                });
+              }
+
+              Alert.alert("Bloqueado", "Este usuario ya no podrá contactarte.");
+            } catch (error) { Alert.alert("Error", "No se pudo bloquear al usuario."); }
+            setProcesando(false);
+          }
+        }
+      ]
+    );
+  };
+
+  const abrirBuscadorNuevoChat = async () => {
+    setModalNuevoChat(true); setBusquedaUsuario(''); setProcesando(true);
+    try {
+      const snapCont = await getDocs(collection(db, 'Contratistas'));
+      const snapTrab = await getDocs(collection(db, 'Usuarios'));
+      const todos = [...snapCont.docs.map(d => ({id: d.id, rol: 'Contratista', ...d.data()})), ...snapTrab.docs.map(d => ({id: d.id, rol: 'Trabajador', ...d.data()}))];
+      
+      const bloqueados = miPerfil.bloqueados || [];
+      const bloqueadosArray = Array.isArray(bloqueados) ? bloqueados : [];
+      
+      setListaUsuariosSistema(todos.filter(u => u.id !== miPerfil.id && !bloqueadosArray.includes(u.id)));
+    } catch (error) { console.log("Error", error); }
+    setProcesando(false);
+  };
+
+  const iniciarChatConUsuario = async (otroUsuario: any) => {
+    setProcesando(true);
+    try {
+      const chatExistente = chats.find(c => c.usuarios_ids && Array.isArray(c.usuarios_ids) && c.usuarios_ids.includes(otroUsuario.id));
+      
+      if (chatExistente) { setModalNuevoChat(false); abrirChat(chatExistente); } 
+      else {
+        const nuevoChatObj = {
+          usuarios_ids: [miPerfil.id, otroUsuario.id],
+          datos_usuarios: {
+            [miPerfil.id]: { nombre: `${miPerfil.nombre} ${miPerfil.apellidos}`, foto: miPerfil.foto_rostro_url || 'https://via.placeholder.com/150', rol: miPerfil.rol },
+            [otroUsuario.id]: { nombre: `${otroUsuario.nombre} ${otroUsuario.apellidos}`, foto: otroUsuario.foto_rostro_url || 'https://via.placeholder.com/150', rol: otroUsuario.rol }
+          },
+          ultimo_mensaje: 'Conversación iniciada', leido: true, bloqueado: false, timestamp: new Date().getTime()
+        };
+        const docRef = await addDoc(collection(db, 'Chats'), nuevoChatObj);
+        setModalNuevoChat(false); abrirChat({ id: docRef.id, ...nuevoChatObj });
+      }
+    } catch (error) { Alert.alert("Error", "No se pudo iniciar la conversación."); }
+    setProcesando(false);
+  };
+
+  if (cargando) {
+    return (
+      <View style={styles.loadingCenter}><ActivityIndicator size="large" color="#00D06C" /><Text style={styles.loadingText}>Conectando a tus mensajes...</Text></View>
+    );
+  }
+
+  // =========================================================================
+  // VISTA 1: CHAT ABIERTO 
+  // =========================================================================
+  if (chatActivo) {
+    const datosChatEnTiempoReal = chats.find(c => c.id === chatActivo.id) || chatActivo;
+    const estaBloqueado = datosChatEnTiempoReal.bloqueado === true;
+    
+    // BLINDAJE PARA EVITAR CRASH SI EL CHAT ESTÁ ROTO EN FIREBASE
+    const otroUsuarioId = datosChatEnTiempoReal.usuarios_ids?.find((id: string) => id !== miPerfil.id);
+    const otroUsuarioData = otroUsuarioId && datosChatEnTiempoReal.datos_usuarios ? datosChatEnTiempoReal.datos_usuarios[otroUsuarioId] : { nombre: 'Usuario Desconocido', rol: 'N/A', foto: 'https://via.placeholder.com/150' };
+
+    return (
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <KeyboardAvoidingView style={{flex: 1}} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          
+          <View style={styles.chatHeader}>
+            <TouchableOpacity style={styles.backBtn} onPress={() => { setChatActivo(null); router.setParams({ autoOpenId: '', autoOpenNombre: '' }); }}>
+              <Ionicons name="arrow-back" size={24} color="#FFF" />
+            </TouchableOpacity>
+            <Image source={{uri: otroUsuarioData.foto}} style={styles.chatAvatar} />
+            <View style={{flex: 1}}>
+              <Text style={styles.chatName} numberOfLines={1}>{otroUsuarioData.nombre}</Text>
+              <Text style={styles.chatRole}>{otroUsuarioData.rol}</Text>
+            </View>
+            <TouchableOpacity onPress={() => setModalOpciones(true)}>
+              <Ionicons name="ellipsis-vertical" size={24} color="#FFF" />
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.privacyBanner}>
+            <Ionicons name="shield-checkmark" size={16} color="#B45309" style={{marginRight: 8}} />
+            <Text style={styles.privacyText}>Por tu seguridad, mantén el respeto. La plataforma sancionará fraudes o vocabulario inapropiado.</Text>
+          </View>
+
+          <FlatList
+            ref={flatListRef}
+            data={mensajes}
+            keyExtractor={(item, index) => item.id || index.toString()}
+            contentContainerStyle={styles.messagesContainer}
+            onContentSizeChange={() => flatListRef.current?.scrollToEnd({animated: true})}
+            renderItem={({ item }) => {
+              const esMio = item.emisor_id === miPerfil.id;
+              return (
+                <View style={[styles.messageBubbleWrapper, esMio ? styles.messageMineWrapper : styles.messageTheirsWrapper]}>
+                  <View style={[styles.messageBubble, esMio ? styles.messageMine : styles.messageTheirs]}>
+                    
+                    {/* ADJUNTOS */}
+                    {item.archivo_tipo === 'imagen' && <Image source={{uri: item.archivo_url}} style={styles.messageImage} />}
+                    {item.archivo_tipo === 'archivo' && (
+                      <View style={styles.fileMessageBox}>
+                        <Ionicons name="document-text" size={24} color={esMio ? "#FFF" : "#0D2340"} />
+                        <Text style={[styles.fileMessageText, esMio ? {color: '#FFF'} : {color: '#0D2340'}]} numberOfLines={1}>{item.archivo_nombre}</Text>
+                      </View>
+                    )}
+                    {item.archivo_tipo === 'audio' && (
+                      <View style={styles.fileMessageBox}>
+                        <Ionicons name="mic" size={24} color={esMio ? "#FFF" : "#0D2340"} />
+                        <Text style={[styles.fileMessageText, esMio ? {color: '#FFF'} : {color: '#0D2340'}]}>Nota de voz enviada</Text>
+                      </View>
+                    )}
+
+                    {/* TEXTO NORMAL */}
+                    {item.texto ? <Text style={[styles.messageText, esMio ? styles.messageTextMine : styles.messageTextTheirs]}>{item.texto}</Text> : null}
+                    
+                    <Text style={[styles.messageTime, esMio ? styles.messageTimeMine : styles.messageTimeTheirs]}>{item.hora}</Text>
+                  </View>
+                </View>
+              );
+            }}
+            ListEmptyComponent={
+              <View style={styles.emptyMessagesBox}>
+                <Ionicons name="hand-right-outline" size={40} color="#9CA3AF" />
+                <Text style={styles.emptyMessagesText}>¡Saluda a {otroUsuarioData.nombre}!</Text>
+                <Text style={styles.emptyMessagesSub}>Comiencen a negociar su próximo proyecto.</Text>
+              </View>
+            }
+          />
+
+          {/* PREVISUALIZADOR DE ADJUNTOS ANTES DE ENVIAR */}
+          {archivoSeleccionado && !estaBloqueado && (
+            <View style={styles.previewBox}>
+              {archivoSeleccionado.tipo === 'imagen' ? (
+                <Image source={{uri: archivoSeleccionado.uri}} style={styles.previewImage} />
+              ) : (
+                <View style={styles.previewFile}>
+                  <Ionicons name={archivoSeleccionado.tipo === 'audio' ? "mic" : "document"} size={30} color="#0D2340" />
+                  <Text style={styles.previewFileText} numberOfLines={1}>{archivoSeleccionado.nombre}</Text>
+                </View>
+              )}
+              <TouchableOpacity style={styles.removePreviewBtn} onPress={() => setArchivoSeleccionado(null)}>
+                <Ionicons name="close-circle" size={28} color="#DC2626" />
+              </TouchableOpacity>
+            </View>
+          )}
+
+          {/* ÁREA DE INPUT O BLOQUEO */}
+          {estaBloqueado ? (
+            <View style={[styles.blockedBannerContainer, { paddingBottom: Platform.OS === 'ios' ? Math.max(insets.bottom, 20) : insets.bottom + 20 }]}>
+              <Ionicons name="lock-closed" size={24} color="#DC2626" />
+              <Text style={styles.blockedBannerText}>Este chat ha sido bloqueado por seguridad. Ya no pueden enviarse mensajes.</Text>
+            </View>
+          ) : (
+            <View style={[styles.inputContainer, { paddingBottom: Platform.OS === 'ios' ? Math.max(insets.bottom, 10) : insets.bottom + 10 }]}>
+              <TouchableOpacity style={styles.attachBtn} onPress={() => setModalAdjuntos(true)}>
+                <Ionicons name="add-circle" size={28} color="#0D2340" />
+              </TouchableOpacity>
+              
+              <TextInput style={styles.textInput} placeholder="Escribe un mensaje..." value={nuevoMensaje} onChangeText={setNuevoMensaje} multiline />
+
+              <TouchableOpacity style={[styles.sendBtn, (!nuevoMensaje.trim() && !archivoSeleccionado) && {backgroundColor: '#D1D5DB'}]} onPress={enviarMensaje} disabled={(!nuevoMensaje.trim() && !archivoSeleccionado) || procesando}>
+                {procesando ? <ActivityIndicator size="small" color="#FFF" /> : <Ionicons name="send" size={18} color="#FFF" style={{marginLeft: 3}} />}
+              </TouchableOpacity>
+            </View>
+          )}
+
+        </KeyboardAvoidingView>
+
+        <Modal visible={modalOpciones} transparent animationType="fade">
+          <TouchableOpacity style={styles.modalBgDark} activeOpacity={1} onPress={() => setModalOpciones(false)}>
+            <View style={styles.bottomSheet}>
+              <Text style={styles.sheetTitle}>Opciones del Chat</Text>
+              <TouchableOpacity style={styles.sheetOption} onPress={abrirModalReporteChat}>
+                <Ionicons name="warning-outline" size={24} color="#F59E0B" style={{marginRight: 15}}/>
+                <Text style={styles.sheetOptionText}>Reportar Usuario</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.sheetOption, {borderBottomWidth: 0}]} onPress={bloquearUsuario}>
+                <Ionicons name="ban-outline" size={24} color="#DC2626" style={{marginRight: 15}}/>
+                <Text style={[styles.sheetOptionText, {color: '#DC2626'}]}>Bloquear Usuario</Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        </Modal>
+
+        <Modal visible={modalReporte} animationType="slide" transparent>
+          <View style={styles.modalBgDarkCenter}>
+            <View style={[styles.modalContainer, {maxHeight: '90%'}]}>
+              <View style={{flexDirection: 'row', alignItems: 'center', marginBottom: 15}}>
+                <Ionicons name="warning" size={24} color="#F59E0B" style={{marginRight: 10}}/>
+                <Text style={[styles.modalTitle, {marginBottom: 0}]}>Reportar Comportamiento</Text>
+              </View>
+              <ScrollView showsVerticalScrollIndicator={false}>
+                <Text style={styles.modalLabel}>Selecciona el Motivo</Text>
+                <View style={styles.pickerBox}>
+                  <Picker selectedValue={reporteMotivo} onValueChange={(itemValue) => setReporteMotivo(itemValue)}>
+                    <Picker.Item label="Spam / Fraude" value="Spam / Fraude" />
+                    <Picker.Item label="Acoso o Insultos" value="Acoso o Insultos" />
+                    <Picker.Item label="Servicio no pagado / incumplido" value="Servicio no pagado / incumplido" />
+                    <Picker.Item label="Contenido Inapropiado" value="Contenido Inapropiado" />
+                    <Picker.Item label="Otro" value="Otro" />
+                  </Picker>
+                </View>
+                <Text style={styles.modalLabel}>Describe la situación (Para el Administrador)</Text>
+                <TextInput style={[styles.modalInput, {height: 100, textAlignVertical: 'top'}]} placeholder="El usuario me insultó cuando le pedí..." multiline value={reporteDesc} onChangeText={setReporteDesc} />
+                <View style={styles.modalBtnRow}>
+                  <TouchableOpacity style={styles.modalBtnCancel} onPress={() => setModalReporte(false)}><Text style={styles.modalBtnTextC}>Cancelar</Text></TouchableOpacity>
+                  <TouchableOpacity style={[styles.modalBtnSave, {backgroundColor: '#F59E0B'}]} onPress={enviarReporteChat} disabled={procesando}>{procesando ? <ActivityIndicator color="#FFF" /> : <Text style={styles.modalBtnTextS}>Enviar Reporte</Text>}</TouchableOpacity>
+                </View>
+              </ScrollView>
+            </View>
+          </View>
+        </Modal>
+
+        <Modal visible={modalAdjuntos} transparent animationType="fade">
+          <TouchableOpacity style={styles.modalBgDark} activeOpacity={1} onPress={() => setModalAdjuntos(false)}>
+            <View style={styles.attachmentSheet}>
+              <View style={styles.attachRow}>
+                <TouchableOpacity style={styles.attachItem} onPress={seleccionarImagen}>
+                  <View style={[styles.attachIconBg, {backgroundColor: '#3B82F6'}]}><Ionicons name="image" size={28} color="#FFF" /></View>
+                  <Text style={styles.attachLabel}>Fotos</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.attachItem} onPress={() => seleccionarDocumento('archivo')}>
+                  <View style={[styles.attachIconBg, {backgroundColor: '#8B5CF6'}]}><Ionicons name="document-text" size={28} color="#FFF" /></View>
+                  <Text style={styles.attachLabel}>Documento</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.attachItem} onPress={() => seleccionarDocumento('audio')}>
+                  <View style={[styles.attachIconBg, {backgroundColor: '#F97316'}]}><Ionicons name="mic" size={28} color="#FFF" /></View>
+                  <Text style={styles.attachLabel}>Audio</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </TouchableOpacity>
+        </Modal>
+
+      </SafeAreaView>
+    );
+  }
+
+  // =========================================================================
+  // VISTA 2: BANDEJA DE ENTRADA (INBOX - LISTA DE CHATS)
+  // =========================================================================
+  return (
+    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+      
+      <View style={styles.inboxHeader}>
+        <Text style={styles.inboxTitle}>Bandeja de Entrada</Text>
+        <Text style={styles.inboxSubtitle}>Conecta con talento o consigue trabajo</Text>
+      </View>
+
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{padding: 20}}>
+        {chats.length > 0 ? (
+          chats.map((chat, index) => {
+            // BLINDAJE: Si el chat no tiene el formato correcto, lo ignoramos para no tronar la app
+            if (!chat.usuarios_ids || !Array.isArray(chat.usuarios_ids) || !chat.datos_usuarios) return null;
+
+            const otroUsuarioId = chat.usuarios_ids.find((id: string) => id !== miPerfil?.id);
+            if (!otroUsuarioId) return null;
+
+            const otroUsuarioData = chat.datos_usuarios[otroUsuarioId];
+            if (!otroUsuarioData) return null;
+
+            const esUltimoMio = chat.ultimo_emisor_id === miPerfil.id;
+            const noLeido = !esUltimoMio && chat.leido === false;
+
+            return (
+              <TouchableOpacity key={index} style={[styles.chatListItem, noLeido && styles.chatListItemUnread, chat.bloqueado && {opacity: 0.5}]} activeOpacity={0.7} onPress={() => abrirChat(chat)}>
+                <Image source={{uri: otroUsuarioData.foto || 'https://via.placeholder.com/150'}} style={styles.chatListAvatar} />
+                <View style={{flex: 1}}>
+                  <View style={styles.chatListTopRow}>
+                    <Text style={[styles.chatListName, noLeido && {fontWeight: '900', color: '#000'}]} numberOfLines={1}>{otroUsuarioData.nombre}</Text>
+                    <Text style={[styles.chatListDate, noLeido && {color: '#00D06C'}]}>
+                      {new Date(chat.timestamp).toLocaleDateString() === new Date().toLocaleDateString() ? new Date(chat.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : new Date(chat.timestamp).toLocaleDateString()}
+                    </Text>
+                  </View>
+                  <Text style={styles.chatListRole}>{otroUsuarioData.rol}</Text>
+                  <View style={{flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between'}}>
+                    <Text style={[styles.chatListLastMsg, noLeido && {color: '#1F2937', fontWeight: 'bold'}]} numberOfLines={1}>
+                      {chat.bloqueado && <Ionicons name="lock-closed" size={12} color="#DC2626" /> }
+                      <Text style={{fontWeight: esUltimoMio ? 'bold' : 'normal', color: '#6B7280'}}>{esUltimoMio ? ' Tú: ' : ' '}</Text>
+                      {chat.ultimo_mensaje}
+                    </Text>
+                    {noLeido && <View style={styles.unreadDot} />}
+                  </View>
+                </View>
+              </TouchableOpacity>
+            );
+          })
+        ) : (
+          <View style={styles.emptyInbox}>
+            <Ionicons name="chatbubble-ellipses-outline" size={60} color="#D1D5DB" />
+            <Text style={styles.emptyInboxTitle}>No tienes mensajes aún</Text>
+            <Text style={styles.emptyInboxText}>Toca el botón flotante verde para buscar a un usuario e iniciar un chat.</Text>
+          </View>
+        )}
+      </ScrollView>
+
+      <TouchableOpacity style={styles.fab} onPress={abrirBuscadorNuevoChat}>
+        <Ionicons name="chatbubbles" size={24} color="#FFF" />
+      </TouchableOpacity>
+
+      {/* --- MENÚ INFERIOR CON ORDEN CORRECTO Y PARÁMETROS --- */}
+      <View style={styles.bottomNavigation}>
+        {miPerfil?.rol === 'Contratista' ? (
+          <>
+            <TouchableOpacity style={styles.navItem} onPress={() => router.push({ pathname: '/dashboard-contratista', params: { tab: 'Explorar' } } as any)}><Ionicons name="search-outline" size={26} color="#6B7280" /><Text style={styles.navText}>Explorar</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.navItem} onPress={() => router.push({ pathname: '/dashboard-contratista', params: { tab: 'Vacantes' } } as any)}><Ionicons name="megaphone-outline" size={26} color="#6B7280" /><Text style={styles.navText}>Anuncios</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.navItem} onPress={() => router.push({ pathname: '/dashboard-contratista', params: { tab: 'Obras' } } as any)}><Ionicons name="construct-outline" size={26} color="#6B7280" /><Text style={styles.navText}>Obras</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.navItem} onPress={() => router.push({ pathname: '/dashboard-contratista', params: { tab: 'Candidatos' } } as any)}><Ionicons name="people-outline" size={26} color="#6B7280" /><Text style={styles.navText}>Solicitud</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.navItem}><Ionicons name="chatbubbles" size={26} color="#00D06C" /><Text style={[styles.navText, {color: '#00D06C', fontWeight: 'bold'}]}>Mensaje</Text></TouchableOpacity>
+          </>
+        ) : (
+          <>
+            <TouchableOpacity style={styles.navItem} onPress={() => router.push('/feed' as any)}><Ionicons name="briefcase-outline" size={26} color="#6B7280" /><Text style={styles.navText}>Trabajo</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.navItem} onPress={() => router.push({ pathname: '/dashboard-trabajador', params: { tab: 'Mis Trabajos' } } as any)}><Ionicons name="construct-outline" size={26} color="#6B7280" /><Text style={styles.navText}>Obras</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.navItem}><Ionicons name="chatbubbles" size={26} color="#00D06C" /><Text style={[styles.navText, {color: '#00D06C', fontWeight: 'bold'}]}>Mensajes</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.navItem} onPress={() => router.push({ pathname: '/dashboard-trabajador', params: { tab: 'Portafolio' } } as any)}><Ionicons name="person-outline" size={26} color="#6B7280" /><Text style={styles.navText}>Perfil</Text></TouchableOpacity>
+          </>
+        )}
+      </View>
+
+      <Modal visible={modalNuevoChat} animationType="slide" transparent>
+        <View style={styles.modalBgDark}>
+          <SafeAreaView style={{flex: 1, backgroundColor: '#F3F4F6', borderRadius: 20, overflow: 'hidden', marginTop: 50}}>
+            <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#0D2340', padding: 15}}><Text style={{color: '#FFF', fontWeight: 'bold', fontSize: 16}}>Nuevo Mensaje</Text><TouchableOpacity onPress={() => setModalNuevoChat(false)}><Ionicons name="close" size={28} color="#FFF"/></TouchableOpacity></View>
+            <View style={{padding: 20, flex: 1}}>
+              <View style={styles.searchContainerInteligente}>
+                <Ionicons name="search" size={20} color="#9CA3AF" style={styles.searchIcon} />
+                <TextInput style={styles.searchInput} placeholder="Busca el nombre de un usuario..." value={busquedaUsuario} onChangeText={setBusquedaUsuario} autoFocus />
+              </View>
+              {procesando ? ( <ActivityIndicator size="large" color="#00D06C" style={{marginTop: 50}} /> ) : (
+                <ScrollView showsVerticalScrollIndicator={false} style={{marginTop: 15}}>
+                  {busquedaUsuario.length > 0 ? (
+                    listaUsuariosSistema
+                      .filter(u => `${u.nombre || ''} ${u.apellidos || ''}`.toLowerCase().includes(busquedaUsuario.toLowerCase()))
+                      .map((u, i) => (
+                        <TouchableOpacity key={i} style={styles.searchResultItem} onPress={() => iniciarChatConUsuario(u)}>
+                          <Image source={{uri: u.foto_rostro_url || 'https://via.placeholder.com/150'}} style={styles.searchResultAvatar}/>
+                          <View><Text style={styles.searchResultName}>{u.nombre} {u.apellidos}</Text><Text style={styles.searchResultRole}>{u.rol} • {u.ubicacion_texto?.split(',')[0] || 'México'}</Text></View>
+                        </TouchableOpacity>
+                    ))
+                  ) : ( <Text style={{textAlign: 'center', color: '#9CA3AF', marginTop: 40}}>Escribe un nombre para buscar a un Trabajador o Contratista en la plataforma.</Text> )}
+                </ScrollView>
+              )}
+            </View>
+          </SafeAreaView>
+        </View>
+      </Modal>
+
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#F3F4F6' },
+  loadingCenter: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  loadingText: { marginTop: 10, color: '#0D2340', fontWeight: 'bold' },
+  inboxHeader: { backgroundColor: '#0D2340', paddingHorizontal: 20, paddingTop: 15, paddingBottom: 25, borderBottomLeftRadius: 20, borderBottomRightRadius: 20 },
+  inboxTitle: { fontSize: 26, fontWeight: 'bold', color: '#FFF' },
+  inboxSubtitle: { fontSize: 13, color: '#9CA3AF', marginTop: 2 },
+  chatListItem: { flexDirection: 'row', backgroundColor: '#FFF', padding: 15, borderRadius: 16, marginBottom: 15, elevation: 1, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 3, borderWidth: 1, borderColor: '#F9FAFB' },
+  chatListItemUnread: { backgroundColor: '#F0FDF4', borderColor: '#BBEFD3' },
+  chatListAvatar: { width: 56, height: 56, borderRadius: 28, marginRight: 15, backgroundColor: '#E5E7EB', borderWidth: 1, borderColor: '#E5E7EB' },
+  chatListTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 },
+  chatListName: { fontSize: 16, fontWeight: 'bold', color: '#0D2340', flex: 1, marginRight: 10 },
+  chatListDate: { fontSize: 11, color: '#9CA3AF', fontWeight: 'bold' },
+  chatListRole: { fontSize: 11, color: '#00D06C', fontWeight: 'bold', marginBottom: 4 },
+  chatListLastMsg: { fontSize: 14, color: '#4B5563', flex: 1 },
+  unreadDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#00D06C', marginLeft: 10 },
+  emptyInbox: { alignItems: 'center', marginTop: 60, paddingHorizontal: 30 },
+  emptyInboxTitle: { fontSize: 18, fontWeight: 'bold', color: '#0D2340', marginTop: 15, marginBottom: 5 },
+  emptyInboxText: { fontSize: 14, color: '#6B7280', textAlign: 'center' },
+  fab: { position: 'absolute', bottom: 90, right: 20, backgroundColor: '#00D06C', width: 60, height: 60, borderRadius: 30, justifyContent: 'center', alignItems: 'center', elevation: 5, shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 5 },
+  chatHeader: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#0D2340', paddingHorizontal: 15, paddingVertical: 15, borderBottomLeftRadius: 15, borderBottomRightRadius: 15 },
+  backBtn: { padding: 5, marginRight: 10 },
+  chatAvatar: { width: 40, height: 40, borderRadius: 20, marginRight: 12, backgroundColor: '#E5E7EB', borderWidth: 1, borderColor: '#FFF' },
+  chatName: { fontSize: 16, fontWeight: 'bold', color: '#FFF' },
+  chatRole: { fontSize: 11, color: '#00D06C', fontWeight: 'bold' },
+  privacyBanner: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FEF3C7', paddingHorizontal: 15, paddingVertical: 10, borderBottomWidth: 1, borderColor: '#FDE68A' },
+  privacyText: { flex: 1, fontSize: 11, color: '#B45309', fontWeight: 'bold' },
+  messagesContainer: { padding: 15, flexGrow: 1, justifyContent: 'flex-end' },
+  messageBubbleWrapper: { marginBottom: 12, flexDirection: 'row' },
+  messageMineWrapper: { justifyContent: 'flex-end' },
+  messageTheirsWrapper: { justifyContent: 'flex-start' },
+  messageBubble: { maxWidth: '80%', paddingHorizontal: 15, paddingVertical: 10, borderRadius: 18, overflow: 'hidden' },
+  messageMine: { backgroundColor: '#00D06C', borderBottomRightRadius: 4 },
+  messageTheirs: { backgroundColor: '#FFF', borderBottomLeftRadius: 4, borderWidth: 1, borderColor: '#E5E7EB' },
+  messageText: { fontSize: 15, lineHeight: 20 },
+  messageTextMine: { color: '#FFF' },
+  messageTextTheirs: { color: '#1F2937' },
+  messageTime: { fontSize: 10, marginTop: 5, alignSelf: 'flex-end' },
+  messageTimeMine: { color: 'rgba(255,255,255,0.8)' },
+  messageTimeTheirs: { color: '#9CA3AF' },
+  messageImage: { width: 220, height: 220, borderRadius: 12, marginBottom: 8, backgroundColor: '#E5E7EB', alignSelf: 'center' },
+  fileMessageBox: { flexDirection: 'row', alignItems: 'center', marginBottom: 8, padding: 8, borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.2)' },
+  fileMessageText: { fontSize: 13, fontWeight: 'bold', marginLeft: 8, flexShrink: 1 },
+  emptyMessagesBox: { alignItems: 'center', marginVertical: 40 },
+  emptyMessagesText: { fontSize: 16, fontWeight: 'bold', color: '#0D2340', marginTop: 10 },
+  emptyMessagesSub: { fontSize: 13, color: '#6B7280' },
+  blockedBannerContainer: { backgroundColor: '#FEE2E2', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', padding: 15, borderTopWidth: 1, borderColor: '#FCA5A5' },
+  blockedBannerText: { color: '#DC2626', fontWeight: 'bold', fontSize: 12, marginLeft: 10, flexShrink: 1, textAlign: 'center' },
+  previewBox: { flexDirection: 'row', padding: 15, backgroundColor: '#F3F4F6', borderTopWidth: 1, borderColor: '#E5E7EB', alignItems: 'center' },
+  previewImage: { width: 60, height: 60, borderRadius: 10 },
+  previewFile: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF', padding: 15, borderRadius: 12, flex: 1, borderWidth: 1, borderColor: '#E5E7EB' },
+  previewFileText: { marginLeft: 10, fontSize: 14, fontWeight: 'bold', color: '#0D2340', flex: 1 },
+  removePreviewBtn: { position: 'absolute', top: 5, right: 5, backgroundColor: '#FFF', borderRadius: 14 },
+  inputContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF', paddingHorizontal: 15, paddingTop: 10, borderTopWidth: 1, borderColor: '#E5E7EB' },
+  attachBtn: { marginRight: 10, padding: 5 },
+  textInput: { flex: 1, backgroundColor: '#F9FAFB', borderRadius: 20, paddingHorizontal: 15, paddingVertical: 10, fontSize: 15, color: '#1F2937', maxHeight: 100, borderWidth: 1, borderColor: '#E5E7EB' },
+  sendBtn: { backgroundColor: '#00D06C', width: 44, height: 44, borderRadius: 22, justifyContent: 'center', alignItems: 'center', marginLeft: 10 },
+  bottomNavigation: { backgroundColor: '#FFF', flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', borderTopWidth: 1, borderColor: '#E5E7EB', elevation: 15, shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 5, paddingVertical: 12 },
+  navItem: { alignItems: 'center', justifyContent: 'center', flex: 1, position: 'relative' },
+  navText: { fontSize: 10, color: '#6B7280', marginTop: 4, fontWeight: '600' },
+  modalBgDark: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)' },
+  modalBgDarkCenter: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', padding: 20 },
+  modalContainer: { backgroundColor: '#FFF', borderRadius: 20, padding: 25, elevation: 10 },
+  modalTitle: { fontSize: 20, fontWeight: 'bold', color: '#0D2340', marginBottom: 20 },
+  modalLabel: { fontSize: 12, fontWeight: 'bold', color: '#6B7280', marginBottom: 5, marginTop: 5 },
+  modalInput: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, padding: 12, marginBottom: 10, fontSize: 14, color: '#1F2937' },
+  pickerBox: { borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, backgroundColor: '#F9FAFB', marginBottom: 15, overflow: 'hidden' },
+  modalBtnRow: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 10 },
+  modalBtnCancel: { padding: 12, marginRight: 10 },
+  modalBtnTextC: { color: '#6B7280', fontWeight: 'bold', fontSize: 14 },
+  modalBtnSave: { paddingVertical: 12, paddingHorizontal: 20, borderRadius: 10, minWidth: 100, alignItems: 'center' },
+  modalBtnTextS: { color: '#FFF', fontWeight: 'bold', fontSize: 14 },
+  bottomSheet: { position: 'absolute', bottom: 0, width: '100%', backgroundColor: '#FFF', borderTopLeftRadius: 25, borderTopRightRadius: 25, padding: 20 },
+  sheetTitle: { fontSize: 18, fontWeight: 'bold', color: '#0D2340', marginBottom: 15, textAlign: 'center' },
+  sheetOption: { flexDirection: 'row', alignItems: 'center', paddingVertical: 18, borderBottomWidth: 1, borderColor: '#E5E7EB' },
+  sheetOptionText: { fontSize: 16, fontWeight: 'bold', color: '#1F2937' },
+  attachmentSheet: { position: 'absolute', bottom: 100, left: 20, right: 20, backgroundColor: '#FFF', borderRadius: 20, padding: 20 },
+  attachRow: { flexDirection: 'row', justifyContent: 'space-around' },
+  attachItem: { alignItems: 'center' },
+  attachIconBg: { width: 60, height: 60, borderRadius: 30, justifyContent: 'center', alignItems: 'center', marginBottom: 8, elevation: 3 },
+  attachLabel: { fontSize: 13, color: '#4B5563', fontWeight: 'bold' },
+  searchContainerInteligente: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 12, paddingHorizontal: 15 },
+  searchIcon: { marginRight: 10 },
+  searchInput: { flex: 1, fontSize: 15, color: '#1F2937', paddingVertical: 12 },
+  searchResultItem: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF', padding: 15, borderRadius: 12, marginBottom: 10, elevation: 1 },
+  searchResultAvatar: { width: 44, height: 44, borderRadius: 22, marginRight: 15, backgroundColor: '#E5E7EB' },
+  searchResultName: { fontSize: 16, fontWeight: 'bold', color: '#0D2340' },
+  searchResultRole: { fontSize: 12, color: '#00D06C', fontWeight: 'bold', marginTop: 2 },
+});
