@@ -10,9 +10,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 // FIREBASE
 // @ts-ignore
-import { createUserWithEmailAndPassword, deleteUser, User } from 'firebase/auth';
-import { doc, setDoc } from 'firebase/firestore';
-import { auth, db } from '../../firebaseConfig';
+import { createUserWithEmailAndPassword, deleteUser, signOut, User } from 'firebase/auth';
+import { auth } from '../../firebaseConfig';
 
 export default function RegistroScreen() {
   const [rol, setRol] = useState('Trabajador');
@@ -149,8 +148,9 @@ export default function RegistroScreen() {
   };
 
   // LA VERIFICACIÓN (OCR + COMPARACIÓN FACIAL) SE HACE EN NUESTRO SERVIDOR (backend/kyc-worker),
-  // ASÍ LAS LLAVES SECRETAS NUNCA VIAJAN DENTRO DE LA APP
-  const validarIdentidadIA = async (usuarioNuevo: User, urlINEFrente: string, urlSelfie: string, nombreCompleto: string) => {
+  // ASÍ LAS LLAVES SECRETAS NUNCA VIAJAN DENTRO DE LA APP.
+  // SI SE APRUEBA, EL SERVIDOR CREA EL PERFIL: LA APP NO PUEDE MARCARSE A SÍ MISMA COMO VERIFICADA.
+  const verificarYCrearPerfil = async (usuarioNuevo: User, perfil: Record<string, unknown>) => {
     const KYC_API_URL = process.env.EXPO_PUBLIC_KYC_API_URL;
     if (!KYC_API_URL) throw new Error("Falta configurar EXPO_PUBLIC_KYC_API_URL en el archivo .env");
 
@@ -158,7 +158,7 @@ export default function RegistroScreen() {
     const response = await fetch(`${KYC_API_URL}/verificar-identidad`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${idToken}` },
-      body: JSON.stringify({ urlINEFrente, urlSelfie, nombreCompleto }),
+      body: JSON.stringify(perfil),
     });
     const resultado = await response.json();
 
@@ -184,7 +184,6 @@ export default function RegistroScreen() {
       setEstadoIA('Creando seguridad...');
       const userCredential = await createUserWithEmailAndPassword(auth, correo, password);
       usuarioNuevo = userCredential.user;
-      const uid = usuarioNuevo.uid;
 
       setEstadoIA('Subiendo documentos cifrados...');
       const urlINEFrente = await subirFotoACloudinary(fotoINEFrente);
@@ -192,8 +191,10 @@ export default function RegistroScreen() {
       const urlSelfieGuardada = await subirFotoACloudinary(fotoSelfie);
 
       setEstadoIA('Analizando biometría...');
-      const nombreCompleto = `${nombre} ${apellidos}`;
-      const esIdentidadValida = await validarIdentidadIA(usuarioNuevo, urlINEFrente, urlSelfieGuardada, nombreCompleto);
+      const esIdentidadValida = await verificarYCrearPerfil(usuarioNuevo, {
+        rol, nombre, apellidos, telefono, usuario, oficio, ubicacion,
+        urlINEFrente, urlINEReverso, urlSelfie: urlSelfieGuardada,
+      });
 
       if (!esIdentidadValida) {
         // KYC RECHAZADO: SE BORRA LA CUENTA PARA QUE NO QUEDE A MEDIAS
@@ -205,15 +206,11 @@ export default function RegistroScreen() {
       // APAGAMOS EL ENVÍO DE CORREO POR AHORA PARA EVITAR EL BLOQUEO
       // await sendEmailVerification(userCredential.user);
 
-      const coleccionDestino = rol === 'Contratista' ? 'Contratistas' : 'Usuarios';
-      const datosUsuario: any = {
-        rol_usuario: rol, nombre, apellidos, correo, numero_telefono: telefono, nombre_usuario: usuario,
-        foto_ine_frente_url: urlINEFrente, foto_ine_reverso_url: urlINEReverso, foto_rostro_url: urlSelfieGuardada, 
-        ubicacion, kyc_aprobado: true, calificacion: '0.0', fecha_registro: new Date()
-      };
-      if (rol === 'Trabajador') datosUsuario.oficio_principal = oficio;
+      // EL PERFIL YA LO CREÓ EL SERVIDOR: A PARTIR DE AQUÍ LA CUENTA YA NO SE DEBE BORRAR SI ALGO FALLA.
+      usuarioNuevo = null;
 
-      await setDoc(doc(db, coleccionDestino, uid), datosUsuario);
+      // CERRAMOS LA SESIÓN QUE ABRIÓ createUserWithEmailAndPassword PARA QUE EL USUARIO ENTRE DESDE EL LOGIN, COMO DICE EL MENSAJE.
+      await signOut(auth);
 
       setProcesando(false);
       // MENSAJE DE ÉXITO DIRECTO

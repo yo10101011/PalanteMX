@@ -1,0 +1,168 @@
+rules_version = '2';
+
+// REGLAS DE SEGURIDAD DE PALANTEMX
+// Se publican copiando este archivo en: Consola de Firebase > Firestore Database > Reglas > Publicar.
+// Todo lo que no esté permitido aquí está PROHIBIDO.
+// El worker de KYC usa una cuenta de servicio, que se salta estas reglas: por eso él sí puede crear perfiles.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------------------------------------------------------------- AYUDANTES
+
+    function conSesion() {
+      return request.auth != null;
+    }
+
+    function esYo(uid) {
+      return conSesion() && request.auth.uid == uid;
+    }
+
+    // UN ADMIN ES QUIEN TIENE UN DOCUMENTO EN /Administradores/{su uid}. SOLO SE CREA A MANO DESDE LA CONSOLA.
+    function esAdmin() {
+      return conSesion() && exists(/databases/$(database)/documents/Administradores/$(request.auth.uid));
+    }
+
+    function esContratista() {
+      return conSesion() && exists(/databases/$(database)/documents/Contratistas/$(request.auth.uid));
+    }
+
+    function miPerfil() {
+      return exists(/databases/$(database)/documents/Usuarios/$(request.auth.uid))
+        ? get(/databases/$(database)/documents/Usuarios/$(request.auth.uid))
+        : get(/databases/$(database)/documents/Contratistas/$(request.auth.uid));
+    }
+
+    // UNA CUENTA BLOQUEADA POR EL ADMIN YA NO PUEDE PUBLICAR, POSTULARSE, ESCRIBIR MENSAJES NI CALIFICAR
+    function cuentaActiva() {
+      return conSesion() && miPerfil().data.get('estado_cuenta', 'Activa') != 'Bloqueada';
+    }
+
+    function camposCambiados() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
+
+    // CAMPOS DEL PERFIL QUE EL DUEÑO NO PUEDE TOCAR (LOS PONE EL SERVIDOR, EL ADMIN O LAS RESEÑAS)
+    function camposProtegidos() {
+      return ['rol_usuario', 'nombre', 'apellidos', 'correo', 'nombre_usuario', 'kyc_aprobado',
+              'estado_cuenta', 'fecha_registro', 'calificacion', 'numero_resenas', 'resenas'];
+    }
+
+    // REGLAS COMPARTIDAS POR /Usuarios (TRABAJADORES) Y /Contratistas
+    function puedeEditarPerfil(uid) {
+      return esAdmin()
+        // EL DUEÑO EDITA SU PERFIL, MENOS LOS CAMPOS PROTEGIDOS
+        || (esYo(uid) && !camposCambiados().hasAny(camposProtegidos()))
+        // OTRO USUARIO SOLO PUEDE DEJAR UNA RESEÑA (CALIFICACIÓN + LISTA DE RESEÑAS)
+        || (conSesion() && !esYo(uid) && cuentaActiva()
+            && camposCambiados().hasOnly(['calificacion', 'numero_resenas', 'resenas']));
+    }
+
+    // ---------------------------------------------------------------- PERFILES
+
+    match /Usuarios/{uid} {
+      allow read: if conSesion();
+      allow create: if false; // SOLO EL WORKER DE KYC CREA PERFILES
+      allow update: if puedeEditarPerfil(uid);
+      allow delete: if esYo(uid) || esAdmin();
+    }
+
+    match /Contratistas/{uid} {
+      allow read: if conSesion();
+      allow create: if false; // SOLO EL WORKER DE KYC CREA PERFILES
+      allow update: if puedeEditarPerfil(uid);
+      allow delete: if esYo(uid) || esAdmin();
+    }
+
+    // FOTOS DE LA INE: PRIVADAS. NADIE ESCRIBE DESDE LA APP.
+    match /Verificaciones/{uid} {
+      allow read: if esYo(uid) || esAdmin();
+      allow write: if false;
+    }
+
+    // LA APP SOLO PUEDE PREGUNTAR "¿YO SOY ADMIN?". LOS ADMINS SE CREAN A MANO EN LA CONSOLA.
+    match /Administradores/{uid} {
+      allow read: if esYo(uid);
+      allow write: if false;
+    }
+
+    // ---------------------------------------------------------------- BOLSA DE TRABAJO
+
+    match /Vacantes/{vacanteId} {
+      allow read: if conSesion();
+      allow create: if esContratista() && cuentaActiva()
+        && request.resource.data.id_contratista == request.auth.uid;
+      allow update: if esAdmin()
+        || (esYo(resource.data.id_contratista) && cuentaActiva()
+            && request.resource.data.id_contratista == resource.data.id_contratista);
+      allow delete: if esAdmin() || esYo(resource.data.id_contratista);
+    }
+
+    function duenoDeVacante(vacanteId) {
+      return get(/databases/$(database)/documents/Vacantes/$(vacanteId)).data.id_contratista == request.auth.uid;
+    }
+
+    match /Postulaciones/{postulacionId} {
+      allow read: if conSesion();
+      allow create: if cuentaActiva() && (
+        // EL TRABAJADOR SE POSTULA ÉL MISMO, SIEMPRE COMO 'Pendiente'
+        (request.resource.data.id_trabajador == request.auth.uid && request.resource.data.estado == 'Pendiente')
+        // O EL CONTRATISTA CONTRATA DIRECTO, SOLO EN SUS PROPIAS VACANTES
+        || (request.resource.data.id_contratista == request.auth.uid && duenoDeVacante(request.resource.data.id_vacante))
+      );
+      // SOLO EL DUEÑO DE LA VACANTE ACEPTA O RECHAZA, Y SOLO CAMBIA EL ESTADO
+      allow update: if esAdmin()
+        || (cuentaActiva() && duenoDeVacante(resource.data.id_vacante) && camposCambiados().hasOnly(['estado']));
+      allow delete: if esAdmin();
+    }
+
+    // ---------------------------------------------------------------- CHAT
+
+    match /Chats/{chatId} {
+      allow read: if conSesion() && request.auth.uid in resource.data.usuarios_ids;
+      allow update: if conSesion() && request.auth.uid in resource.data.usuarios_ids
+        && request.resource.data.usuarios_ids == resource.data.usuarios_ids
+        // UN CHAT BLOQUEADO SOLO LO PUEDE DESBLOQUEAR QUIEN LO BLOQUEÓ
+        && (resource.data.get('bloqueado', false) != true
+            || request.resource.data.get('bloqueado', false) == true
+            || resource.data.get('bloqueado_por', '') == request.auth.uid);
+      allow create: if cuentaActiva()
+        && request.resource.data.usuarios_ids.size() == 2
+        && request.auth.uid in request.resource.data.usuarios_ids;
+
+      function chat() {
+        return get(/databases/$(database)/documents/Chats/$(chatId)).data;
+      }
+
+      match /Mensajes/{mensajeId} {
+        allow read: if conSesion() && request.auth.uid in chat().usuarios_ids;
+        // NO SE PUEDE ESCRIBIR EN UN CHAT BLOQUEADO, NI A NOMBRE DE OTRA PERSONA
+        allow create: if cuentaActiva()
+          && request.auth.uid in chat().usuarios_ids
+          && chat().get('bloqueado', false) != true
+          && request.resource.data.emisor_id == request.auth.uid;
+      }
+    }
+
+    // ---------------------------------------------------------------- REPORTES Y RESEÑAS
+
+    match /Quejas_Soporte/{quejaId} {
+      allow create: if cuentaActiva() && request.resource.data.id_reportante == request.auth.uid;
+      allow read, update, delete: if esAdmin();
+    }
+
+    match /Resenas_Plataforma/{resenaId} {
+      allow read: if conSesion();
+      allow create: if cuentaActiva() && request.resource.data.evaluador_id == request.auth.uid;
+    }
+
+    // ---------------------------------------------------------------- SOLO ADMIN
+
+    match /Equipo_Soporte/{id} {
+      allow read, write: if esAdmin();
+    }
+
+    match /Sistema/{id} {
+      allow read, write: if esAdmin();
+    }
+  }
+}

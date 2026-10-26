@@ -179,9 +179,8 @@ export default function DashboardContratista() {
   };
 
   const guardarEdicionPerfil = async () => {
-    if (!editNombre || !editApellidos) { Alert.alert("Aviso", "Nombre y apellidos son obligatorios."); return; }
     setProcesando(true);
-    await updateDoc(doc(db, userData.refPath), { nombre: editNombre.toUpperCase(), apellidos: editApellidos.toUpperCase(), empresa: editEmpresa, ubicacion_texto: editUbicacion });
+    await updateDoc(doc(db, userData.refPath), { empresa: editEmpresa, ubicacion_texto: editUbicacion });
     await cargarPerfil(); setProcesando(false); setModalEditar(false);
   };
 
@@ -752,8 +751,9 @@ export default function DashboardContratista() {
           <View style={styles.modalContainer}>
             <Text style={styles.modalTitle}>Datos del Contratista</Text>
             <ScrollView showsVerticalScrollIndicator={false}>
-              <Text style={styles.modalLabel}>Nombre del Representante</Text><TextInput style={styles.modalInput} value={editNombre} onChangeText={setEditNombre} autoCapitalize="words"/>
-              <Text style={styles.modalLabel}>Apellidos</Text><TextInput style={styles.modalInput} value={editApellidos} onChangeText={setEditApellidos} autoCapitalize="words"/>
+              {/* NOMBRE Y APELLIDOS QUEDARON VERIFICADOS CONTRA LA INE: LAS REGLAS DE FIRESTORE NO PERMITEN CAMBIARLOS */}
+              <Text style={styles.modalLabel}>Nombre del Representante (verificado con INE)</Text><TextInput style={[styles.modalInput, {backgroundColor: '#E5E7EB', color: '#6B7280'}]} value={editNombre} editable={false}/>
+              <Text style={styles.modalLabel}>Apellidos (verificados con INE)</Text><TextInput style={[styles.modalInput, {backgroundColor: '#E5E7EB', color: '#6B7280'}]} value={editApellidos} editable={false}/>
               <Text style={styles.modalLabel}>Nombre de la Empresa</Text><TextInput style={styles.modalInput} placeholder="Ej. Constructora Palante" value={editEmpresa} onChangeText={setEditEmpresa} />
               <Text style={styles.modalLabel}>Sede / Ubicación Principal</Text><TextInput style={styles.modalInput} value={editUbicacion} onChangeText={setEditUbicacion} />
               <View style={styles.modalBtnRow}>

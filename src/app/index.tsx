@@ -8,18 +8,54 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 // FIREBASE
 // @ts-ignore
-import { sendPasswordResetEmail, signInWithEmailAndPassword } from 'firebase/auth';
-import { collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore'; // SE AGREGÓ doc, getDoc PARA LEER EL ROL
+import { sendPasswordResetEmail, signInWithEmailAndPassword, signOut } from 'firebase/auth';
+import { doc, getDoc } from 'firebase/firestore';
 import { auth, db } from '../../firebaseConfig';
 
+// SIN SESIÓN, LAS REGLAS DE FIRESTORE NO DEJAN LEER LA BASE DE DATOS,
+// ASÍ QUE EL SERVIDOR (backend/kyc-worker) ES QUIEN TRADUCE USUARIO/TELÉFONO A CORREO
+const resolverCorreo = async (identificador: string): Promise<string | null> => {
+  const KYC_API_URL = process.env.EXPO_PUBLIC_KYC_API_URL;
+  if (!KYC_API_URL) throw new Error("Falta configurar EXPO_PUBLIC_KYC_API_URL en el archivo .env");
+
+  const response = await fetch(`${KYC_API_URL}/resolver-usuario`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ identificador }),
+  });
+  if (response.status === 404) return null;
+  const resultado = await response.json();
+  if (!response.ok) throw new Error(resultado.error || "El servidor no respondió.");
+  return resultado.correo;
+};
+
+// DECIDE A DÓNDE VA CADA QUIEN DESPUÉS DE INICIAR SESIÓN (ADMIN, CONTRATISTA O TRABAJADOR)
+const redirigirSegunRol = async (uid: string) => {
+  const adminDoc = await getDoc(doc(db, 'Administradores', uid));
+  if (adminDoc.exists()) { router.replace('/admin' as any); return; }
+
+  const contratistaDoc = await getDoc(doc(db, 'Contratistas', uid));
+  const perfilDoc = contratistaDoc.exists() ? contratistaDoc : await getDoc(doc(db, 'Usuarios', uid));
+
+  if (!perfilDoc.exists()) {
+    await signOut(auth);
+    Alert.alert("Registro incompleto", "Tu cuenta no tiene un perfil verificado. Vuelve a registrarte.");
+    return;
+  }
+  if (perfilDoc.data().estado_cuenta === 'Bloqueada') {
+    await signOut(auth);
+    Alert.alert("Cuenta bloqueada", "Tu cuenta fue bloqueada por el equipo de PalanteMX. Contacta a soporte.");
+    return;
+  }
+
+  router.replace((contratistaDoc.exists() ? '/dashboard-contratista' : '/dashboard-trabajador') as any);
+};
+
 export default function LoginScreen() {
-  const [identificador, setIdentificador] = useState(''); 
+  const [identificador, setIdentificador] = useState('');
   const [password, setPassword] = useState('');
   const [mostrarPassword, setMostrarPassword] = useState(false);
   const [cargando, setCargando] = useState(false);
-
-  const [modalAdminVisible, setModalAdminVisible] = useState(false);
-  const [adminPin, setAdminPin] = useState('');
 
   // ESTADOS PARA RECUPERAR CONTRASEÑA
   const [modalRecuperarVisible, setModalRecuperarVisible] = useState(false);
@@ -36,29 +72,13 @@ export default function LoginScreen() {
 
     try {
       if (!correoFinalParaLogin.includes('@')) {
-        const usuariosRef = collection(db, "Usuarios");
-        const contratistasRef = collection(db, "Contratistas");
-        
-        const qUsuario = query(usuariosRef, where("nombre_usuario", "==", correoFinalParaLogin));
-        const qTelefono = query(usuariosRef, where("numero_telefono", "==", correoFinalParaLogin));
-        
-        let querySnapshot = await getDocs(qUsuario);
-        if (querySnapshot.empty) querySnapshot = await getDocs(qTelefono);
-
-        if (querySnapshot.empty) {
-            const qContraUser = query(contratistasRef, where("nombre_usuario", "==", correoFinalParaLogin));
-            const qContraTel = query(contratistasRef, where("numero_telefono", "==", correoFinalParaLogin));
-            querySnapshot = await getDocs(qContraUser);
-            if (querySnapshot.empty) querySnapshot = await getDocs(qContraTel);
-        }
-
-        if (!querySnapshot.empty) {
-          correoFinalParaLogin = querySnapshot.docs[0].data().correo;
-        } else {
+        const correoEncontrado = await resolverCorreo(correoFinalParaLogin);
+        if (!correoEncontrado) {
           setCargando(false);
           Alert.alert("Error", "No encontramos ninguna cuenta con ese usuario o teléfono.");
           return;
         }
+        correoFinalParaLogin = correoEncontrado;
       }
 
       // LOGEO EN FIREBASE
@@ -76,16 +96,8 @@ export default function LoginScreen() {
       --------------------------------------------------------------------------- */
 
       // LÓGICA DE REDIRECCIÓN AUTOMÁTICA
-      const contratistaDoc = await getDoc(doc(db, 'Contratistas', uid));
+      await redirigirSegunRol(uid);
       setCargando(false);
-
-      if (contratistaDoc.exists()) {
-        // SI ES CONTRATISTA, LO MANDA A SU DASHBOARD
-        router.replace('/dashboard-contratista' as any);
-      } else {
-        // SI ES TRABAJADOR, LO MANDA AL SUYO
-        router.replace('/dashboard-trabajador' as any);
-      }
 
     } catch (error: any) {
       setCargando(false);
@@ -122,14 +134,8 @@ export default function LoginScreen() {
           -------------------------------------------------- */
 
           // REDIRECCIÓN INTELIGENTE TAMBIÉN CON HUELLA
-          const contratistaDoc = await getDoc(doc(db, 'Contratistas', uid));
+          await redirigirSegunRol(uid);
           setCargando(false);
-
-          if (contratistaDoc.exists()) {
-            router.replace('/dashboard-contratista' as any);
-          } else {
-            router.replace('/dashboard-trabajador' as any);
-          }
 
         } else {
           Alert.alert("Vínculo Requerido", "Inicia sesión manualmente la primera vez para vincular tu huella.");
@@ -157,14 +163,6 @@ export default function LoginScreen() {
       } else {
         Alert.alert("Error", "Hubo un problema. Verifica tu conexión.");
       }
-    }
-  };
-
-  const verificarAdmin = () => {
-    if (adminPin === '123456') {
-      setModalAdminVisible(false); setAdminPin(''); router.push('/admin' as any); 
-    } else {
-      Alert.alert("Bloqueo", "PIN incorrecto."); setAdminPin('');
     }
   };
 
@@ -223,11 +221,6 @@ export default function LoginScreen() {
             </TouchableOpacity>
           </View>
 
-          <TouchableOpacity style={styles.adminButton} onPress={() => setModalAdminVisible(true)}>
-            <Ionicons name="shield-checkmark" size={14} color="#6B7280" style={{marginRight: 5}} />
-            <Text style={styles.adminButtonText}>Portal de Administración</Text>
-          </TouchableOpacity>
-          
         </ScrollView>
       </KeyboardAvoidingView>
 
@@ -245,21 +238,6 @@ export default function LoginScreen() {
               <TouchableOpacity style={styles.modalBtnSubmit} onPress={enviarCorreoRecuperacion}>
                 <Text style={styles.modalBtnTextSubmit}>ENVIAR</Text>
               </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      {/* MODAL ADMIN */}
-      <Modal visible={modalAdminVisible} transparent animationType="fade">
-        <View style={styles.modalBackground}>
-          <View style={styles.modalBox}>
-            <View style={styles.modalHeader}><Ionicons name="lock-closed" size={32} color="#FFFFFF" /></View>
-            <Text style={styles.modalTitle}>Acceso Restringido</Text>
-            <TextInput style={styles.modalInput} placeholder="PIN de Seguridad" value={adminPin} onChangeText={setAdminPin} keyboardType="numeric" secureTextEntry maxLength={6} />
-            <View style={styles.modalButtons}>
-              <TouchableOpacity style={styles.modalBtnCancel} onPress={() => { setModalAdminVisible(false); setAdminPin(''); }}><Text style={styles.modalBtnTextCancel}>CANCELAR</Text></TouchableOpacity>
-              <TouchableOpacity style={styles.modalBtnSubmit} onPress={verificarAdmin}><Text style={styles.modalBtnTextSubmit}>VERIFICAR</Text></TouchableOpacity>
             </View>
           </View>
         </View>
@@ -295,11 +273,8 @@ const styles = StyleSheet.create({
   footer: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginTop: 30, marginBottom: 15 },
   footerText: { color: '#D1D5DB', fontSize: 15 },
   registerText: { color: '#00D06C', fontSize: 15, fontWeight: 'bold' },
-  adminButton: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginTop: 10, marginBottom: 20 },
-  adminButtonText: { color: '#6B7280', fontSize: 12, fontWeight: 'bold', letterSpacing: 0.5 },
   modalBackground: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center', padding: 20 },
   modalBox: { width: '100%', backgroundColor: '#FFFFFF', borderRadius: 20, overflow: 'hidden' },
-  modalHeader: { backgroundColor: '#D32F2F', padding: 20, alignItems: 'center' },
   modalTitle: { fontSize: 20, fontWeight: 'bold', color: '#0D2340', textAlign: 'center', marginTop: 20 },
   modalSubtitle: { fontSize: 13, color: '#6B7280', textAlign: 'center', paddingHorizontal: 20, marginTop: 8, marginBottom: 20 },
   modalInput: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 12, padding: 15, marginHorizontal: 20, fontSize: 18, textAlign: 'center', letterSpacing: 5, marginBottom: 20 },

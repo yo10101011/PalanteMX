@@ -172,9 +172,9 @@ export default function DashboardTrabajador() {
   };
 
   const guardarEdicionPerfil = async () => {
-    if (!editNombre || !editApellidos || !editUbicacion) { Alert.alert("Aviso", "Llena tu nombre, apellidos y ubicación exacta."); return; }
+    if (!editUbicacion) { Alert.alert("Aviso", "Llena tu ubicación exacta."); return; }
     setProcesando(true);
-    await updateDoc(doc(db, userData.refPath), { nombre: editNombre.toUpperCase(), apellidos: editApellidos.toUpperCase(), oficio_principal: editOficio, ubicacion_texto: editUbicacion });
+    await updateDoc(doc(db, userData.refPath), { oficio_principal: editOficio, ubicacion_texto: editUbicacion });
     await cargarPerfil(); setProcesando(false); setModalEditar(false);
   };
 
@@ -638,8 +638,9 @@ export default function DashboardTrabajador() {
           <View style={styles.modalContainer}>
             <Text style={styles.modalTitle}>Editar Mi Perfil</Text>
             <ScrollView showsVerticalScrollIndicator={false}>
-              <Text style={styles.modalLabel}>Nombres Oficiales</Text><TextInput style={styles.modalInput} value={editNombre} onChangeText={setEditNombre} autoCapitalize="characters"/>
-              <Text style={styles.modalLabel}>Apellidos</Text><TextInput style={styles.modalInput} value={editApellidos} onChangeText={setEditApellidos} autoCapitalize="characters"/>
+              {/* NOMBRE Y APELLIDOS QUEDARON VERIFICADOS CONTRA LA INE: LAS REGLAS DE FIRESTORE NO PERMITEN CAMBIARLOS */}
+              <Text style={styles.modalLabel}>Nombres Oficiales (verificados con tu INE)</Text><TextInput style={[styles.modalInput, {backgroundColor: '#E5E7EB', color: '#6B7280'}]} value={editNombre} editable={false}/>
+              <Text style={styles.modalLabel}>Apellidos (verificados con tu INE)</Text><TextInput style={[styles.modalInput, {backgroundColor: '#E5E7EB', color: '#6B7280'}]} value={editApellidos} editable={false}/>
               <Text style={styles.modalLabel}>Ubicación visible en perfil</Text><TextInput style={styles.modalInput} placeholder="Ej. San Felipe del Progreso, Edo Mex" value={editUbicacion} onChangeText={setEditUbicacion} />
               <Text style={styles.modalLabel}>Oficio Principal</Text>
               <View style={styles.pickerBox}>

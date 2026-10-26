@@ -24,8 +24,9 @@ LogBox.ignoreLogs(['@firebase/firestore', "WebChannelConnection RPC", "Name: und
 
 // FIREBASE
 // @ts-ignore
+import { signOut } from 'firebase/auth';
 import { collection, deleteDoc, doc, getDoc, getDocs, setDoc, updateDoc } from 'firebase/firestore';
-import { db } from '../../firebaseConfig';
+import { auth, db } from '../../firebaseConfig';
 
 const { width } = Dimensions.get('window');
 
@@ -97,7 +98,28 @@ export default function AdminDashboard() {
     } catch (error) { console.log("Error cargando panel admin:", error); } finally { setCargando(false); }
   };
 
-  useEffect(() => { cargarDatosAdmin(); }, []);
+  // SOLO ENTRA QUIEN TIENE SESIÓN Y UN DOCUMENTO EN /Administradores/{uid} (SE CREA A MANO EN LA CONSOLA DE FIREBASE).
+  // LAS REGLAS DE FIRESTORE HACEN LA MISMA REVISIÓN DEL LADO DEL SERVIDOR; ESTO SOLO EVITA MOSTRAR UNA PANTALLA VACÍA.
+  useEffect(() => {
+    const verificarAccesoAdmin = async () => {
+      const usuarioActual = auth.currentUser;
+      if (!usuarioActual) { router.replace('/' as any); return; }
+      try {
+        const adminDoc = await getDoc(doc(db, 'Administradores', usuarioActual.uid));
+        if (!adminDoc.exists()) { await signOut(auth); router.replace('/' as any); return; }
+        await cargarDatosAdmin();
+      } catch (error) {
+        console.log("Error verificando acceso de administrador:", error);
+        router.replace('/' as any);
+      }
+    };
+    verificarAccesoAdmin();
+  }, []);
+
+  const cerrarSesionAdmin = async () => {
+    await signOut(auth);
+    router.replace('/' as any);
+  };
 
   const subirFotoACloudinary = async (base64String: string) => {
     const CLOUD_NAME = "ylqsvel1"; const UPLOAD_PRESET = "palante_fotos"; 
@@ -246,7 +268,7 @@ export default function AdminDashboard() {
             <Text style={styles.headerSubtitle}>Centro de Monitoreo</Text>
           </View>
         </View>
-        <TouchableOpacity onPress={() => router.replace('/' as any)}>
+        <TouchableOpacity onPress={cerrarSesionAdmin}>
           <Ionicons name="log-out-outline" size={28} color="#FFF" />
         </TouchableOpacity>
       </View>

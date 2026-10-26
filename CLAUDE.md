@@ -26,9 +26,11 @@ npm run deploy          # wrangler deploy; secrets are set with `npx wrangler se
 npm run typecheck
 ```
 
-The app reaches the worker through `EXPO_PUBLIC_KYC_API_URL` in `.env`.
+The app reaches the worker through `EXPO_PUBLIC_KYC_API_URL` in `.env`. Worker secrets: `OCR_KEY`, `FACE_KEY`, `FACE_SECRET`, `FIREBASE_SERVICE_ACCOUNT` (full service-account JSON, piped in: `Get-Content cuenta.json -Raw | npx wrangler secret put FIREBASE_SERVICE_ACCOUNT`).
 
-The project is not a git repository yet.
+Firestore security rules live in `firestore.rules` (repo root) and are published by pasting them into Firebase console → Firestore → Reglas. Any client write you add must be allowed there.
+
+Git: `git` is not on PATH in this machine's shell; use `& "C:\Program Files\Git\cmd\git.exe"`. Everything must stay on free tiers (Firebase Spark — no Cloud Functions — and Cloudflare Workers free), which is why server-side logic lives in the Worker.
 
 ## Architecture
 
@@ -36,17 +38,18 @@ The project is not a git repository yet.
 
 **Routing:** `src/app/_layout.tsx` is a header-less `Stack`. There is no tab navigator: each screen draws its own fake bottom bar and jumps between screens with `router.push(... as any)`. Screens switch internal "tabs" with a `pestañaActiva` state string; `mensajes.tsx` passes `params.tab` to the dashboards (only `dashboard-trabajador` reads it).
 
-- `index.tsx` login → after `signInWithEmailAndPassword`, routes to `/dashboard-contratista` if `Contratistas/{uid}` exists, else `/dashboard-trabajador`. Login by username/phone first queries both collections to resolve the email.
+- `index.tsx` login → after `signInWithEmailAndPassword`, `redirigirSegunRol` sends `Administradores/{uid}` → `/admin`, `Contratistas/{uid}` → `/dashboard-contratista`, `Usuarios/{uid}` → `/dashboard-trabajador`; no profile or `estado_cuenta === 'Bloqueada'` → sign out. Login by username/phone calls the worker's `/resolver-usuario` (unauthenticated clients can't read Firestore).
 - Worker flow: `dashboard-trabajador` ⇄ `feed` (job board + my applications) ⇄ `mensajes`.
 - Contratista flow: `dashboard-contratista` ⇄ `mensajes`.
-- `admin.tsx` is reached via a hardcoded PIN in `index.tsx`, with no Firebase auth.
+- `admin.tsx`: admins are normal Firebase Auth users with a doc in `Administradores/{uid}`, created by hand in the console (no client can write it). The screen re-checks this on mount; the rules enforce it server-side.
 - `src/app/explore.tsx`, everything in `src/components/`, `src/hooks/`, `src/constants/theme.ts`, `src/global.css` and `scripts/reset-project.js` are leftover create-expo-app template code that no real screen uses.
 
 **Screens are monoliths:** each file in `src/app/` contains all its state, Firebase calls, modals and `StyleSheet` inline (the dashboards are 1000+ lines). Much logic is copy-pasted across screens: `subirFotoACloudinary`, the report (`Quejas_Soporte`) and review modals/handlers, `eliminarCuenta`/`cerrarSesion`, reverse geocoding, the bottom nav. When fixing one copy, check the others.
 
 **Firebase** (`firebaseConfig.js` at repo root, imported as `'../../firebaseConfig'`): exports `auth` (AsyncStorage persistence), `db` and `storage` (`storage` is unused). No `onAuthStateChanged` anywhere; screens read `auth.currentUser` on mount. Firestore collections:
 
-- `Usuarios` = workers, `Contratistas` = employers. The role is implied by which collection holds `{uid}`, and is duplicated in `rol_usuario`. Screens fall back to the other collection if the doc is missing.
+- `Usuarios` = workers, `Contratistas` = employers. The role is implied by which collection holds `{uid}`, and is duplicated in `rol_usuario`. Screens fall back to the other collection if the doc is missing. Only the worker creates these docs; owners can't change `camposProtegidos()` in the rules (name, KYC flag, account state, ratings…); other users may only touch `calificacion`/`numero_resenas`/`resenas` (reviews).
+- `Verificaciones/{uid}` (private INE photo URLs, worker-written, readable by owner/admin) and `Administradores/{uid}`.
 - A worker's portfolio (`portafolio[]`) and each work's daily log (`bitacora[]`) are arrays inside the worker's user doc, keyed by `id_obra` but matched to vacancies by **title** (`titulo === titulo_vacante`).
 - `Vacantes` (`id_contratista`, `cupo_total`/`cupo_actual`, `estado` 'Activa'|'Cerrada'), `Postulaciones` (`id_trabajador`, `id_vacante`, `estado` 'Pendiente'|'Aceptada (En Proceso)'|'Rechazada'; contratista "direct hire" creates these with a different shape).
 - `Chats` (`usuarios_ids[]`, denormalized `datos_usuarios`, `leido`, `bloqueado`) with subcollection `Mensajes`; `Quejas_Soporte`; `Resenas_Plataforma`; `Equipo_Soporte`; `Sistema/AdminProfile`.
@@ -54,4 +57,4 @@ The project is not a git repository yet.
 
 **Media:** every image/file goes to Cloudinary through an unsigned upload preset (cloud name and preset hardcoded in each screen) as base64 data URIs, not Firebase Storage.
 
-**Registration / KYC** (`registro.tsx`): captures INE front/back + selfie with `expo-camera` (the "face detected" state is a timer, not real detection), gets GPS, creates the Auth user, uploads the photos to Cloudinary, then POSTs the Cloudinary URLs plus the Firebase ID token to the worker's `/verificar-identidad`. The worker verifies the token against Google's JWKS, accepts only URLs from its own Cloudinary account, runs OCR.space (name must match the INE) and Face++ compare, and returns `{aprobado, motivo}`. On rejection or error the app deletes the Auth user; on success the **client** writes the profile doc with `kyc_aprobado: true`.
+**Registration / KYC** (`registro.tsx`): captures INE front/back + selfie with `expo-camera` (the "face detected" state is a timer, not real detection), gets GPS, creates the Auth user, uploads the photos to Cloudinary, then POSTs the profile data + Cloudinary URLs with the Firebase ID token to the worker's `/verificar-identidad`. The worker verifies the token against Google's JWKS (uid and email come from the token, not the body), validates the fields, accepts only URLs from its own Cloudinary account, runs OCR.space (name must match the INE) and Face++ compare, and on approval **the worker** writes `Verificaciones/{uid}` and creates the profile doc (`kyc_aprobado: true`, `estado_cuenta: 'Activa'`) via the Firestore REST API with a service account (create-only, so it can't be overwritten). It returns `{aprobado, motivo}`; on rejection or error the app deletes the Auth user, on success it signs out and sends the user to the login.

@@ -3,3 +3,5 @@
 OCR_KEY=tu_llave_nueva_de_ocr_space
 FACE_KEY=tu_api_key_nueva_de_faceplusplus
 FACE_SECRET=tu_api_secret_nuevo_de_faceplusplus
+# El JSON completo de la cuenta de servicio de Firebase, en UNA sola línea y entre comillas simples.
+FIREBASE_SERVICE_ACCOUNT='{"type":"service_account","project_id":"palantemx-2a5aa","client_email":"...","private_key":"-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"}'
