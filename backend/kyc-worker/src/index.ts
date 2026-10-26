@@ -38,32 +38,37 @@ export default {
     const url = new URL(request.url);
     if (request.method === 'POST' && url.pathname === '/verificar-identidad') return verificarIdentidad(request, env);
     if (request.method === 'POST' && url.pathname === '/resolver-usuario') return resolverUsuario(request, env);
+    if (request.method === 'POST' && url.pathname === '/admin/migrar-ine') return migrarFotosINE(request, env);
     return responder(404, { error: 'Ruta no encontrada' });
   },
+};
+
+// COMPRUEBA QUE QUIEN LLAMA TIENE SESIÓN EN FIREBASE Y DEVUELVE SU UID Y CORREO (SACADOS DEL TOKEN, NO DEL CUERPO)
+const verificarSesion = async (request: Request, env: Env): Promise<{ uid: string; correo: string } | null> => {
+  const authHeader = request.headers.get('Authorization') || '';
+  const idToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+  if (!idToken) return null;
+
+  try {
+    const { payload } = await jwtVerify(idToken, FIREBASE_JWKS, {
+      issuer: `https://securetoken.google.com/${env.FIREBASE_PROJECT_ID}`,
+      audience: env.FIREBASE_PROJECT_ID,
+    });
+    if (typeof payload.sub !== 'string' || typeof payload.email !== 'string') return null;
+    return { uid: payload.sub, correo: payload.email };
+  } catch {
+    return null;
+  }
 };
 
 // =========================================================================
 // RUTA 1: VERIFICAR IDENTIDAD Y CREAR EL PERFIL
 // =========================================================================
 const verificarIdentidad = async (request: Request, env: Env) => {
-  // 1. COMPROBAR QUE QUIEN LLAMA TIENE SESIÓN EN FIREBASE (Y SACAR SU UID Y CORREO DEL TOKEN, NO DEL CUERPO)
-  const authHeader = request.headers.get('Authorization') || '';
-  const idToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
-  if (!idToken) return responder(401, { error: 'Falta el token de sesión' });
-
-  let uid: string;
-  let correo: string;
-  try {
-    const { payload } = await jwtVerify(idToken, FIREBASE_JWKS, {
-      issuer: `https://securetoken.google.com/${env.FIREBASE_PROJECT_ID}`,
-      audience: env.FIREBASE_PROJECT_ID,
-    });
-    if (typeof payload.sub !== 'string' || typeof payload.email !== 'string') throw new Error('Token sin uid o correo');
-    uid = payload.sub;
-    correo = payload.email;
-  } catch {
-    return responder(401, { error: 'Sesión inválida o expirada' });
-  }
+  // 1. COMPROBAR QUE QUIEN LLAMA TIENE SESIÓN EN FIREBASE
+  const sesion = await verificarSesion(request, env);
+  if (!sesion) return responder(401, { error: 'Sesión inválida o expirada' });
+  const { uid, correo } = sesion;
 
   // 2. LEER Y VALIDAR LOS DATOS QUE MANDA LA APP
   let datos: Record<string, unknown>;
@@ -240,6 +245,69 @@ const resolverUsuario = async (request: Request, env: Env) => {
 };
 
 // =========================================================================
+// RUTA 3 (TEMPORAL, SOLO ADMIN): SACAR LAS FOTOS DE LA INE DE LOS PERFILES VIEJOS
+// ANTES, LA APP GUARDABA foto_ine_frente_url Y foto_ine_reverso_url EN EL PERFIL PÚBLICO.
+// ESTA RUTA LAS COPIA A /Verificaciones/{uid} (PRIVADA) Y LAS BORRA DEL PERFIL.
+// SE PUEDE LLAMAR VARIAS VECES SIN DAÑAR NADA. SE QUITA EN CUANTO SE HAYA USADO.
+// =========================================================================
+const CAMPOS_INE = ['foto_ine_frente_url', 'foto_ine_reverso_url'];
+
+const migrarFotosINE = async (request: Request, env: Env) => {
+  const sesion = await verificarSesion(request, env);
+  if (!sesion) return responder(401, { error: 'Sesión inválida o expirada' });
+
+  try {
+    if (!(await existeDocumento(env, 'Administradores', sesion.uid))) {
+      return responder(403, { error: 'Solo un administrador puede hacer esto.' });
+    }
+
+    const nombreBase = `projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents`;
+    const escrituras: Record<string, unknown>[] = [];
+    let revisados = 0;
+    let migrados = 0;
+
+    for (const coleccion of ['Usuarios', 'Contratistas']) {
+      const perfiles = await listarDocumentos(env, coleccion, CAMPOS_INE);
+      revisados += perfiles.length;
+
+      for (const perfil of perfiles) {
+        const fotos = CAMPOS_INE.filter(campo => perfil.campos[campo]?.stringValue);
+        if (fotos.length === 0) continue;
+        migrados++;
+
+        // 1. COPIAR A /Verificaciones (SOLO ESTOS CAMPOS; SI EL DOCUMENTO YA EXISTE, LO DEMÁS SE CONSERVA)
+        escrituras.push({
+          update: {
+            name: `${nombreBase}/Verificaciones/${perfil.id}`,
+            fields: {
+              ...Object.fromEntries(fotos.map(campo => [campo, perfil.campos[campo]])),
+              migrado_desde_perfil: { timestampValue: new Date().toISOString() },
+            },
+          },
+          updateMask: { fieldPaths: [...fotos, 'migrado_desde_perfil'] },
+        });
+        // 2. BORRAR LOS CAMPOS DEL PERFIL PÚBLICO (UN CAMPO EN LA MÁSCARA PERO SIN VALOR = SE BORRA)
+        escrituras.push({
+          update: { name: `${nombreBase}/${coleccion}/${perfil.id}`, fields: {} },
+          updateMask: { fieldPaths: CAMPOS_INE },
+          currentDocument: { exists: true },
+        });
+      }
+    }
+
+    // TODAS LAS ESCRITURAS EN BLOQUES DE 400 (FIRESTORE ACEPTA HASTA 500 POR OPERACIÓN)
+    for (let i = 0; i < escrituras.length; i += 400) {
+      await confirmarEscrituras(env, escrituras.slice(i, i + 400));
+    }
+
+    return responder(200, { revisados, migrados });
+  } catch (error) {
+    console.log('Error migrando fotos de INE', error);
+    return responder(502, { error: 'No se pudo completar la migración. Intenta de nuevo.' });
+  }
+};
+
+// =========================================================================
 // ACCESO A FIRESTORE CON LA CUENTA DE SERVICIO (API REST, SIN LIBRERÍAS EXTRA)
 // LA CUENTA DE SERVICIO SE SALTA LAS REGLAS DE SEGURIDAD: POR ESO SOLO VIVE AQUÍ, NUNCA EN LA APP.
 // =========================================================================
@@ -316,6 +384,59 @@ const buscarCorreo = async (env: Env, coleccion: string, campo: string, valor: s
 
   const resultados = (await respuesta.json()) as { document?: { fields?: Record<string, { stringValue?: string }> } }[];
   return resultados[0]?.document?.fields?.correo?.stringValue || null;
+};
+
+const existeDocumento = async (env: Env, coleccion: string, id: string) => {
+  const token = await obtenerTokenGoogle(env);
+  // mask.fieldPaths = DESCARGA SOLO UN CAMPO PEQUEÑO; LO QUE IMPORTA ES SI RESPONDE 200 (EXISTE) O 404 (NO EXISTE)
+  const respuesta = await fetch(`${urlDocumentos(env)}/${coleccion}/${encodeURIComponent(id)}?mask.fieldPaths=nombre`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (respuesta.status === 404) return false;
+  if (!respuesta.ok) throw new Error(`Firestore respondió ${respuesta.status}: ${await respuesta.text()}`);
+  return true;
+};
+
+type DocumentoListado = { id: string; campos: Record<string, { stringValue?: string }> };
+
+// LISTA TODOS LOS DOCUMENTOS DE UNA COLECCIÓN, DESCARGANDO SOLO LOS CAMPOS PEDIDOS
+const listarDocumentos = async (env: Env, coleccion: string, campos: string[]) => {
+  const token = await obtenerTokenGoogle(env);
+  const documentos: DocumentoListado[] = [];
+  let pageToken = '';
+
+  do {
+    const parametros = new URLSearchParams({ pageSize: '300' });
+    campos.forEach(campo => parametros.append('mask.fieldPaths', campo));
+    if (pageToken) parametros.set('pageToken', pageToken);
+
+    const respuesta = await fetch(`${urlDocumentos(env)}/${coleccion}?${parametros}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!respuesta.ok) throw new Error(`Firestore respondió ${respuesta.status}: ${await respuesta.text()}`);
+
+    const pagina = (await respuesta.json()) as {
+      documents?: { name: string; fields?: DocumentoListado['campos'] }[];
+      nextPageToken?: string;
+    };
+    for (const documento of pagina.documents || []) {
+      documentos.push({ id: documento.name.split('/').pop() as string, campos: documento.fields || {} });
+    }
+    pageToken = pagina.nextPageToken || '';
+  } while (pageToken);
+
+  return documentos;
+};
+
+// APLICA VARIAS ESCRITURAS DE UNA SOLA VEZ: O SE GUARDAN TODAS, O NINGUNA
+const confirmarEscrituras = async (env: Env, writes: Record<string, unknown>[]) => {
+  const token = await obtenerTokenGoogle(env);
+  const respuesta = await fetch(`${urlDocumentos(env)}:commit`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ writes }),
+  });
+  if (!respuesta.ok) throw new Error(`Firestore respondió ${respuesta.status}: ${await respuesta.text()}`);
 };
 
 // CONVIERTE VALORES DE JAVASCRIPT AL FORMATO QUE ESPERA LA API REST DE FIRESTORE
