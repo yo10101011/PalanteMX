@@ -38,6 +38,7 @@ export default {
     const url = new URL(request.url);
     if (request.method === 'POST' && url.pathname === '/verificar-identidad') return verificarIdentidad(request, env);
     if (request.method === 'POST' && url.pathname === '/resolver-usuario') return resolverUsuario(request, env);
+    if (request.method === 'POST' && url.pathname === '/resenas') return crearResena(request, env);
     return responder(404, { error: 'Ruta no encontrada' });
   },
 };
@@ -244,6 +245,154 @@ const resolverUsuario = async (request: Request, env: Env) => {
 };
 
 // =========================================================================
+// RUTA 3: DEJAR UNA RESEÑA
+// SOLO SE PUEDE CALIFICAR A ALGUIEN CON QUIEN SE TRABAJÓ (POSTULACIÓN ACEPTADA), UNA SOLA VEZ,
+// Y EL PROMEDIO LO CALCULA EL SERVIDOR. LAS REGLAS DE FIRESTORE YA NO DEJAN QUE LA APP TOQUE ESTOS CAMPOS.
+// =========================================================================
+const ESTADO_ACEPTADA = 'Aceptada (En Proceso)';
+
+const crearResena = async (request: Request, env: Env) => {
+  const sesion = await verificarSesion(request, env);
+  if (!sesion) return responder(401, { error: 'Sesión inválida o expirada' });
+  const idEvaluador = sesion.uid;
+
+  let datos: { id_evaluado?: unknown; estrellas?: unknown; comentario?: unknown };
+  try {
+    datos = await request.json();
+  } catch {
+    return responder(400, { error: 'Cuerpo de la petición inválido' });
+  }
+  const { id_evaluado: idEvaluado, estrellas, comentario } = datos;
+  if (!textoValido(idEvaluado, 128) || !textoValido(comentario, 500)) {
+    return responder(400, { error: 'Escribe un comentario (máximo 500 caracteres).' });
+  }
+  if (typeof estrellas !== 'number' || !Number.isInteger(estrellas) || estrellas < 1 || estrellas > 5) {
+    return responder(400, { error: 'La calificación debe ser de 1 a 5 estrellas.' });
+  }
+  if (idEvaluado === idEvaluador) return responder(400, { error: 'No puedes calificarte a ti mismo.' });
+
+  try {
+    // HASTA 2 INTENTOS: SI OTRA PERSONA CALIFICA AL MISMO TIEMPO, SE VUELVE A LEER Y A CALCULAR
+    for (let intento = 0; intento < 2; intento++) {
+      const docs = await leerDocumentos(env, [
+        `Usuarios/${idEvaluador}`, `Contratistas/${idEvaluador}`,
+        `Usuarios/${idEvaluado}`, `Contratistas/${idEvaluado}`,
+        `Resenas_Plataforma/${idEvaluador}_${idEvaluado}`,
+      ]);
+      const evaluador = docs[`Usuarios/${idEvaluador}`] || docs[`Contratistas/${idEvaluador}`];
+      const rutaEvaluado = docs[`Usuarios/${idEvaluado}`] ? `Usuarios/${idEvaluado}` : `Contratistas/${idEvaluado}`;
+      const evaluado = docs[rutaEvaluado];
+
+      if (!evaluador) return responder(403, { error: 'Tu cuenta no tiene un perfil verificado.' });
+      if (texto(evaluador.fields.estado_cuenta) === 'Bloqueada') return responder(403, { error: 'Tu cuenta está bloqueada.' });
+      if (!evaluado) return responder(404, { error: 'No se encontró el perfil de este usuario.' });
+      if (docs[`Resenas_Plataforma/${idEvaluador}_${idEvaluado}`]) {
+        return responder(409, { error: 'Ya calificaste a esta persona. Solo se permite una reseña por persona.' });
+      }
+      if (!(await trabajaronJuntos(env, idEvaluador, idEvaluado))) {
+        return responder(403, { error: 'Solo puedes calificar a alguien con quien hayas trabajado (una postulación aceptada en la plataforma).' });
+      }
+
+      const numeroActual = Number(evaluado.fields.numero_resenas?.integerValue ?? evaluado.fields.numero_resenas?.doubleValue ?? 0);
+      const califActual = parseFloat(texto(evaluado.fields.calificacion) || '0') || 0;
+      const nuevoNumero = numeroActual + 1;
+      const nuevaCalif = ((califActual * numeroActual) + estrellas) / nuevoNumero;
+
+      const ahora = new Date();
+      const nombreEvaluador = `${texto(evaluador.fields.nombre)} ${texto(evaluador.fields.apellidos)}`.trim();
+      const resena = {
+        evaluador_id: idEvaluador,
+        evaluador_nombre: nombreEvaluador,
+        evaluador_foto: texto(evaluador.fields.foto_rostro_url) || 'https://via.placeholder.com/150',
+        estrellas,
+        comentario: comentario.trim(),
+        fecha: ahora.toLocaleDateString('es-MX', { timeZone: 'America/Mexico_City' }),
+        timestamp: ahora.getTime(),
+      };
+      const rolEvaluado = rutaEvaluado.startsWith('Usuarios/') ? 'Trabajador' : 'Contratista';
+      const nombreBase = `projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents`;
+
+      const guardado = await confirmarEscrituras(env, [
+        // LA RESEÑA EN LA COLECCIÓN GENERAL. SU ID FIJO EVITA QUE LA MISMA PERSONA CALIFIQUE DOS VECES
+        {
+          update: {
+            name: `${nombreBase}/Resenas_Plataforma/${idEvaluador}_${idEvaluado}`,
+            fields: aCamposFirestore({
+              ...resena,
+              evaluado_id: idEvaluado,
+              evaluado_nombre: `${texto(evaluado.fields.nombre)} ${texto(evaluado.fields.apellidos)}`.trim(),
+              evaluado_rol: rolEvaluado,
+            }),
+          },
+          currentDocument: { exists: false },
+        },
+        // EL PROMEDIO Y LA LISTA DE RESEÑAS EN EL PERFIL. SOLO SE GUARDA SI NADIE LO CAMBIÓ DESDE QUE LO LEÍMOS
+        {
+          update: {
+            name: `${nombreBase}/${rutaEvaluado}`,
+            fields: aCamposFirestore({ calificacion: nuevaCalif.toFixed(1), numero_resenas: nuevoNumero }),
+          },
+          updateMask: { fieldPaths: ['calificacion', 'numero_resenas'] },
+          updateTransforms: [{ fieldPath: 'resenas', appendMissingElements: { values: [aValorFirestore(resena)] } }],
+          currentDocument: { updateTime: evaluado.updateTime },
+        },
+      ]);
+      if (guardado) return responder(200, { calificacion: nuevaCalif.toFixed(1) });
+    }
+    return responder(409, { error: 'Mucha gente está calificando a esta persona ahora mismo. Intenta de nuevo.' });
+  } catch (error) {
+    console.log('Error guardando reseña', error);
+    return responder(502, { error: 'No se pudo guardar la reseña. Intenta más tarde.' });
+  }
+};
+
+// ¿HAY UNA POSTULACIÓN ACEPTADA ENTRE ESTAS DOS PERSONAS? (UNA ES EL TRABAJADOR Y LA OTRA EL DUEÑO DE LA VACANTE)
+const trabajaronJuntos = async (env: Env, idA: string, idB: string) => {
+  for (const [trabajador, contratista] of [[idA, idB], [idB, idA]]) {
+    const postulaciones = await buscarPostulacionesAceptadas(env, trabajador);
+    // LAS POSTULACIONES DE CONTRATACIÓN DIRECTA YA TRAEN id_contratista
+    if (postulaciones.some(p => p.idContratista === contratista)) return true;
+
+    // LAS QUE HIZO EL TRABAJADOR DESDE LA BOLSA DE TRABAJO NO LO TRAEN: SE BUSCA EN SU VACANTE
+    const vacantesPorRevisar = postulaciones.filter(p => !p.idContratista && p.idVacante).map(p => `Vacantes/${p.idVacante}`);
+    if (vacantesPorRevisar.length > 0) {
+      const vacantes = await leerDocumentos(env, vacantesPorRevisar);
+      if (Object.values(vacantes).some(v => v && texto(v.fields.id_contratista) === contratista)) return true;
+    }
+  }
+  return false;
+};
+
+const buscarPostulacionesAceptadas = async (env: Env, idTrabajador: string) => {
+  const token = await obtenerTokenGoogle(env);
+  const respuesta = await fetch(`${urlDocumentos(env)}:runQuery`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      structuredQuery: {
+        from: [{ collectionId: 'Postulaciones' }],
+        where: {
+          compositeFilter: {
+            op: 'AND',
+            filters: [
+              { fieldFilter: { field: { fieldPath: 'id_trabajador' }, op: 'EQUAL', value: { stringValue: idTrabajador } } },
+              { fieldFilter: { field: { fieldPath: 'estado' }, op: 'EQUAL', value: { stringValue: ESTADO_ACEPTADA } } },
+            ],
+          },
+        },
+        limit: 50,
+      },
+    }),
+  });
+  if (!respuesta.ok) throw new Error(`Firestore respondió ${respuesta.status}: ${await respuesta.text()}`);
+
+  const resultados = (await respuesta.json()) as { document?: { fields?: Record<string, ValorFirestore> } }[];
+  return resultados
+    .filter(r => r.document)
+    .map(r => ({ idContratista: texto(r.document!.fields?.id_contratista), idVacante: texto(r.document!.fields?.id_vacante) }));
+};
+
+// =========================================================================
 // ACCESO A FIRESTORE CON LA CUENTA DE SERVICIO (API REST, SIN LIBRERÍAS EXTRA)
 // LA CUENTA DE SERVICIO SE SALTA LAS REGLAS DE SEGURIDAD: POR ESO SOLO VIVE AQUÍ, NUNCA EN LA APP.
 // =========================================================================
@@ -320,6 +469,48 @@ const buscarCorreo = async (env: Env, coleccion: string, campo: string, valor: s
 
   const resultados = (await respuesta.json()) as { document?: { fields?: Record<string, { stringValue?: string }> } }[];
   return resultados[0]?.document?.fields?.correo?.stringValue || null;
+};
+
+type ValorFirestore = { stringValue?: string; integerValue?: string; doubleValue?: number };
+type DocumentoLeido = { fields: Record<string, ValorFirestore>; updateTime: string };
+
+const texto = (valor: ValorFirestore | undefined) => valor?.stringValue || '';
+
+// LEE VARIOS DOCUMENTOS DE UNA SOLA VEZ. DEVUELVE { 'Coleccion/id': documento | null }
+const leerDocumentos = async (env: Env, rutas: string[]) => {
+  const token = await obtenerTokenGoogle(env);
+  const nombreBase = `projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents`;
+  const respuesta = await fetch(`${urlDocumentos(env)}:batchGet`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ documents: rutas.map(ruta => `${nombreBase}/${ruta}`) }),
+  });
+  if (!respuesta.ok) throw new Error(`Firestore respondió ${respuesta.status}: ${await respuesta.text()}`);
+
+  const resultado: Record<string, DocumentoLeido | null> = Object.fromEntries(rutas.map(ruta => [ruta, null]));
+  const items = (await respuesta.json()) as { found?: { name: string; fields?: DocumentoLeido['fields']; updateTime: string } }[];
+  for (const item of items) {
+    if (!item.found) continue;
+    const ruta = item.found.name.slice(nombreBase.length + 1);
+    resultado[ruta] = { fields: item.found.fields || {}, updateTime: item.found.updateTime };
+  }
+  return resultado;
+};
+
+// APLICA VARIAS ESCRITURAS JUNTAS: O SE GUARDAN TODAS, O NINGUNA.
+// DEVUELVE false SI UNA CONDICIÓN (currentDocument) YA NO SE CUMPLE, PARA QUE SE PUEDA REINTENTAR.
+const confirmarEscrituras = async (env: Env, writes: Record<string, unknown>[]) => {
+  const token = await obtenerTokenGoogle(env);
+  const respuesta = await fetch(`${urlDocumentos(env)}:commit`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ writes }),
+  });
+  if (respuesta.ok) return true;
+
+  const detalle = await respuesta.text();
+  if (detalle.includes('FAILED_PRECONDITION') || detalle.includes('ALREADY_EXISTS')) return false;
+  throw new Error(`Firestore respondió ${respuesta.status}: ${detalle}`);
 };
 
 // CONVIERTE VALORES DE JAVASCRIPT AL FORMATO QUE ESPERA LA API REST DE FIRESTORE

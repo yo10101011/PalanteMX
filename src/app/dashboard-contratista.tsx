@@ -13,7 +13,7 @@ LogBox.ignoreLogs(['@firebase/firestore', "WebChannelConnection RPC", "Name: und
 // FIREBASE REAL
 // @ts-ignore
 import { deleteUser, signOut } from 'firebase/auth';
-import { addDoc, arrayUnion, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, query, updateDoc, where } from 'firebase/firestore';
+import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, query, updateDoc, where } from 'firebase/firestore';
 import { auth, db } from '../../firebaseConfig';
 
 const { width } = Dimensions.get('window');
@@ -350,36 +350,28 @@ export default function DashboardContratista() {
     } catch (error) { console.log("Error cargando usuarios para evaluar", error); }
   };
 
+  // LA RESEÑA LA VALIDA Y GUARDA EL SERVIDOR (backend/kyc-worker): SOLO SE CALIFICA A QUIEN SE CONTRATÓ,
+  // UNA SOLA VEZ, Y EL PROMEDIO LO CALCULA ÉL. LAS REGLAS YA NO DEJAN QUE LA APP ESCRIBA CALIFICACIONES.
   const enviarResena = async () => {
-    if (!usuarioSeleccionadoParaEvaluar || !evaluarComentario) { Alert.alert("Aviso", "Selecciona a quién evaluar y escribe un comentario."); return; }
+    if (!usuarioSeleccionadoParaEvaluar || !evaluarComentario.trim()) { Alert.alert("Aviso", "Selecciona a quién evaluar y escribe un comentario."); return; }
     setProcesando(true);
     try {
-      const estrellasNum = parseInt(evaluarEstrellas);
-      const rolEvaluado = usuarioSeleccionadoParaEvaluar.rol || (usuarioSeleccionadoParaEvaluar.oficio_principal ? 'Trabajador' : 'Contratista');
-      const evaluadoRef = doc(db, rolEvaluado === 'Trabajador' ? 'Usuarios' : 'Contratistas', usuarioSeleccionadoParaEvaluar.id);
-      const evaluadoDoc = await getDoc(evaluadoRef);
-
-      if (evaluadoDoc.exists()) {
-        const dataEval = evaluadoDoc.data();
-        const numResenasActual = dataEval.numero_resenas || 0;
-        const califActual = parseFloat(dataEval.calificacion) || 0;
-
-        const nuevoNumResenas = numResenasActual + 1;
-        const nuevaCalif = ((califActual * numResenasActual) + estrellasNum) / nuevoNumResenas;
-
-        const nuevaResenaObj = {
-          evaluador_id: userData.id, evaluador_nombre: `${userData.nombre} ${userData.apellidos}`, evaluador_foto: userData.foto_rostro_url || 'https://via.placeholder.com/150',
-          estrellas: estrellasNum, comentario: evaluarComentario, fecha: new Date().toLocaleDateString('es-MX'), timestamp: new Date().getTime()
-        };
-
-        await updateDoc(evaluadoRef, { calificacion: nuevaCalif.toFixed(1), numero_resenas: nuevoNumResenas, resenas: arrayUnion(nuevaResenaObj) });
-        await addDoc(collection(db, "Resenas_Plataforma"), { ...nuevaResenaObj, evaluado_id: usuarioSeleccionadoParaEvaluar.id, evaluado_nombre: `${usuarioSeleccionadoParaEvaluar.nombre} ${usuarioSeleccionadoParaEvaluar.apellidos}`, evaluado_rol: rolEvaluado });
-
+      const KYC_API_URL = process.env.EXPO_PUBLIC_KYC_API_URL;
+      const idToken = await auth.currentUser?.getIdToken();
+      const response = await fetch(`${KYC_API_URL}/resenas`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${idToken}` },
+        body: JSON.stringify({ id_evaluado: usuarioSeleccionadoParaEvaluar.id, estrellas: parseInt(evaluarEstrellas), comentario: evaluarComentario.trim() }),
+      });
+      const resultado = await response.json();
+      if (!response.ok) {
+        Alert.alert("No se pudo calificar", resultado.error || "El servidor no respondió.");
+      } else {
         Alert.alert("Evaluación Guardada", `Has actualizado la calificación de ${usuarioSeleccionadoParaEvaluar.nombre}.`);
-      } else { Alert.alert("Error", "No se encontró el perfil de este usuario."); }
-    } catch (error) { Alert.alert("Error", "Ocurrió un problema al enviar la evaluación."); }
-    
-    setProcesando(false); setModalEvaluar(false); setUsuarioSeleccionadoParaEvaluar(null); setEvaluarComentario(''); setBusquedaUsuarioEvaluar(''); setEvaluarEstrellas('5');
+        setModalEvaluar(false); setUsuarioSeleccionadoParaEvaluar(null); setEvaluarComentario(''); setBusquedaUsuarioEvaluar(''); setEvaluarEstrellas('5');
+      }
+    } catch (error) { Alert.alert("Error", "Ocurrió un problema al enviar la evaluación. Revisa tu conexión."); }
+    setProcesando(false);
   };
 
   const aceptarCandidato = async () => {
@@ -668,7 +660,7 @@ export default function DashboardContratista() {
             <View>
               <Text style={styles.sectionTitle}>Configuración Empresarial</Text>
               <TouchableOpacity style={styles.settingsOption} onPress={() => setModalEditar(true)}><View style={styles.settingsRow}><Ionicons name="person-circle-outline" size={24} color="#0D2340" /><Text style={styles.settingsText}>Editar datos de la empresa</Text></View><Ionicons name="chevron-forward" size={20} color="#9CA3AF" /></TouchableOpacity>
-              <TouchableOpacity style={styles.settingsOption} onPress={abrirModalEvaluar}><View style={styles.settingsRow}><Ionicons name="star-outline" size={24} color="#F59E0B" /><Text style={styles.settingsText}>Evaluar a un Trabajador libre</Text></View><Ionicons name="chevron-forward" size={20} color="#9CA3AF" /></TouchableOpacity>
+              <TouchableOpacity style={styles.settingsOption} onPress={abrirModalEvaluar}><View style={styles.settingsRow}><Ionicons name="star-outline" size={24} color="#F59E0B" /><Text style={styles.settingsText}>Evaluar a un Trabajador contratado</Text></View><Ionicons name="chevron-forward" size={20} color="#9CA3AF" /></TouchableOpacity>
               <TouchableOpacity style={styles.settingsOption} onPress={abrirModalQueja}><View style={styles.settingsRow}><Ionicons name="shield-half-outline" size={24} color="#D32F2F" /><Text style={[styles.settingsText, {color: '#D32F2F'}]}>Levantar Reporte a Trabajador</Text></View><Ionicons name="chevron-forward" size={20} color="#9CA3AF" /></TouchableOpacity>
               <TouchableOpacity style={[styles.settingsOption, { marginTop: 20 }]} onPress={cerrarSesion}><View style={styles.settingsRow}><Ionicons name="log-out-outline" size={24} color="#0D2340" /><Text style={[styles.settingsText, { fontWeight: 'bold' }]}>Cerrar Sesión</Text></View></TouchableOpacity>
               <TouchableOpacity style={[styles.settingsOption, { borderBottomWidth: 0, marginTop: 10 }]} onPress={eliminarCuenta}><View style={styles.settingsRow}><Ionicons name="trash-outline" size={24} color="#D32F2F" /><Text style={[styles.settingsText, { color: '#D32F2F', fontWeight: 'bold' }]}>Eliminar cuenta de contratista</Text></View></TouchableOpacity>

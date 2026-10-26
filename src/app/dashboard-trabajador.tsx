@@ -11,7 +11,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 // FIREBASE
 // @ts-ignore
 import { deleteUser, signOut } from 'firebase/auth';
-import { addDoc, arrayUnion, collection, deleteDoc, doc, getDoc, getDocs, query, updateDoc, where } from 'firebase/firestore';
+import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, query, updateDoc, where } from 'firebase/firestore';
 import { auth, db } from '../../firebaseConfig';
 
 const { width } = Dimensions.get('window');
@@ -285,30 +285,28 @@ export default function DashboardTrabajador() {
     } catch (error) { console.log("Error", error); }
   };
 
+  // LA RESEÑA LA VALIDA Y GUARDA EL SERVIDOR (backend/kyc-worker): SOLO SE CALIFICA A QUIEN TE CONTRATÓ,
+  // UNA SOLA VEZ, Y EL PROMEDIO LO CALCULA ÉL. LAS REGLAS YA NO DEJAN QUE LA APP ESCRIBA CALIFICACIONES.
   const enviarResena = async () => {
-    if (!usuarioSeleccionadoParaEvaluar || !evaluarComentario) { Alert.alert("Aviso", "Selecciona a quién evaluar y escribe un comentario."); return; }
+    if (!usuarioSeleccionadoParaEvaluar || !evaluarComentario.trim()) { Alert.alert("Aviso", "Selecciona a quién evaluar y escribe un comentario."); return; }
     setProcesando(true);
     try {
-      const estrellasNum = parseInt(evaluarEstrellas);
-      const rolEvaluado = usuarioSeleccionadoParaEvaluar.rol || (usuarioSeleccionadoParaEvaluar.empresa ? 'Contratista' : 'Trabajador');
-      const evaluadoRef = doc(db, rolEvaluado === 'Trabajador' ? 'Usuarios' : 'Contratistas', usuarioSeleccionadoParaEvaluar.id);
-      const evaluadoDoc = await getDoc(evaluadoRef);
-
-      if (evaluadoDoc.exists()) {
-        const dataEval = evaluadoDoc.data();
-        const numResenasActual = dataEval.numero_resenas || 0;
-        const califActual = parseFloat(dataEval.calificacion) || 0;
-        const nuevoNumResenas = numResenasActual + 1;
-        const nuevaCalif = ((califActual * numResenasActual) + estrellasNum) / nuevoNumResenas;
-        const nuevaResenaObj = { evaluador_id: userData.id, evaluador_nombre: `${userData.nombre} ${userData.apellidos}`, evaluador_foto: userData.foto_rostro_url || 'https://via.placeholder.com/150', estrellas: estrellasNum, comentario: evaluarComentario, fecha: new Date().toLocaleDateString('es-MX'), timestamp: new Date().getTime() };
-
-        await updateDoc(evaluadoRef, { calificacion: nuevaCalif.toFixed(1), numero_resenas: nuevoNumResenas, resenas: arrayUnion(nuevaResenaObj) });
-        await addDoc(collection(db, "Resenas_Plataforma"), { ...nuevaResenaObj, evaluado_id: usuarioSeleccionadoParaEvaluar.id, evaluado_nombre: `${usuarioSeleccionadoParaEvaluar.nombre} ${usuarioSeleccionadoParaEvaluar.apellidos}`, evaluado_rol: rolEvaluado });
+      const KYC_API_URL = process.env.EXPO_PUBLIC_KYC_API_URL;
+      const idToken = await auth.currentUser?.getIdToken();
+      const response = await fetch(`${KYC_API_URL}/resenas`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${idToken}` },
+        body: JSON.stringify({ id_evaluado: usuarioSeleccionadoParaEvaluar.id, estrellas: parseInt(evaluarEstrellas), comentario: evaluarComentario.trim() }),
+      });
+      const resultado = await response.json();
+      if (!response.ok) {
+        Alert.alert("No se pudo calificar", resultado.error || "El servidor no respondió.");
+      } else {
         Alert.alert("Evaluación Guardada", `Has actualizado la calificación de ${usuarioSeleccionadoParaEvaluar.nombre}.`);
-      } else { Alert.alert("Error", "No se encontró el perfil de este usuario."); }
-    } catch (error) { Alert.alert("Error", "Ocurrió un problema al enviar la evaluación."); }
-    
-    setProcesando(false); setModalEvaluar(false); setUsuarioSeleccionadoParaEvaluar(null); setEvaluarComentario(''); setBusquedaUsuarioEvaluar(''); setEvaluarEstrellas('5');
+        setModalEvaluar(false); setUsuarioSeleccionadoParaEvaluar(null); setEvaluarComentario(''); setBusquedaUsuarioEvaluar(''); setEvaluarEstrellas('5');
+      }
+    } catch (error) { Alert.alert("Error", "Ocurrió un problema al enviar la evaluación. Revisa tu conexión."); }
+    setProcesando(false);
   };
 
   const eliminarCuenta = () => {

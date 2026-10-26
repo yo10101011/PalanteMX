@@ -41,7 +41,8 @@ service cloud.firestore {
       return request.resource.data.diff(resource.data).affectedKeys();
     }
 
-    // CAMPOS DEL PERFIL QUE EL DUEÑO NO PUEDE TOCAR (LOS PONE EL SERVIDOR, EL ADMIN O LAS RESEÑAS)
+    // CAMPOS DEL PERFIL QUE EL DUEÑO NO PUEDE TOCAR (LOS PONE EL SERVIDOR O EL ADMIN).
+    // LAS RESEÑAS (calificacion, numero_resenas, resenas) SOLO LAS ESCRIBE EL WORKER, QUE REVISA QUE HAYAN TRABAJADO JUNTOS.
     function camposProtegidos() {
       return ['rol_usuario', 'nombre', 'apellidos', 'correo', 'nombre_usuario', 'kyc_aprobado',
               'estado_cuenta', 'fecha_registro', 'calificacion', 'numero_resenas', 'resenas'];
@@ -50,11 +51,8 @@ service cloud.firestore {
     // REGLAS COMPARTIDAS POR /Usuarios (TRABAJADORES) Y /Contratistas
     function puedeEditarPerfil(uid) {
       return esAdmin()
-        // EL DUEÑO EDITA SU PERFIL, MENOS LOS CAMPOS PROTEGIDOS
-        || (esYo(uid) && !camposCambiados().hasAny(camposProtegidos()))
-        // OTRO USUARIO SOLO PUEDE DEJAR UNA RESEÑA (CALIFICACIÓN + LISTA DE RESEÑAS)
-        || (conSesion() && !esYo(uid) && cuentaActiva()
-            && camposCambiados().hasOnly(['calificacion', 'numero_resenas', 'resenas']));
+        // EL DUEÑO EDITA SU PERFIL, MENOS LOS CAMPOS PROTEGIDOS. NADIE MÁS PUEDE TOCARLO.
+        || (esYo(uid) && !camposCambiados().hasAny(camposProtegidos()));
     }
 
     // ---------------------------------------------------------------- PERFILES
@@ -150,9 +148,10 @@ service cloud.firestore {
       allow read, update, delete: if esAdmin();
     }
 
+    // LAS RESEÑAS LAS CREA SOLO EL WORKER (RUTA /resenas)
     match /Resenas_Plataforma/{resenaId} {
       allow read: if conSesion();
-      allow create: if cuentaActiva() && request.resource.data.evaluador_id == request.auth.uid;
+      allow write: if false;
     }
 
     // ---------------------------------------------------------------- SOLO ADMIN
