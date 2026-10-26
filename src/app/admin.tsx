@@ -235,28 +235,6 @@ export default function AdminDashboard() {
     ]);
   };
 
-  // TEMPORAL: MUEVE LAS FOTOS DE LA INE DE LOS PERFILES VIEJOS A /Verificaciones (PRIVADA).
-  // LO HACE EL WORKER, QUE COMPRUEBA QUE QUIEN LLAMA SEA ADMIN. SE QUITA EN CUANTO SE HAYA USADO.
-  const migrarFotosINE = () => {
-    Alert.alert("Proteger fotos de INE", "Se moverán las fotos de la INE de los perfiles antiguos a un área privada que solo ve el administrador. ¿Continuar?", [
-      { text: "Cancelar", style: "cancel" },
-      { text: "Sí, proteger", onPress: async () => {
-          setProcesando(true);
-          try {
-            const KYC_API_URL = process.env.EXPO_PUBLIC_KYC_API_URL;
-            const idToken = await auth.currentUser?.getIdToken();
-            const response = await fetch(`${KYC_API_URL}/admin/migrar-ine`, { method: 'POST', headers: { Authorization: `Bearer ${idToken}` } });
-            const resultado = await response.json();
-            if (!response.ok) throw new Error(resultado.error || "El servidor no respondió.");
-            Alert.alert("✅ Listo", `Perfiles revisados: ${resultado.revisados}\nPerfiles protegidos: ${resultado.migrados}`);
-            await cargarDatosAdmin();
-          } catch (error: any) { Alert.alert("Error", error.message); }
-          setProcesando(false);
-        }
-      }
-    ]);
-  };
-
   const resolverQueja = async (id: string) => {
     Alert.alert("Atender Reporte", "¿Marcar esta queja como atendida/resuelta? Se guardará en el historial legal.", [
       { text: "Cancelar", style: "cancel" },
@@ -477,15 +455,6 @@ export default function AdminDashboard() {
                   <Ionicons name="refresh-outline" size={24} color="#00D06C" />
                   <Text style={[styles.settingsText, {color: '#00D06C'}]}>Refrescar Base de Datos</Text>
                 </View>
-              </TouchableOpacity>
-
-              {/* TEMPORAL: SE QUITA EN CUANTO SE HAYA USADO UNA VEZ */}
-              <TouchableOpacity style={styles.settingsOption} onPress={migrarFotosINE} disabled={procesando}>
-                <View style={{flexDirection: 'row', alignItems: 'center'}}>
-                  <Ionicons name="shield-checkmark-outline" size={24} color="#D32F2F" />
-                  <Text style={[styles.settingsText, {color: '#D32F2F'}]}>Proteger fotos de INE (una sola vez)</Text>
-                </View>
-                {procesando && <ActivityIndicator color="#D32F2F" />}
               </TouchableOpacity>
             </View>
           </View>
