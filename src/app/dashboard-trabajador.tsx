@@ -546,7 +546,7 @@ export default function DashboardTrabajador() {
 
       {/* --- MENÚ INFERIOR ESTANDARIZADO PARA QUE SIEMPRE SALGAN TODAS LAS PESTAÑAS --- */}
       <View style={styles.bottomNavigation}>
-        <TouchableOpacity style={styles.navItem} onPress={() => router.push('/feed' as any)}>
+        <TouchableOpacity style={styles.navItem} onPress={() => router.replace('/feed' as any)}>
           <Ionicons name="briefcase-outline" size={26} color="#6B7280" />
           <Text style={styles.navText}>Trabajo</Text>
         </TouchableOpacity>
@@ -556,7 +556,7 @@ export default function DashboardTrabajador() {
           <Text style={[styles.navText, pestañaActiva === 'Mis Trabajos' && {color: '#0D2340', fontWeight: 'bold'}]}>Obras</Text>
         </TouchableOpacity>
         
-        <TouchableOpacity style={styles.navItem} onPress={() => router.push('/mensajes' as any)}>
+        <TouchableOpacity style={styles.navItem} onPress={() => router.replace('/mensajes' as any)}>
           <Ionicons name="chatbubbles-outline" size={26} color="#6B7280" />
           <Text style={styles.navText}>Mensajes</Text>
         </TouchableOpacity>

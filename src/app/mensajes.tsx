@@ -74,8 +74,17 @@ export default function Mensajes() {
   const [listaUsuariosSistema, setListaUsuariosSistema] = useState<any[]>([]);
   const [busquedaUsuario, setBusquedaUsuario] = useState('');
 
+  // ESCUCHAS EN TIEMPO REAL. SE GUARDAN PARA PODER CERRARLAS: SI NO, SIGUEN VIVAS AUNQUE SALGAS DE LA PANTALLA,
+  // GASTAN DATOS, Y LA DE UN CHAT VIEJO PUEDE PONER SUS MENSAJES EN EL CHAT QUE ESTÁS VIENDO.
+  const escuchaChatsRef = useRef<(() => void) | null>(null);
+  const escuchaMensajesRef = useRef<(() => void) | null>(null);
+
   useEffect(() => {
     cargarMisChats();
+    return () => {
+      escuchaChatsRef.current?.();
+      escuchaMensajesRef.current?.();
+    };
   }, []);
 
   useEffect(() => {
@@ -129,25 +138,28 @@ export default function Mensajes() {
         setMiPerfil({ id: userDoc.id, rol: miRol, ...datos });
         
         const qChats = query(collection(db, 'Chats'), where('usuarios_ids', 'array-contains', usuarioActual.uid));
-        const unsubscribe = onSnapshot(qChats, (snapshot) => {
+        escuchaChatsRef.current?.();
+        escuchaChatsRef.current = onSnapshot(qChats, (snapshot) => {
           const listaChats = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
           listaChats.sort((a: any, b: any) => (b.timestamp || 0) - (a.timestamp || 0));
           setChats(listaChats);
           setCargando(false);
         });
-
-        return () => unsubscribe();
       }
     } catch (error) { console.log("Error cargando perfil", error); setCargando(false); }
   };
 
   const abrirChat = async (chat: any) => {
+    // SE CIERRA LA ESCUCHA DEL CHAT ANTERIOR Y SE LIMPIA LA PANTALLA ANTES DE ABRIR EL NUEVO
+    escuchaMensajesRef.current?.();
+    escuchaMensajesRef.current = null;
+    setMensajes([]);
     setChatActivo(chat);
     if (chat.ultimo_emisor_id !== miPerfil.id && chat.leido === false) {
       await updateDoc(doc(db, 'Chats', chat.id), { leido: true });
     }
     const qMensajes = query(collection(db, 'Chats', chat.id, 'Mensajes'));
-    onSnapshot(qMensajes, (snapshot) => {
+    escuchaMensajesRef.current = onSnapshot(qMensajes, (snapshot) => {
       const listaMensajes = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
       listaMensajes.sort((a: any, b: any) => (a.timestamp || 0) - (b.timestamp || 0));
       setMensajes(listaMensajes);
@@ -246,7 +258,7 @@ export default function Mensajes() {
       const otroUsuarioData = otroUsuarioId ? chatActivo.datos_usuarios?.[otroUsuarioId] : { nombre: 'Usuario Desconocido' };
       
       await addDoc(collection(db, "Quejas_Soporte"), {
-        id_reportante: miPerfil.id, rol_reportante: miPerfil.rol,
+        id_reportante: miPerfil.id, nombre_reportante: `${miPerfil.nombre} ${miPerfil.apellidos}`, rol_reportante: miPerfil.rol,
         id_acusado: otroUsuarioId || 'Desconocido', acusado: otroUsuarioData.nombre,
         motivo: reporteMotivo, descripcion: reporteDesc,
         chat_origen_id: chatActivo.id, fecha_reporte: new Date().toISOString(), estado: "En Revisión"
@@ -349,7 +361,7 @@ export default function Mensajes() {
         <KeyboardAvoidingView style={{flex: 1}} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           
           <View style={styles.chatHeader}>
-            <TouchableOpacity style={styles.backBtn} onPress={() => { setChatActivo(null); router.setParams({ autoOpenId: '', autoOpenNombre: '' }); }}>
+            <TouchableOpacity style={styles.backBtn} onPress={() => { escuchaMensajesRef.current?.(); escuchaMensajesRef.current = null; setChatActivo(null); router.setParams({ autoOpenId: '', autoOpenNombre: '' }); }}>
               <Ionicons name="arrow-back" size={24} color="#FFF" />
             </TouchableOpacity>
             <Image source={{uri: otroUsuarioData.foto}} style={styles.chatAvatar} />
@@ -586,18 +598,18 @@ export default function Mensajes() {
       <View style={styles.bottomNavigation}>
         {miPerfil?.rol === 'Contratista' ? (
           <>
-            <TouchableOpacity style={styles.navItem} onPress={() => router.push({ pathname: '/dashboard-contratista', params: { tab: 'Explorar' } } as any)}><Ionicons name="search-outline" size={26} color="#6B7280" /><Text style={styles.navText}>Explorar</Text></TouchableOpacity>
-            <TouchableOpacity style={styles.navItem} onPress={() => router.push({ pathname: '/dashboard-contratista', params: { tab: 'Vacantes' } } as any)}><Ionicons name="megaphone-outline" size={26} color="#6B7280" /><Text style={styles.navText}>Anuncios</Text></TouchableOpacity>
-            <TouchableOpacity style={styles.navItem} onPress={() => router.push({ pathname: '/dashboard-contratista', params: { tab: 'Obras' } } as any)}><Ionicons name="construct-outline" size={26} color="#6B7280" /><Text style={styles.navText}>Obras</Text></TouchableOpacity>
-            <TouchableOpacity style={styles.navItem} onPress={() => router.push({ pathname: '/dashboard-contratista', params: { tab: 'Candidatos' } } as any)}><Ionicons name="people-outline" size={26} color="#6B7280" /><Text style={styles.navText}>Solicitud</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.navItem} onPress={() => router.replace({ pathname: '/dashboard-contratista', params: { tab: 'Explorar' } } as any)}><Ionicons name="search-outline" size={26} color="#6B7280" /><Text style={styles.navText}>Explorar</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.navItem} onPress={() => router.replace({ pathname: '/dashboard-contratista', params: { tab: 'Vacantes' } } as any)}><Ionicons name="megaphone-outline" size={26} color="#6B7280" /><Text style={styles.navText}>Anuncios</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.navItem} onPress={() => router.replace({ pathname: '/dashboard-contratista', params: { tab: 'Obras' } } as any)}><Ionicons name="construct-outline" size={26} color="#6B7280" /><Text style={styles.navText}>Obras</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.navItem} onPress={() => router.replace({ pathname: '/dashboard-contratista', params: { tab: 'Candidatos' } } as any)}><Ionicons name="people-outline" size={26} color="#6B7280" /><Text style={styles.navText}>Solicitud</Text></TouchableOpacity>
             <TouchableOpacity style={styles.navItem}><Ionicons name="chatbubbles" size={26} color="#00D06C" /><Text style={[styles.navText, {color: '#00D06C', fontWeight: 'bold'}]}>Mensaje</Text></TouchableOpacity>
           </>
         ) : (
           <>
-            <TouchableOpacity style={styles.navItem} onPress={() => router.push('/feed' as any)}><Ionicons name="briefcase-outline" size={26} color="#6B7280" /><Text style={styles.navText}>Trabajo</Text></TouchableOpacity>
-            <TouchableOpacity style={styles.navItem} onPress={() => router.push({ pathname: '/dashboard-trabajador', params: { tab: 'Mis Trabajos' } } as any)}><Ionicons name="construct-outline" size={26} color="#6B7280" /><Text style={styles.navText}>Obras</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.navItem} onPress={() => router.replace('/feed' as any)}><Ionicons name="briefcase-outline" size={26} color="#6B7280" /><Text style={styles.navText}>Trabajo</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.navItem} onPress={() => router.replace({ pathname: '/dashboard-trabajador', params: { tab: 'Mis Trabajos' } } as any)}><Ionicons name="construct-outline" size={26} color="#6B7280" /><Text style={styles.navText}>Obras</Text></TouchableOpacity>
             <TouchableOpacity style={styles.navItem}><Ionicons name="chatbubbles" size={26} color="#00D06C" /><Text style={[styles.navText, {color: '#00D06C', fontWeight: 'bold'}]}>Mensajes</Text></TouchableOpacity>
-            <TouchableOpacity style={styles.navItem} onPress={() => router.push({ pathname: '/dashboard-trabajador', params: { tab: 'Portafolio' } } as any)}><Ionicons name="person-outline" size={26} color="#6B7280" /><Text style={styles.navText}>Perfil</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.navItem} onPress={() => router.replace({ pathname: '/dashboard-trabajador', params: { tab: 'Portafolio' } } as any)}><Ionicons name="person-outline" size={26} color="#6B7280" /><Text style={styles.navText}>Perfil</Text></TouchableOpacity>
           </>
         )}
       </View>

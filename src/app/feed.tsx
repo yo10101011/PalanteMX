@@ -336,17 +336,17 @@ export default function FeedTrabajador() {
           <Text style={[styles.navText, {color: '#00D06C', fontWeight: 'bold'}]}>Trabajo</Text>
         </TouchableOpacity>
         
-        <TouchableOpacity style={styles.navItem} onPress={() => router.push('/dashboard-trabajador' as any)}>
+        <TouchableOpacity style={styles.navItem} onPress={() => router.replace({ pathname: '/dashboard-trabajador', params: { tab: 'Mis Trabajos' } } as any)}>
           <Ionicons name="construct-outline" size={26} color="#6B7280" />
           <Text style={styles.navText}>Obras</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.navItem} onPress={() => router.push('/mensajes' as any)}>
+        <TouchableOpacity style={styles.navItem} onPress={() => router.replace('/mensajes' as any)}>
           <Ionicons name="chatbubbles-outline" size={26} color="#6B7280" />
           <Text style={styles.navText}>Mensajes</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.navItem} onPress={() => router.push('/dashboard-trabajador' as any)}>
+        <TouchableOpacity style={styles.navItem} onPress={() => router.replace({ pathname: '/dashboard-trabajador', params: { tab: 'Portafolio' } } as any)}>
           <Ionicons name="person-outline" size={26} color="#6B7280" />
           <Text style={styles.navText}>Perfil</Text>
         </TouchableOpacity>

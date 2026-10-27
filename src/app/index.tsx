@@ -1,14 +1,13 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { router } from 'expo-router';
-import * as SecureStore from 'expo-secure-store';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 // FIREBASE
 // @ts-ignore
-import { sendPasswordResetEmail, signInWithCustomToken, signInWithEmailAndPassword, signOut } from 'firebase/auth';
+import { onAuthStateChanged, sendPasswordResetEmail, signInWithCustomToken, signInWithEmailAndPassword, signOut, User } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import { auth, db } from '../../firebaseConfig';
 
@@ -100,46 +99,47 @@ export default function LoginScreen() {
     }
   };
 
-  // 2. INICIO DE SESIÓN BIOMÉTRICO (OPCIONAL DESDE EL BOTÓN)
-  const handleBiometria = async () => {
+  // 2. SESIÓN GUARDADA + HUELLA
+  // FIREBASE YA GUARDA LA SESIÓN EN EL TELÉFONO DE FORMA SEGURA (firebaseConfig.js), ASÍ QUE NO SE GUARDA NINGUNA CONTRASEÑA:
+  // SI HAY SESIÓN, LA HUELLA (O LA CARA) SOLO CONFIRMA QUE QUIEN TIENE EL TELÉFONO ES EL DUEÑO.
+  const [usuarioGuardado, setUsuarioGuardado] = useState<User | null>(null);
+  const [revisandoSesion, setRevisandoSesion] = useState(true);
+
+  const entrarConSesionGuardada = async (usuario: User) => {
     try {
-      const hardwareDisponible = await LocalAuthentication.hasHardwareAsync();
-      if (!hardwareDisponible) { Alert.alert("Error", "Dispositivo sin lector biométrico."); return; }
-      
-      const biometricosGuardados = await LocalAuthentication.isEnrolledAsync();
-      if (!biometricosGuardados) { Alert.alert("Aviso", "No tienes huellas registradas en el celular."); return; }
-
-      const authResult = await LocalAuthentication.authenticateAsync({
-        promptMessage: 'Acceso seguro a PalanteMX',
-        cancelLabel: 'Cancelar',
-        disableDeviceFallback: true,
-      });
-
-      if (authResult.success) {
-        const emailGuardado = await SecureStore.getItemAsync('palante_correo');
-        const passGuardada = await SecureStore.getItemAsync('palante_password');
-
-        if (emailGuardado && passGuardada) {
-          setCargando(true);
-          const userCredential = await signInWithEmailAndPassword(auth, emailGuardado, passGuardada);
-          const uid = userCredential.user.uid;
-
-          /* --- CÓDIGO APAGADO (VERIFICACIÓN DE CORREO) ---
-          if (!userCredential.user.emailVerified) { setCargando(false); return; }
-          -------------------------------------------------- */
-
-          // REDIRECCIÓN INTELIGENTE TAMBIÉN CON HUELLA
-          await redirigirSegunRol(uid);
-          setCargando(false);
-
-        } else {
-          Alert.alert("Vínculo Requerido", "Inicia sesión manualmente la primera vez para vincular tu huella.");
-        }
+      const hayHuella = (await LocalAuthentication.hasHardwareAsync()) && (await LocalAuthentication.isEnrolledAsync());
+      if (hayHuella) {
+        const resultado = await LocalAuthentication.authenticateAsync({ promptMessage: 'Acceso seguro a PalanteMX', cancelLabel: 'Usar contraseña' });
+        if (!resultado.success) return; // SI CANCELA, SE QUEDA EN EL LOGIN Y PUEDE ENTRAR CON CONTRASEÑA
       }
+      setCargando(true);
+      await redirigirSegunRol(usuario.uid);
     } catch (error) {
-      setCargando(false);
-      Alert.alert("Error", "Problema con el sensor biométrico.");
+      Alert.alert("Error", "No se pudo abrir tu sesión. Entra con tu contraseña.");
     }
+    setCargando(false);
+  };
+
+  // AL ABRIR LA APP: SI YA HABÍA SESIÓN, SE PIDE LA HUELLA Y SE ENTRA DIRECTO
+  useEffect(() => {
+    const dejarDeEscuchar = onAuthStateChanged(auth, (usuario) => {
+      dejarDeEscuchar(); // SOLO IMPORTA EL ESTADO AL ABRIR LA PANTALLA
+      setUsuarioGuardado(usuario);
+      setRevisandoSesion(false);
+      if (usuario) entrarConSesionGuardada(usuario);
+    });
+    return dejarDeEscuchar;
+  }, []);
+
+  const handleBiometria = async () => {
+    const usuario = auth.currentUser || usuarioGuardado;
+    if (!usuario) {
+      Alert.alert("Primero inicia sesión", "Entra una vez con tu contraseña. Después podrás entrar con tu huella sin escribirla.");
+      return;
+    }
+    const hayHuella = (await LocalAuthentication.hasHardwareAsync()) && (await LocalAuthentication.isEnrolledAsync());
+    if (!hayHuella) { Alert.alert("Aviso", "Tu celular no tiene huella o reconocimiento facial configurado."); return; }
+    await entrarConSesionGuardada(usuario);
   };
 
   // RECUPERACIÓN DE CONTRASEÑA REAL
@@ -160,6 +160,10 @@ export default function LoginScreen() {
       }
     }
   };
+
+  if (revisandoSesion) {
+    return <View style={[styles.container, { justifyContent: 'center' }]}><ActivityIndicator size="large" color="#00D06C" /></View>;
+  }
 
   return (
     <SafeAreaView style={styles.container}>

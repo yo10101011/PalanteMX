@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Picker } from '@react-native-picker/picker';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Dimensions, Image, LogBox, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -20,6 +20,7 @@ import { subirFotoACloudinary } from '@/lib/cloudinary';
 const { width } = Dimensions.get('window');
 
 export default function DashboardContratista() {
+  const params = useLocalSearchParams(); // LECTOR DE PARÁMETROS DE NAVEGACIÓN (P. EJ. { tab: 'Vacantes' } DESDE MENSAJES)
   const [userData, setUserData] = useState<any>(null);
   const [cargando, setCargando] = useState(true);
   const [procesando, setProcesando] = useState(false);
@@ -131,23 +132,28 @@ export default function DashboardContratista() {
           }
         }
         setCandidatos(candidatosReales);
-
-        const qChats = query(collection(db, 'Chats'), where('usuarios_ids', 'array-contains', usuarioActual.uid));
-        onSnapshot(qChats, (snap) => {
-          let sinLeer = 0;
-          snap.docs.forEach(d => {
-            const dataChat = d.data();
-            if (dataChat.ultimo_emisor_id !== usuarioActual.uid && dataChat.leido === false) {
-              sinLeer++;
-            }
-          });
-          setMensajesSinLeer(sinLeer);
-        });
       }
     } catch (error) { console.log("Error", error); } finally { setCargando(false); }
   };
 
   useEffect(() => { cargarPerfil(); }, []);
+
+  // SI VENIMOS DE OTRA PANTALLA (P. EJ. LA BARRA DE MENSAJES), ABRIR LA PESTAÑA QUE PIDIÓ
+  useEffect(() => {
+    if (params.tab) { setPestañaActiva(params.tab as string); }
+  }, [params.tab]);
+
+  // CONTADOR DE MENSAJES SIN LEER EN TIEMPO REAL. SE ABRE UNA SOLA VEZ Y SE CIERRA AL SALIR DE LA PANTALLA
+  // (ANTES SE ABRÍA UNA ESCUCHA NUEVA CADA VEZ QUE SE RECARGABA EL PERFIL, Y NINGUNA SE CERRABA)
+  useEffect(() => {
+    const usuarioActual = auth.currentUser;
+    if (!usuarioActual) return;
+    const qChats = query(collection(db, 'Chats'), where('usuarios_ids', 'array-contains', usuarioActual.uid));
+    return onSnapshot(qChats, (snap) => {
+      const sinLeer = snap.docs.filter(d => d.data().ultimo_emisor_id !== usuarioActual.uid && d.data().leido === false).length;
+      setMensajesSinLeer(sinLeer);
+    });
+  }, []);
 
   const seleccionarFoto = async (destino: 'perfil' | 'vacante' | 'queja') => {
     const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsEditing: true, quality: 0.5, base64: true });
@@ -296,7 +302,7 @@ export default function DashboardContratista() {
         setPerfilTrabajadorExpandido(null);
         await cargarPerfil();
 
-        router.push({
+        router.replace({
           pathname: '/mensajes',
           params: { autoOpenId: trabajadorParaContratar.id, autoOpenNombre: `${trabajadorParaContratar.nombre} ${trabajadorParaContratar.apellidos}`, autoOpenRol: trabajadorParaContratar.oficio_principal || 'Trabajador', autoOpenFoto: trabajadorParaContratar.foto_rostro_url || 'https://via.placeholder.com/150' }
         } as any);
@@ -668,7 +674,7 @@ export default function DashboardContratista() {
         <TouchableOpacity style={styles.navItem} onPress={() => setPestañaActiva('Vacantes')}><Ionicons name="megaphone" size={26} color={pestañaActiva === 'Vacantes' ? "#0D2340" : "#6B7280"} /><Text style={[styles.navText, pestañaActiva === 'Vacantes' && {color: '#0D2340', fontWeight: 'bold'}]}>Anuncios</Text></TouchableOpacity>
         <TouchableOpacity style={styles.navItem} onPress={() => setPestañaActiva('Obras')}><Ionicons name="construct" size={26} color={pestañaActiva === 'Obras' ? "#0D2340" : "#6B7280"} /><Text style={[styles.navText, pestañaActiva === 'Obras' && {color: '#0D2340', fontWeight: 'bold'}]}>Obras</Text></TouchableOpacity>
         <TouchableOpacity style={styles.navItem} onPress={() => setPestañaActiva('Candidatos')}><Ionicons name="people" size={26} color={pestañaActiva === 'Candidatos' ? "#0D2340" : "#6B7280"} />{solicitudesPendientes.length > 0 && <View style={styles.badge}><Text style={styles.badgeText}>{solicitudesPendientes.length}</Text></View>}<Text style={[styles.navText, pestañaActiva === 'Candidatos' && {color: '#0D2340', fontWeight: 'bold'}]}>Solicitud</Text></TouchableOpacity>
-        <TouchableOpacity style={styles.navItem} onPress={() => router.push('/mensajes' as any)}>
+        <TouchableOpacity style={styles.navItem} onPress={() => router.replace('/mensajes' as any)}>
           <View style={{position: 'relative'}}>
             <Ionicons name="chatbubbles-outline" size={26} color="#6B7280" />
             {mensajesSinLeer > 0 && <View style={styles.badgeNotif}><Text style={styles.badgeNotifText}>{mensajesSinLeer > 9 ? '+9' : mensajesSinLeer}</Text></View>}
