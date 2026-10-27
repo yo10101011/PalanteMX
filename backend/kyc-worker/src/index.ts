@@ -2,13 +2,14 @@
 // Aquí viven las llaves de OCR.space, Face++ y la cuenta de servicio de Firebase, fuera de la app, donde nadie puede leerlas.
 // Rutas:
 //   POST /verificar-identidad  -> verifica INE + selfie y, si se aprueba, CREA el perfil en Firestore (solo usuarios con sesión).
-//   POST /resolver-usuario     -> convierte un nombre de usuario o teléfono en el correo para iniciar sesión.
+//   POST /iniciar-sesion       -> login con usuario o teléfono + contraseña; devuelve un pase de Firebase, NUNCA el correo.
 //   POST /resenas              -> deja una reseña (solo entre quienes trabajaron juntos, una vez).
 //   POST /firma-subida         -> da permiso firmado para subir UNA foto/archivo a Cloudinary (solo usuarios con sesión).
 import { createRemoteJWKSet, importPKCS8, jwtVerify, SignJWT } from 'jose';
 
 interface Env {
   FIREBASE_PROJECT_ID: string;
+  FIREBASE_WEB_API_KEY: string;
   CLOUDINARY_CLOUD_NAME: string;
   CLOUDINARY_API_KEY: string;
   CLOUDINARY_API_SECRET: string;
@@ -41,7 +42,7 @@ export default {
 
     const url = new URL(request.url);
     if (request.method === 'POST' && url.pathname === '/verificar-identidad') return verificarIdentidad(request, env);
-    if (request.method === 'POST' && url.pathname === '/resolver-usuario') return resolverUsuario(request, env);
+    if (request.method === 'POST' && url.pathname === '/iniciar-sesion') return iniciarSesion(request, env);
     if (request.method === 'POST' && url.pathname === '/resenas') return crearResena(request, env);
     if (request.method === 'POST' && url.pathname === '/firma-subida') return firmarSubida(request, env);
     return responder(404, { error: 'Ruta no encontrada' });
@@ -246,32 +247,70 @@ const validarRostro = async (env: Env, urlINEFrente: string, urlSelfie: string) 
 };
 
 // =========================================================================
-// RUTA 2: USUARIO O TELÉFONO -> CORREO (PARA EL LOGIN)
-// LA APP YA NO PUEDE BUSCAR EN LA BASE DE DATOS SIN SESIÓN, ASÍ QUE LO HACE EL SERVIDOR.
-// SOLO DEVUELVE EL CORREO, NUNCA EL RESTO DEL PERFIL.
+// RUTA 2: INICIAR SESIÓN CON USUARIO O TELÉFONO
+// EL SERVIDOR BUSCA EL CORREO POR DENTRO, REVISA LA CONTRASEÑA CON FIREBASE Y DEVUELVE UN "PASE" (CUSTOM TOKEN).
+// NUNCA DEVUELVE EL CORREO, Y RESPONDE LO MISMO SI EL USUARIO NO EXISTE O SI LA CONTRASEÑA ESTÁ MAL,
+// PARA QUE NADIE PUEDA AVERIGUAR QUÉ USUARIOS O TELÉFONOS ESTÁN REGISTRADOS.
 // =========================================================================
-const resolverUsuario = async (request: Request, env: Env) => {
-  let identificador: unknown;
+const CREDENCIALES_INCORRECTAS = 'Usuario o contraseña incorrectos.';
+
+const iniciarSesion = async (request: Request, env: Env) => {
+  let datos: { identificador?: unknown; password?: unknown };
   try {
-    identificador = ((await request.json()) as { identificador?: unknown }).identificador;
+    datos = await request.json();
   } catch {
     return responder(400, { error: 'Cuerpo de la petición inválido' });
   }
-  if (!textoValido(identificador, 60)) return responder(400, { error: 'Falta el usuario o teléfono' });
+  const { identificador, password } = datos;
+  if (!textoValido(identificador, 60) || typeof password !== 'string' || password.length === 0 || password.length > 200) {
+    return responder(400, { error: 'Escribe tu usuario o teléfono y tu contraseña.' });
+  }
 
-  const valor = identificador.trim();
   try {
+    let correo: string | null = null;
+    const valor = identificador.trim();
     for (const coleccion of ['Usuarios', 'Contratistas']) {
       for (const campo of ['nombre_usuario', 'numero_telefono']) {
-        const correo = await buscarCorreo(env, coleccion, campo, valor);
-        if (correo) return responder(200, { correo });
+        correo = correo || await buscarCorreo(env, coleccion, campo, valor);
       }
     }
+    // FIREBASE REVISA LA CONTRASEÑA (CON SUS PROPIAS PROTECCIONES CONTRA INTENTOS REPETIDOS).
+    // SI EL USUARIO NO EXISTE SE PREGUNTA IGUAL CON UN CORREO INEXISTENTE, PARA QUE LA RESPUESTA TARDE LO MISMO
+    // Y NO SE PUEDA SABER, MIDIENDO EL TIEMPO, SI EL USUARIO EXISTE.
+    const respuesta = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${env.FIREBASE_WEB_API_KEY}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: correo || 'no-existe@palantemx.invalid', password, returnSecureToken: true }),
+    });
+    if (!correo) return responder(401, { error: CREDENCIALES_INCORRECTAS });
+    const resultado = (await respuesta.json()) as { localId?: string; error?: { message?: string } };
+    if (!respuesta.ok || !resultado.localId) {
+      if (resultado.error?.message?.startsWith('TOO_MANY_ATTEMPTS')) {
+        return responder(429, { error: 'Demasiados intentos. Espera unos minutos o recupera tu contraseña.' });
+      }
+      if (resultado.error?.message === 'USER_DISABLED') return responder(403, { error: 'Esta cuenta está deshabilitada.' });
+      return responder(401, { error: CREDENCIALES_INCORRECTAS });
+    }
+
+    return responder(200, { token: await crearPaseFirebase(env, resultado.localId) });
   } catch (error) {
-    console.log('Error resolviendo usuario', error);
-    return responder(502, { error: 'No se pudo consultar la cuenta. Intenta más tarde.' });
+    console.log('Error iniciando sesión', error);
+    return responder(502, { error: 'No se pudo iniciar sesión. Intenta más tarde.' });
   }
-  return responder(404, { error: 'No encontramos ninguna cuenta con ese usuario o teléfono.' });
+};
+
+// "CUSTOM TOKEN" DE FIREBASE: UN PASE FIRMADO CON LA CUENTA DE SERVICIO QUE LA APP CANJEA CON signInWithCustomToken
+const crearPaseFirebase = async (env: Env, uid: string) => {
+  const cuenta = JSON.parse(env.FIREBASE_SERVICE_ACCOUNT) as { client_email: string; private_key: string };
+  const llavePrivada = await importPKCS8(cuenta.private_key, 'RS256');
+  return new SignJWT({ uid })
+    .setProtectedHeader({ alg: 'RS256' })
+    .setIssuer(cuenta.client_email)
+    .setSubject(cuenta.client_email)
+    .setAudience('https://identitytoolkit.googleapis.com/google.identity.identitytoolkit.v1.IdentityToolkit')
+    .setIssuedAt()
+    .setExpirationTime('1h')
+    .sign(llavePrivada);
 };
 
 // =========================================================================

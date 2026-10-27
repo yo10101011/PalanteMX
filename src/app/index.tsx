@@ -8,25 +8,27 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 // FIREBASE
 // @ts-ignore
-import { sendPasswordResetEmail, signInWithEmailAndPassword, signOut } from 'firebase/auth';
+import { sendPasswordResetEmail, signInWithCustomToken, signInWithEmailAndPassword, signOut } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import { auth, db } from '../../firebaseConfig';
 
-// SIN SESIÓN, LAS REGLAS DE FIRESTORE NO DEJAN LEER LA BASE DE DATOS,
-// ASÍ QUE EL SERVIDOR (backend/kyc-worker) ES QUIEN TRADUCE USUARIO/TELÉFONO A CORREO
-const resolverCorreo = async (identificador: string): Promise<string | null> => {
+// ERROR CON UN MENSAJE QUE SÍ SE LE PUEDE MOSTRAR AL USUARIO TAL CUAL (VIENE DE NUESTRO SERVIDOR)
+class ErrorParaUsuario extends Error {}
+
+// LOGIN CON USUARIO O TELÉFONO: EL SERVIDOR (backend/kyc-worker) BUSCA EL CORREO POR DENTRO, REVISA LA CONTRASEÑA
+// Y DEVUELVE UN "PASE" DE FIREBASE. NUNCA NOS DICE EL CORREO, ASÍ NADIE PUEDE SACAR CORREOS PROBANDO TELÉFONOS.
+const iniciarSesionConUsuario = async (identificador: string, password: string) => {
   const KYC_API_URL = process.env.EXPO_PUBLIC_KYC_API_URL;
   if (!KYC_API_URL) throw new Error("Falta configurar EXPO_PUBLIC_KYC_API_URL en el archivo .env");
 
-  const response = await fetch(`${KYC_API_URL}/resolver-usuario`, {
+  const response = await fetch(`${KYC_API_URL}/iniciar-sesion`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ identificador }),
+    body: JSON.stringify({ identificador, password }),
   });
-  if (response.status === 404) return null;
   const resultado = await response.json();
-  if (!response.ok) throw new Error(resultado.error || "El servidor no respondió.");
-  return resultado.correo;
+  if (!response.ok) throw new ErrorParaUsuario(resultado.error || "El servidor no respondió.");
+  return signInWithCustomToken(auth, resultado.token);
 };
 
 // DECIDE A DÓNDE VA CADA QUIEN DESPUÉS DE INICIAR SESIÓN (ADMIN, CONTRATISTA O TRABAJADOR)
@@ -68,21 +70,13 @@ export default function LoginScreen() {
     }
 
     setCargando(true);
-    let correoFinalParaLogin = identificador.trim();
+    const identificadorLimpio = identificador.trim();
 
     try {
-      if (!correoFinalParaLogin.includes('@')) {
-        const correoEncontrado = await resolverCorreo(correoFinalParaLogin);
-        if (!correoEncontrado) {
-          setCargando(false);
-          Alert.alert("Error", "No encontramos ninguna cuenta con ese usuario o teléfono.");
-          return;
-        }
-        correoFinalParaLogin = correoEncontrado;
-      }
-
-      // LOGEO EN FIREBASE
-      const userCredential = await signInWithEmailAndPassword(auth, correoFinalParaLogin, password);
+      // CON CORREO SE ENTRA DIRECTO A FIREBASE; CON USUARIO O TELÉFONO, A TRAVÉS DEL SERVIDOR
+      const userCredential = identificadorLimpio.includes('@')
+        ? await signInWithEmailAndPassword(auth, identificadorLimpio, password)
+        : await iniciarSesionConUsuario(identificadorLimpio, password);
       const uid = userCredential.user.uid; // Tomamos el ID del usuario que acaba de entrar
 
       /* --- CÓDIGO APAGADO TEMPORALMENTE (VERIFICACIÓN DE CORREO Y BIOMETRÍA) ---
@@ -101,7 +95,8 @@ export default function LoginScreen() {
 
     } catch (error: any) {
       setCargando(false);
-      Alert.alert("Error de acceso", "Contraseña incorrecta o usuario no válido.");
+      // LOS MENSAJES DE NUESTRO SERVIDOR (P. EJ. "DEMASIADOS INTENTOS") SE MUESTRAN TAL CUAL; LOS DE FIREBASE, GENÉRICOS
+      Alert.alert("Error de acceso", error instanceof ErrorParaUsuario ? error.message : "Contraseña incorrecta o usuario no válido.");
     }
   };
 

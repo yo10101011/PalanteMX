@@ -8,3 +8,5 @@ compatibility_date = "2025-02-14"
 # Valores públicos (no son secretos).
 FIREBASE_PROJECT_ID = "palantemx-2a5aa"
 CLOUDINARY_CLOUD_NAME = "ylqsvel1"
+# La "apiKey" web de Firebase: es la misma que está en firebaseConfig.js dentro de la app, no es secreta.
+FIREBASE_WEB_API_KEY = "AIzaSyCnlqzM3GCDGICbgUmCrsKPMobxvCqneIc"
