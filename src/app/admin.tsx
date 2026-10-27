@@ -27,6 +27,7 @@ LogBox.ignoreLogs(['@firebase/firestore', "WebChannelConnection RPC", "Name: und
 import { signOut } from 'firebase/auth';
 import { collection, deleteDoc, doc, getDoc, getDocs, setDoc, updateDoc } from 'firebase/firestore';
 import { auth, db } from '../../firebaseConfig';
+import { subirFotoACloudinary } from '@/lib/cloudinary';
 
 const { width } = Dimensions.get('window');
 
@@ -119,14 +120,6 @@ export default function AdminDashboard() {
   const cerrarSesionAdmin = async () => {
     await signOut(auth);
     router.replace('/' as any);
-  };
-
-  const subirFotoACloudinary = async (base64String: string) => {
-    const CLOUD_NAME = "ylqsvel1"; const UPLOAD_PRESET = "palante_fotos"; 
-    const data = new FormData(); 
-    data.append('file', base64String); data.append('upload_preset', UPLOAD_PRESET); data.append('cloud_name', CLOUD_NAME);
-    const response = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`, { method: 'POST', body: data });
-    const result = await response.json(); return result.secure_url; 
   };
 
   const cambiarFotoAdmin = async () => {

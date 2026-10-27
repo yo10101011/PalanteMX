@@ -3,11 +3,15 @@
 // Rutas:
 //   POST /verificar-identidad  -> verifica INE + selfie y, si se aprueba, CREA el perfil en Firestore (solo usuarios con sesión).
 //   POST /resolver-usuario     -> convierte un nombre de usuario o teléfono en el correo para iniciar sesión.
+//   POST /resenas              -> deja una reseña (solo entre quienes trabajaron juntos, una vez).
+//   POST /firma-subida         -> da permiso firmado para subir UNA foto/archivo a Cloudinary (solo usuarios con sesión).
 import { createRemoteJWKSet, importPKCS8, jwtVerify, SignJWT } from 'jose';
 
 interface Env {
   FIREBASE_PROJECT_ID: string;
   CLOUDINARY_CLOUD_NAME: string;
+  CLOUDINARY_API_KEY: string;
+  CLOUDINARY_API_SECRET: string;
   OCR_KEY: string;
   FACE_KEY: string;
   FACE_SECRET: string;
@@ -39,6 +43,7 @@ export default {
     if (request.method === 'POST' && url.pathname === '/verificar-identidad') return verificarIdentidad(request, env);
     if (request.method === 'POST' && url.pathname === '/resolver-usuario') return resolverUsuario(request, env);
     if (request.method === 'POST' && url.pathname === '/resenas') return crearResena(request, env);
+    if (request.method === 'POST' && url.pathname === '/firma-subida') return firmarSubida(request, env);
     return responder(404, { error: 'Ruta no encontrada' });
   },
 };
@@ -81,16 +86,27 @@ const verificarIdentidad = async (request: Request, env: Env) => {
   const perfil = validarPerfil(datos);
   if (!perfil) return responder(400, { error: 'Faltan datos o tienen un formato inválido' });
 
-  // SOLO ACEPTAMOS FOTOS DE NUESTRA CUENTA DE CLOUDINARY (EVITA QUE USEN NUESTRA CUOTA CON OTRAS IMÁGENES)
-  const prefijoCloudinary = `https://res.cloudinary.com/${env.CLOUDINARY_CLOUD_NAME}/`;
-  if (![perfil.urlINEFrente, perfil.urlINEReverso, perfil.urlSelfie].every(u => u.startsWith(prefijoCloudinary))) {
+  // SOLO ACEPTAMOS FOTOS QUE ESTE MISMO USUARIO SUBIÓ CON NUESTRO PERMISO FIRMADO:
+  // LAS INE EN SU CARPETA PRIVADA Y LA SELFIE EN SU CARPETA PÚBLICA
+  const carpetaINE = `palantemx/ine/${uid}/`;
+  const prefijoSelfie = `https://res.cloudinary.com/${env.CLOUDINARY_CLOUD_NAME}/image/upload/`;
+  if (!perfil.ineFrente.publicId.startsWith(carpetaINE) || !perfil.ineReverso.publicId.startsWith(carpetaINE)
+      || !perfil.urlSelfie.startsWith(prefijoSelfie) || !perfil.urlSelfie.includes(`/palantemx/publico/${uid}/`)) {
     return responder(400, { error: 'Las imágenes no provienen de PalanteMX' });
+  }
+
+  // LA INE ES PRIVADA: SOLO EL WORKER SABE FIRMAR LA DIRECCIÓN TEMPORAL PARA QUE OCR.space Y Face++ LA LEAN
+  const urlINEFrente = await urlPrivadaCloudinary(env, perfil.ineFrente.publicId, perfil.ineFrente.formato);
+  const revisionINE = await fetch(urlINEFrente, { method: 'HEAD' });
+  if (!revisionINE.ok) {
+    console.log('No se pudo leer la INE privada en Cloudinary', revisionINE.status, perfil.ineFrente.publicId);
+    return responder(502, { error: 'No se pudo leer la foto de tu INE. Vuelve a escanearla.' });
   }
 
   // 3. VERIFICACIÓN. EL NOMBRE QUE SE REVISA EN LA INE ES EXACTAMENTE EL QUE SE VA A GUARDAR
   try {
-    await validarNombreEnINE(env, perfil.urlINEFrente, `${perfil.nombre} ${perfil.apellidos}`);
-    await validarRostro(env, perfil.urlINEFrente, perfil.urlSelfie);
+    await validarNombreEnINE(env, urlINEFrente, `${perfil.nombre} ${perfil.apellidos}`);
+    await validarRostro(env, urlINEFrente, perfil.urlSelfie);
   } catch (error) {
     if (error instanceof ErrorKYC) return responder(200, { aprobado: false, motivo: error.message });
     console.log('Error interno de KYC', error);
@@ -116,11 +132,12 @@ const verificarIdentidad = async (request: Request, env: Env) => {
     };
     if (perfil.rol === 'Trabajador') datosUsuario.oficio_principal = perfil.oficio;
 
-    // LAS FOTOS DE LA INE VAN A UNA COLECCIÓN PRIVADA (SOLO LA VE EL DUEÑO Y EL ADMIN), NO AL PERFIL PÚBLICO
+    // LAS FOTOS DE LA INE VAN A UNA COLECCIÓN PRIVADA (SOLO LA VE EL DUEÑO Y EL ADMIN), NO AL PERFIL PÚBLICO.
+    // SE GUARDA SU ID DE CLOUDINARY (NO UNA DIRECCIÓN), PORQUE PARA VERLAS HAY QUE FIRMAR UNA DIRECCIÓN NUEVA.
     // (SE SOBREESCRIBE PARA QUE, SI ALGO FALLÓ A MEDIAS ANTES, EL USUARIO PUEDA REINTENTAR)
     await guardarDocumento(env, 'Verificaciones', uid, {
-      foto_ine_frente_url: perfil.urlINEFrente,
-      foto_ine_reverso_url: perfil.urlINEReverso,
+      ine_frente: { public_id: perfil.ineFrente.publicId, formato: perfil.ineFrente.formato },
+      ine_reverso: { public_id: perfil.ineReverso.publicId, formato: perfil.ineReverso.formato },
       foto_rostro_url: perfil.urlSelfie,
       aprobado: true,
       fecha_verificacion: new Date(),
@@ -143,13 +160,24 @@ type PerfilValidado = {
   usuario: string;
   oficio: string;
   ubicacion: { latitud: number; longitud: number };
-  urlINEFrente: string;
-  urlINEReverso: string;
+  ineFrente: FotoPrivada;
+  ineReverso: FotoPrivada;
   urlSelfie: string;
 };
 
+type FotoPrivada = { publicId: string; formato: string };
+
 const textoValido = (valor: unknown, max = 100): valor is string =>
   typeof valor === 'string' && valor.trim().length > 0 && valor.length <= max;
+
+const FORMATOS_IMAGEN = ['jpg', 'jpeg', 'png', 'webp'];
+
+const validarFotoPrivada = (valor: unknown): FotoPrivada | null => {
+  const foto = valor as { publicId?: unknown; formato?: unknown } | undefined;
+  if (!foto || !textoValido(foto.publicId, 300) || !/^[\w\-/]+$/.test(foto.publicId)) return null;
+  if (typeof foto.formato !== 'string' || !FORMATOS_IMAGEN.includes(foto.formato)) return null;
+  return { publicId: foto.publicId, formato: foto.formato };
+};
 
 const validarPerfil = (d: Record<string, unknown>): PerfilValidado | null => {
   const ubicacion = d.ubicacion as { latitud?: unknown; longitud?: unknown } | undefined;
@@ -158,7 +186,9 @@ const validarPerfil = (d: Record<string, unknown>): PerfilValidado | null => {
   if (d.rol === 'Trabajador' && !textoValido(d.oficio)) return null;
   if (!ubicacion || typeof ubicacion.latitud !== 'number' || typeof ubicacion.longitud !== 'number') return null;
   if (!Number.isFinite(ubicacion.latitud) || !Number.isFinite(ubicacion.longitud)) return null;
-  if (!textoValido(d.urlINEFrente, 500) || !textoValido(d.urlINEReverso, 500) || !textoValido(d.urlSelfie, 500)) return null;
+  const ineFrente = validarFotoPrivada(d.ineFrente);
+  const ineReverso = validarFotoPrivada(d.ineReverso);
+  if (!ineFrente || !ineReverso || !textoValido(d.urlSelfie, 500)) return null;
 
   return {
     rol: d.rol,
@@ -168,8 +198,8 @@ const validarPerfil = (d: Record<string, unknown>): PerfilValidado | null => {
     usuario: d.usuario.trim(),
     oficio: typeof d.oficio === 'string' ? d.oficio.trim() : '',
     ubicacion: { latitud: ubicacion.latitud, longitud: ubicacion.longitud },
-    urlINEFrente: d.urlINEFrente,
-    urlINEReverso: d.urlINEReverso,
+    ineFrente,
+    ineReverso,
     urlSelfie: d.urlSelfie,
   };
 };
@@ -390,6 +420,57 @@ const buscarPostulacionesAceptadas = async (env: Env, idTrabajador: string) => {
   return resultados
     .filter(r => r.document)
     .map(r => ({ idContratista: texto(r.document!.fields?.id_contratista), idVacante: texto(r.document!.fields?.id_vacante) }));
+};
+
+// =========================================================================
+// RUTA 4: PERMISO FIRMADO PARA SUBIR A CLOUDINARY
+// CLOUDINARY RECHAZA CUALQUIER SUBIDA SIN UNA FIRMA HECHA CON NUESTRA LLAVE SECRETA, QUE SOLO VIVE AQUÍ.
+// CADA USUARIO SOLO PUEDE SUBIR A SU PROPIA CARPETA, Y LAS INE QUEDAN PRIVADAS ("authenticated").
+// =========================================================================
+const firmarSubida = async (request: Request, env: Env) => {
+  const sesion = await verificarSesion(request, env);
+  if (!sesion) return responder(401, { error: 'Sesión inválida o expirada' });
+
+  let tipo: unknown;
+  try {
+    tipo = ((await request.json()) as { tipo?: unknown }).tipo;
+  } catch {
+    return responder(400, { error: 'Cuerpo de la petición inválido' });
+  }
+  if (tipo !== 'ine' && tipo !== 'publica') return responder(400, { error: 'Tipo de subida inválido' });
+
+  // ESTOS PARÁMETROS QUEDAN AMARRADOS A LA FIRMA: LA APP NO PUEDE CAMBIAR LA CARPETA NI HACER PÚBLICA UNA INE
+  const parametros: Record<string, string | number> = {
+    folder: `palantemx/${tipo === 'ine' ? 'ine' : 'publico'}/${sesion.uid}`,
+    timestamp: Math.floor(Date.now() / 1000), // CLOUDINARY SOLO ACEPTA LA FIRMA DURANTE 1 HORA
+  };
+  if (tipo === 'ine') parametros.type = 'authenticated';
+
+  return responder(200, {
+    ...parametros,
+    signature: await firmarParametrosCloudinary(env, parametros),
+    api_key: env.CLOUDINARY_API_KEY,
+    cloud_name: env.CLOUDINARY_CLOUD_NAME,
+  });
+};
+
+const sha1 = async (contenido: string) =>
+  new Uint8Array(await crypto.subtle.digest('SHA-1', new TextEncoder().encode(contenido)));
+
+// FIRMA DE SUBIDA DE CLOUDINARY: SHA-1 DE "clave=valor&clave=valor" (EN ORDEN ALFABÉTICO) + LLAVE SECRETA, EN HEXADECIMAL
+const firmarParametrosCloudinary = async (env: Env, parametros: Record<string, string | number>) => {
+  const cadena = Object.keys(parametros).sort().map(clave => `${clave}=${parametros[clave]}`).join('&');
+  const bytes = await sha1(cadena + env.CLOUDINARY_API_SECRET);
+  return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+};
+
+// DIRECCIÓN FIRMADA PARA VER UNA FOTO PRIVADA ("authenticated"):
+// LOS PRIMEROS 8 CARACTERES DEL SHA-1 (EN BASE64 PARA URL) DE "id.formato" + LLAVE SECRETA
+const urlPrivadaCloudinary = async (env: Env, publicId: string, formato: string) => {
+  const recurso = `${publicId}.${formato}`;
+  const bytes = await sha1(recurso + env.CLOUDINARY_API_SECRET);
+  const firma = btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').slice(0, 8);
+  return `https://res.cloudinary.com/${env.CLOUDINARY_CLOUD_NAME}/image/authenticated/s--${firma}--/${recurso}`;
 };
 
 // =========================================================================

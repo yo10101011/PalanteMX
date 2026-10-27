@@ -15,6 +15,7 @@ LogBox.ignoreLogs(['@firebase/firestore', "WebChannelConnection RPC", "Name: und
 import { deleteUser, signOut } from 'firebase/auth';
 import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, query, updateDoc, where } from 'firebase/firestore';
 import { auth, db } from '../../firebaseConfig';
+import { subirFotoACloudinary } from '@/lib/cloudinary';
 
 const { width } = Dimensions.get('window');
 
@@ -147,14 +148,6 @@ export default function DashboardContratista() {
   };
 
   useEffect(() => { cargarPerfil(); }, []);
-
-  const subirFotoACloudinary = async (base64String: string) => {
-    const CLOUD_NAME = "ylqsvel1"; const UPLOAD_PRESET = "palante_fotos"; 
-    const data = new FormData(); 
-    data.append('file', base64String); data.append('upload_preset', UPLOAD_PRESET); data.append('cloud_name', CLOUD_NAME);
-    const response = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`, { method: 'POST', body: data });
-    const result = await response.json(); return result.secure_url; 
-  };
 
   const seleccionarFoto = async (destino: 'perfil' | 'vacante' | 'queja') => {
     const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsEditing: true, quality: 0.5, base64: true });

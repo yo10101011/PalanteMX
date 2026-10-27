@@ -40,6 +40,7 @@ import {
   where
 } from 'firebase/firestore';
 import { auth, db } from '../../firebaseConfig';
+import { subirACloudinary, subirFotoACloudinary } from '@/lib/cloudinary';
 
 export default function Mensajes() {
   const params = useLocalSearchParams(); 
@@ -154,23 +155,6 @@ export default function Mensajes() {
     });
   };
 
-  const subirFotoACloudinary = async (base64String: string) => {
-    const CLOUD_NAME = "ylqsvel1"; const UPLOAD_PRESET = "palante_fotos"; 
-    const data = new FormData(); 
-    data.append('file', base64String); data.append('upload_preset', UPLOAD_PRESET); data.append('cloud_name', CLOUD_NAME);
-    const response = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`, { method: 'POST', body: data });
-    const result = await response.json(); return result.secure_url; 
-  };
-
-  const subirArchivoACloudinary = async (archivo: any) => {
-    const CLOUD_NAME = "ylqsvel1"; const UPLOAD_PRESET = "palante_fotos"; 
-    const data = new FormData(); 
-    data.append('file', { uri: archivo.uri, name: archivo.nombre, type: 'application/octet-stream' } as any);
-    data.append('upload_preset', UPLOAD_PRESET); data.append('cloud_name', CLOUD_NAME);
-    const response = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/auto/upload`, { method: 'POST', body: data });
-    const result = await response.json(); return result.secure_url; 
-  };
-
   const seleccionarImagen = async () => {
     setModalAdjuntos(false);
     const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsEditing: true, quality: 0.5, base64: true });
@@ -213,7 +197,7 @@ export default function Mensajes() {
         if (archivoEnviar.tipo === 'imagen' && archivoEnviar.uri.startsWith('data:image')) {
           urlArchivo = await subirFotoACloudinary(archivoEnviar.uri);
         } else {
-          urlArchivo = await subirArchivoACloudinary(archivoEnviar);
+          urlArchivo = (await subirACloudinary({ uri: archivoEnviar.uri, name: archivoEnviar.nombre, type: 'application/octet-stream' }, 'publica', 'auto')).url;
         }
       }
 

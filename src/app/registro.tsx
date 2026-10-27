@@ -12,6 +12,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 // @ts-ignore
 import { createUserWithEmailAndPassword, deleteUser, signOut, User } from 'firebase/auth';
 import { auth } from '../../firebaseConfig';
+import { subirACloudinary } from '@/lib/cloudinary';
 
 export default function RegistroScreen() {
   const [rol, setRol] = useState('Trabajador');
@@ -135,18 +136,6 @@ export default function RegistroScreen() {
     }
   };
 
-  const subirFotoACloudinary = async (base64String: string) => {
-    const CLOUD_NAME = "ylqsvel1"; 
-    const UPLOAD_PRESET = "palante_fotos"; 
-    const data = new FormData();
-    data.append('file', base64String);
-    data.append('upload_preset', UPLOAD_PRESET);
-    data.append('cloud_name', CLOUD_NAME);
-    const response = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`, { method: 'POST', body: data });
-    const result = await response.json();
-    return result.secure_url; 
-  };
-
   // LA VERIFICACIÓN (OCR + COMPARACIÓN FACIAL) SE HACE EN NUESTRO SERVIDOR (backend/kyc-worker),
   // ASÍ LAS LLAVES SECRETAS NUNCA VIAJAN DENTRO DE LA APP.
   // SI SE APRUEBA, EL SERVIDOR CREA EL PERFIL: LA APP NO PUEDE MARCARSE A SÍ MISMA COMO VERIFICADA.
@@ -186,14 +175,17 @@ export default function RegistroScreen() {
       usuarioNuevo = userCredential.user;
 
       setEstadoIA('Subiendo documentos cifrados...');
-      const urlINEFrente = await subirFotoACloudinary(fotoINEFrente);
-      const urlINEReverso = await subirFotoACloudinary(fotoINEReverso);
-      const urlSelfieGuardada = await subirFotoACloudinary(fotoSelfie);
+      // LAS INE SE SUBEN PRIVADAS (SOLO EL SERVIDOR PUEDE VERLAS); LA SELFIE ES PÚBLICA PORQUE ES LA FOTO DE PERFIL
+      const ineFrente = await subirACloudinary(fotoINEFrente, 'ine');
+      const ineReverso = await subirACloudinary(fotoINEReverso, 'ine');
+      const urlSelfieGuardada = (await subirACloudinary(fotoSelfie, 'publica')).url;
 
       setEstadoIA('Analizando biometría...');
       const esIdentidadValida = await verificarYCrearPerfil(usuarioNuevo, {
         rol, nombre, apellidos, telefono, usuario, oficio, ubicacion,
-        urlINEFrente, urlINEReverso, urlSelfie: urlSelfieGuardada,
+        ineFrente: { publicId: ineFrente.publicId, formato: ineFrente.formato },
+        ineReverso: { publicId: ineReverso.publicId, formato: ineReverso.formato },
+        urlSelfie: urlSelfieGuardada,
       });
 
       if (!esIdentidadValida) {
