@@ -197,7 +197,7 @@ export default function Mensajes() {
         if (archivoEnviar.tipo === 'imagen' && archivoEnviar.uri.startsWith('data:image')) {
           urlArchivo = await subirFotoACloudinary(archivoEnviar.uri);
         } else {
-          urlArchivo = (await subirACloudinary({ uri: archivoEnviar.uri }, 'publica', 'auto')).url;
+          urlArchivo = (await subirACloudinary({ uri: archivoEnviar.uri, name: archivoEnviar.nombre, type: 'application/octet-stream' }, 'publica', 'auto')).url;
         }
       }
 
