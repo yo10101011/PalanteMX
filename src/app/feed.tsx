@@ -51,7 +51,7 @@ export default function FeedTrabajador() {
       postSnap.forEach(doc => listaPostulaciones.push({ id_postulacion: doc.id, ...doc.data() }));
       
       // Ordenamos para que las postulaciones más recientes salgan arriba
-      listaPostulaciones.sort((a, b) => b.timestamp - a.timestamp);
+      listaPostulaciones.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
       setMisPostulaciones(listaPostulaciones);
 
     } catch (error) {
@@ -278,10 +278,11 @@ export default function FeedTrabajador() {
                   <View key={index} style={styles.postulacionCard}>
                     
                     <View style={styles.postulacionHeader}>
-                      <Image source={{ uri: post.vacante?.foto_contratista }} style={styles.postulacionAvatar} />
+                      <Image source={{ uri: post.vacante?.foto_contratista || 'https://via.placeholder.com/150' }} style={styles.postulacionAvatar} />
                       <View style={{flex: 1}}>
-                        <Text style={styles.postulacionTitle}>{post.vacante?.titulo}</Text>
-                        <Text style={styles.postulacionCompany}>{post.vacante?.contratista}</Text>
+                        {/* LAS CONTRATACIONES DIRECTAS VIEJAS NO TRAEN `vacante`: SE USAN LOS CAMPOS SUELTOS */}
+                        <Text style={styles.postulacionTitle}>{post.vacante?.titulo || post.titulo_vacante}</Text>
+                        <Text style={styles.postulacionCompany}>{post.vacante?.contratista || post.contratista || 'Contratación directa'}</Text>
                       </View>
                     </View>
 

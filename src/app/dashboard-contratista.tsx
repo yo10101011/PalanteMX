@@ -12,10 +12,12 @@ LogBox.ignoreLogs(['@firebase/firestore', "WebChannelConnection RPC", "Name: und
 
 // FIREBASE REAL
 // @ts-ignore
-import { deleteUser, signOut } from 'firebase/auth';
+import { signOut } from 'firebase/auth';
 import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, query, updateDoc, where } from 'firebase/firestore';
 import { auth, db } from '../../firebaseConfig';
 import { subirFotoACloudinary } from '@/lib/cloudinary';
+import { buscarObraDeVacante } from '@/lib/obras';
+import { eliminarCuentaEnServidor } from '@/lib/cuenta';
 
 const { width } = Dimensions.get('window');
 
@@ -166,9 +168,11 @@ export default function DashboardContratista() {
           { text: "Cancelar", style: "cancel" },
           { text: "Sí", onPress: async () => {
               setProcesando(true);
-              const urlSegura = await subirFotoACloudinary(base64Data);
-              await updateDoc(doc(db, userData.refPath), { foto_rostro_url: urlSegura });
-              await cargarPerfil();
+              try {
+                const urlSegura = await subirFotoACloudinary(base64Data);
+                await updateDoc(doc(db, userData.refPath), { foto_rostro_url: urlSegura });
+                await cargarPerfil();
+              } catch (error: any) { Alert.alert("No se pudo cambiar la foto", error?.message || "Intenta de nuevo."); }
               setProcesando(false);
             }
           }
@@ -289,13 +293,24 @@ export default function DashboardContratista() {
         }
         await updateDoc(vacanteRef, { cupo_actual: cupoNuevo, estado: nuevoEstado });
         
+        // MISMA FORMA QUE LAS POSTULACIONES DE LA BOLSA DE TRABAJO (feed.tsx): "Mis Postulaciones" DEL TRABAJADOR
+        // DIBUJA LA TARJETA CON `vacante` Y ORDENA CON `timestamp`
         await addDoc(collection(db, 'Postulaciones'), {
           id_vacante: vacanteRef.id,
           titulo_vacante: vData.titulo,
           id_trabajador: trabajadorParaContratar.id,
           id_contratista: userData.id,
+          contratista: vData.contratista,
+          vacante: {
+            titulo: vData.titulo,
+            contratista: vData.contratista,
+            ubicacion: vData.ubicacion,
+            pago: vData.pago,
+            foto_contratista: vData.foto_contratista || 'https://via.placeholder.com/150'
+          },
           estado: 'Aceptada (En Proceso)',
-          fecha_postulacion: new Date().toISOString()
+          fecha_postulacion: new Date().toLocaleDateString('es-MX'),
+          timestamp: new Date().getTime()
         });
 
         setModalContratarDirecto(false);
@@ -414,8 +429,10 @@ export default function DashboardContratista() {
       { text: "Cancelar", style: "cancel" }, { text: "Eliminar definitivamente", style: "destructive", onPress: async () => {
           try {
             setCargando(true);
-            if (auth.currentUser) { await deleteDoc(doc(db, userData.refPath)); await deleteUser(auth.currentUser); router.replace('/' as any); }
-          } catch (error) { setCargando(false); Alert.alert("Error", "Debes volver a iniciar sesión para borrar tu cuenta."); }
+            await eliminarCuentaEnServidor(); // BORRA PERFIL, DATOS PRIVADOS, FOTOS DE INE Y USUARIO, TODO JUNTO
+            await signOut(auth).catch(() => {}); // EL USUARIO YA NO EXISTE: SOLO SE LIMPIA LA SESIÓN DEL TELÉFONO
+            router.replace('/' as any);
+          } catch (error: any) { setCargando(false); Alert.alert("Error", error?.message || "No se pudo eliminar la cuenta."); }
         }
       }
     ]);
@@ -596,7 +613,7 @@ export default function DashboardContratista() {
                     <View style={{flexDirection: 'row', justifyContent: 'space-between', marginTop: 10}}>
                       <TouchableOpacity style={[styles.candBtnAccion, {backgroundColor: '#0D2340', borderColor: '#0D2340', flex: 1, marginRight: 5}]} onPress={() => {
                         // Buscar en el portafolio del trabajador si creó una obra que coincida con este título o esté "En Proceso"
-                        const obraMatch = cand.trabajador.portafolio?.find((o: any) => o.titulo === cand.titulo_vacante) || cand.trabajador.portafolio?.find((o: any) => o.estado === 'En Proceso');
+                        const obraMatch = buscarObraDeVacante(cand.trabajador.portafolio, cand.id_vacante, cand.titulo_vacante);
                         setObraSupervision({ cand, obraMatch });
                       }}>
                         <Ionicons name="reader" size={16} color="#FFF" />

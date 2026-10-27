@@ -10,10 +10,12 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 // FIREBASE
 // @ts-ignore
-import { deleteUser, signOut } from 'firebase/auth';
+import { signOut } from 'firebase/auth';
 import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, query, updateDoc, where } from 'firebase/firestore';
 import { auth, db } from '../../firebaseConfig';
 import { subirFotoACloudinary } from '@/lib/cloudinary';
+import { buscarObraDeVacante } from '@/lib/obras';
+import { eliminarCuentaEnServidor } from '@/lib/cuenta';
 
 const { width } = Dimensions.get('window');
 
@@ -153,9 +155,11 @@ export default function DashboardTrabajador() {
           { text: "Cancelar", style: "cancel" },
           { text: "Sí", onPress: async () => {
               setProcesando(true);
-              const urlSegura = await subirFotoACloudinary(base64Data);
-              await updateDoc(doc(db, userData.refPath), { foto_rostro_url: urlSegura });
-              await cargarPerfil();
+              try {
+                const urlSegura = await subirFotoACloudinary(base64Data);
+                await updateDoc(doc(db, userData.refPath), { foto_rostro_url: urlSegura });
+                await cargarPerfil();
+              } catch (error: any) { Alert.alert("No se pudo cambiar la foto", error?.message || "Intenta de nuevo."); }
               setProcesando(false);
             }
           }
@@ -217,12 +221,15 @@ export default function DashboardTrabajador() {
 
     const portafolioActualizado = [...(userData.portafolio || [])];
     const tituloBuscado = obraSeleccionada?.postulacion?.titulo_vacante;
-    
-    let indexObra = portafolioActualizado.findIndex((o: any) => o.titulo === tituloBuscado);
-    
+    const idVacante = obraSeleccionada?.postulacion?.id_vacante;
+
+    const obraExistente = buscarObraDeVacante(portafolioActualizado, idVacante, tituloBuscado);
+    let indexObra = obraExistente ? portafolioActualizado.indexOf(obraExistente) : -1;
+
     if (indexObra === -1) {
       const nuevaObra = {
         id_obra: new Date().getTime().toString(),
+        id_vacante: idVacante || null, // AMARRA ESTA BITÁCORA A SU VACANTE (ÚNICA), NO SOLO AL TÍTULO
         titulo: tituloBuscado,
         lugar: 'Obra asignada por Contratista',
         estado: 'En Proceso',
@@ -307,8 +314,10 @@ export default function DashboardTrabajador() {
       { text: "Cancelar", style: "cancel" }, { text: "Eliminar definitivamente", style: "destructive", onPress: async () => {
           try {
             setCargando(true);
-            if (auth.currentUser) { await deleteDoc(doc(db, userData.refPath)); await deleteUser(auth.currentUser); router.replace('/' as any); }
-          } catch (error: any) { setCargando(false); Alert.alert("Error", "Debes volver a iniciar sesión para borrar tu cuenta."); }
+            await eliminarCuentaEnServidor(); // BORRA PERFIL, DATOS PRIVADOS, FOTOS DE INE Y USUARIO, TODO JUNTO
+            await signOut(auth).catch(() => {}); // EL USUARIO YA NO EXISTE: SOLO SE LIMPIA LA SESIÓN DEL TELÉFONO
+            router.replace('/' as any);
+          } catch (error: any) { setCargando(false); Alert.alert("Error", error?.message || "No se pudo eliminar la cuenta."); }
         }
       }
     ]);
@@ -513,7 +522,7 @@ export default function DashboardTrabajador() {
             <View style={styles.contentSection}>
               {misObrasContratadas.length > 0 ? (
                 misObrasContratadas.map((obra, idx) => {
-                  const obraMatch = userData?.portafolio?.find((o: any) => o.titulo === obra.titulo_vacante || o.estado === 'En Proceso');
+                  const obraMatch = buscarObraDeVacante(userData?.portafolio, obra.id_vacante, obra.titulo_vacante);
                   return (
                     <View key={idx} style={[styles.projectCard, {borderColor: '#00D06C', borderWidth: 1}]}>
                       <View style={{flexDirection: 'row', alignItems: 'center', padding: 15, backgroundColor: '#F0FDF4'}}>

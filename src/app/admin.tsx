@@ -28,6 +28,7 @@ import { signOut } from 'firebase/auth';
 import { collection, deleteDoc, doc, getDoc, getDocs, setDoc, updateDoc } from 'firebase/firestore';
 import { auth, db } from '../../firebaseConfig';
 import { subirFotoACloudinary } from '@/lib/cloudinary';
+import { eliminarCuentaEnServidor } from '@/lib/cuenta';
 
 const { width } = Dimensions.get('window');
 
@@ -185,6 +186,24 @@ export default function AdminDashboard() {
           if(usuarioExpandido) {
             setUsuarioExpandido({...usuarioExpandido, estado_cuenta: nuevoEstado});
           }
+        }
+      }
+    ]);
+  };
+
+  // BORRA LA CUENTA COMPLETA DE UN USUARIO (PERFIL, DATOS PRIVADOS, FOTOS DE INE Y SU USUARIO DE FIREBASE).
+  // ANTES SOLO SE BORRABA EL PERFIL Y EL USUARIO SEGUÍA EXISTIENDO.
+  const eliminarUsuarioCompleto = (id: string, nombre: string) => {
+    Alert.alert("ELIMINACIÓN DEFINITIVA", `¿Eliminar a ${nombre} de la plataforma permanentemente? Se borra su perfil, sus datos de verificación y su acceso.`, [
+      { text: "Cancelar", style: "cancel" },
+      { text: "Eliminar", style: 'destructive', onPress: async () => {
+          setProcesando(true);
+          try {
+            await eliminarCuentaEnServidor(id);
+            setUsuarioExpandido(null);
+            await cargarDatosAdmin();
+          } catch (error: any) { Alert.alert("Error", error?.message || "No se pudo eliminar la cuenta."); }
+          setProcesando(false);
         }
       }
     ]);
@@ -608,7 +627,7 @@ export default function AdminDashboard() {
                   <TouchableOpacity style={[styles.btnWarning, {flex: 1, height: 50, alignItems: 'center'}]} onPress={() => alternarBloqueoUsuario(usuarioExpandido?.id, usuarioExpandido?.rol === 'Trabajador' ? 'Usuarios' : 'Contratistas', usuarioExpandido?.estado_cuenta)}>
                     <Text style={styles.btnTextWhite}>{usuarioExpandido?.estado_cuenta === 'Bloqueada' ? 'Desbloquear Acceso' : 'Bloquear Cuenta'}</Text>
                   </TouchableOpacity>
-                  <TouchableOpacity style={[styles.btnDanger, {flex: 1, height: 50, alignItems: 'center', marginLeft: 10}]} onPress={() => eliminarDocumento(usuarioExpandido?.id, usuarioExpandido?.rol === 'Trabajador' ? 'Usuarios' : 'Contratistas', `¿Eliminar a ${usuarioExpandido?.nombre} de la base de datos permanentemente?`, true)}>
+                  <TouchableOpacity style={[styles.btnDanger, {flex: 1, height: 50, alignItems: 'center', marginLeft: 10}]} onPress={() => eliminarUsuarioCompleto(usuarioExpandido?.id, usuarioExpandido?.nombre)} disabled={procesando}>
                     <Text style={styles.btnTextWhite}>Eliminar del Sistema</Text>
                   </TouchableOpacity>
                 </View>

@@ -5,6 +5,7 @@
 //   POST /iniciar-sesion       -> login con usuario o teléfono + contraseña; devuelve un pase de Firebase, NUNCA el correo.
 //   POST /resenas              -> deja una reseña (solo entre quienes trabajaron juntos, una vez).
 //   POST /firma-subida         -> da permiso firmado para subir UNA foto/archivo a Cloudinary (solo usuarios con sesión).
+//   POST /eliminar-cuenta      -> borra por completo una cuenta (la propia, o cualquiera si quien llama es admin).
 import { createRemoteJWKSet, importPKCS8, jwtVerify, SignJWT } from 'jose';
 
 interface Env {
@@ -45,6 +46,7 @@ export default {
     if (request.method === 'POST' && url.pathname === '/iniciar-sesion') return iniciarSesion(request, env);
     if (request.method === 'POST' && url.pathname === '/resenas') return crearResena(request, env);
     if (request.method === 'POST' && url.pathname === '/firma-subida') return firmarSubida(request, env);
+    if (request.method === 'POST' && url.pathname === '/eliminar-cuenta') return eliminarCuenta(request, env);
     return responder(404, { error: 'Ruta no encontrada' });
   },
 };
@@ -493,6 +495,64 @@ const firmarSubida = async (request: Request, env: Env) => {
   });
 };
 
+// =========================================================================
+// RUTA 5: ELIMINAR UNA CUENTA POR COMPLETO
+// DESDE LA APP NO SE PUEDE HACER BIEN: FIREBASE PIDE UN LOGIN RECIENTE PARA BORRAR EL USUARIO, Y SI SE BORRA PRIMERO
+// EL USUARIO, LAS REGLAS YA NO DEJAN BORRAR EL PERFIL. AQUÍ SE BORRA TODO JUNTO CON PERMISOS DE ADMINISTRADOR.
+// =========================================================================
+const eliminarCuenta = async (request: Request, env: Env) => {
+  const sesion = await verificarSesion(request, env);
+  if (!sesion) return responder(401, { error: 'Sesión inválida o expirada' });
+
+  let uidObjetivo = sesion.uid;
+  try {
+    const datos = (await request.json().catch(() => ({}))) as { uid?: unknown };
+    if (datos.uid !== undefined && datos.uid !== sesion.uid) {
+      // BORRAR LA CUENTA DE OTRA PERSONA: SOLO UN ADMIN
+      if (!textoValido(datos.uid, 128)) return responder(400, { error: 'Cuenta inválida' });
+      const admin = await leerDocumentos(env, [`Administradores/${sesion.uid}`]);
+      if (!admin[`Administradores/${sesion.uid}`]) return responder(403, { error: 'Solo un administrador puede eliminar otras cuentas.' });
+      uidObjetivo = datos.uid;
+    }
+
+    // 1. FOTOS PRIVADAS DE LA INE EN CLOUDINARY (SI FALLA, SE REGISTRA PERO NO DETIENE EL BORRADO DE LA CUENTA)
+    const verificacion = (await leerDocumentos(env, [`Verificaciones/${uidObjetivo}`]))[`Verificaciones/${uidObjetivo}`];
+    for (const campo of ['ine_frente', 'ine_reverso']) {
+      const publicId = verificacion?.fields[campo]?.mapValue?.fields?.public_id?.stringValue;
+      if (publicId) await borrarDeCloudinary(env, publicId, 'authenticated').catch(error => console.log('No se pudo borrar de Cloudinary', publicId, error));
+    }
+
+    // 2. PERFIL Y DATOS PRIVADOS EN FIRESTORE (TODO EN UNA SOLA OPERACIÓN)
+    const nombreBase = `projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents`;
+    await confirmarEscrituras(env, ['Usuarios', 'Contratistas', 'Verificaciones'].map(coleccion => ({ delete: `${nombreBase}/${coleccion}/${uidObjetivo}` })));
+
+    // 3. EL USUARIO DE FIREBASE AUTHENTICATION
+    const token = await obtenerTokenGoogle(env);
+    const respuesta = await fetch(`https://identitytoolkit.googleapis.com/v1/projects/${env.FIREBASE_PROJECT_ID}/accounts:delete`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ localId: uidObjetivo }),
+    });
+    if (!respuesta.ok) throw new Error(`Authentication respondió ${respuesta.status}: ${await respuesta.text()}`);
+
+    return responder(200, { eliminada: true });
+  } catch (error) {
+    console.log('Error eliminando cuenta', error);
+    return responder(502, { error: 'No se pudo eliminar la cuenta. Intenta más tarde.' });
+  }
+};
+
+const borrarDeCloudinary = async (env: Env, publicId: string, tipo: 'upload' | 'authenticated') => {
+  const parametros = { public_id: publicId, timestamp: Math.floor(Date.now() / 1000), type: tipo };
+  const form = new FormData();
+  Object.entries(parametros).forEach(([clave, valor]) => form.append(clave, String(valor)));
+  form.append('api_key', env.CLOUDINARY_API_KEY);
+  form.append('signature', await firmarParametrosCloudinary(env, parametros));
+
+  const respuesta = await fetch(`https://api.cloudinary.com/v1_1/${env.CLOUDINARY_CLOUD_NAME}/image/destroy`, { method: 'POST', body: form });
+  if (!respuesta.ok) throw new Error(`Cloudinary respondió ${respuesta.status}: ${await respuesta.text()}`);
+};
+
 const sha1 = async (contenido: string) =>
   new Uint8Array(await crypto.subtle.digest('SHA-1', new TextEncoder().encode(contenido)));
 
@@ -525,7 +585,8 @@ const obtenerTokenGoogle = async (env: Env) => {
 
   const cuenta = JSON.parse(env.FIREBASE_SERVICE_ACCOUNT) as { client_email: string; private_key: string };
   const llavePrivada = await importPKCS8(cuenta.private_key, 'RS256');
-  const assertion = await new SignJWT({ scope: 'https://www.googleapis.com/auth/datastore' })
+  // PERMISOS QUE SE PIDEN: LA BASE DE DATOS (FIRESTORE) Y LOS USUARIOS (AUTHENTICATION, PARA ELIMINAR CUENTAS)
+  const assertion = await new SignJWT({ scope: 'https://www.googleapis.com/auth/datastore https://www.googleapis.com/auth/identitytoolkit' })
     .setProtectedHeader({ alg: 'RS256' })
     .setIssuer(cuenta.client_email)
     .setSubject(cuenta.client_email)
@@ -591,7 +652,12 @@ const buscarCorreo = async (env: Env, coleccion: string, campo: string, valor: s
   return resultados[0]?.document?.fields?.correo?.stringValue || null;
 };
 
-type ValorFirestore = { stringValue?: string; integerValue?: string; doubleValue?: number };
+type ValorFirestore = {
+  stringValue?: string;
+  integerValue?: string;
+  doubleValue?: number;
+  mapValue?: { fields?: Record<string, ValorFirestore> };
+};
 type DocumentoLeido = { fields: Record<string, ValorFirestore>; updateTime: string };
 
 const texto = (valor: ValorFirestore | undefined) => valor?.stringValue || '';
