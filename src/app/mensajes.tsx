@@ -41,10 +41,12 @@ import {
 } from 'firebase/firestore';
 import { auth, db } from '../../firebaseConfig';
 import { subirACloudinary, subirFotoACloudinary } from '@/lib/cloudinary';
+import { useTecladoVisible } from '@/lib/teclado';
 
 export default function Mensajes() {
-  const params = useLocalSearchParams(); 
-  const insets = useSafeAreaInsets(); 
+  const params = useLocalSearchParams();
+  const insets = useSafeAreaInsets();
+  const tecladoVisible = useTecladoVisible(); // CON TECLADO ABIERTO NO HACE FALTA EL ESPACIO DE LA BARRA DE NAVEGACIÓN
   
   const [cargando, setCargando] = useState(true);
   const [procesando, setProcesando] = useState(false);
@@ -358,7 +360,8 @@ export default function Mensajes() {
 
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
-        <KeyboardAvoidingView style={{flex: 1}} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        {/* 'padding' TAMBIÉN EN ANDROID: CON LA PANTALLA "DE ORILLA A ORILLA", ANDROID YA NO SE ENCOGE SOLO AL ABRIR EL TECLADO */}
+        <KeyboardAvoidingView style={{flex: 1}} behavior="padding">
           
           <View style={styles.chatHeader}>
             <TouchableOpacity style={styles.backBtn} onPress={() => { escuchaMensajesRef.current?.(); escuchaMensajesRef.current = null; setChatActivo(null); router.setParams({ autoOpenId: '', autoOpenNombre: '' }); }}>
@@ -447,7 +450,7 @@ export default function Mensajes() {
               <Text style={styles.blockedBannerText}>Este chat ha sido bloqueado por seguridad. Ya no pueden enviarse mensajes.</Text>
             </View>
           ) : (
-            <View style={[styles.inputContainer, { paddingBottom: Platform.OS === 'ios' ? Math.max(insets.bottom, 10) : insets.bottom + 10 }]}>
+            <View style={[styles.inputContainer, { paddingBottom: tecladoVisible ? 10 : Math.max(insets.bottom, 0) + 10 }]}>
               <TouchableOpacity style={styles.attachBtn} onPress={() => setModalAdjuntos(true)}>
                 <Ionicons name="add-circle" size={28} color="#0D2340" />
               </TouchableOpacity>
