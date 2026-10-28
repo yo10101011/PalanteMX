@@ -5,8 +5,17 @@
 //   Propuesta ──┼─► Aceptada (En Proceso) ─► Por confirmar fin ─► Finalizada
 //               │            │                      │
 //               └─► Rechazada └──── cancelar ───────┴─► Suspendida ─► (admin) Cancelada, o reactivada
+import { router } from 'expo-router';
 import { addDoc, collection, getDocs } from 'firebase/firestore';
 import { auth, db } from '../../firebaseConfig';
+
+// ABRE EL CHAT CON LA OTRA PARTE (SI NO EXISTE, MENSAJES LO CREA). EL TRATO SE PLATICA AHÍ ANTES DE ACEPTAR.
+export const abrirChatCon = (persona: { id: string; nombre: string; rol: string; foto?: string }) => {
+  router.replace({
+    pathname: '/mensajes',
+    params: { autoOpenId: persona.id, autoOpenNombre: persona.nombre, autoOpenRol: persona.rol, autoOpenFoto: persona.foto || 'https://via.placeholder.com/150' },
+  } as any);
+};
 
 export const ESTADOS = {
   PENDIENTE: 'Pendiente',

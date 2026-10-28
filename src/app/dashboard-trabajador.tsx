@@ -14,8 +14,11 @@ import { signOut } from 'firebase/auth';
 import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, query, updateDoc, where } from 'firebase/firestore';
 import { auth, db } from '../../firebaseConfig';
 import { subirFotoACloudinary } from '@/lib/cloudinary';
-import { buscarObraDeVacante } from '@/lib/obras';
 import { eliminarCuentaEnServidor } from '@/lib/cuenta';
+import { abrirChatCon, accionContrato, AccionContrato, ESTADOS, sePuedeCalificar } from '@/lib/contratos';
+import { ModalBitacora } from '@/components/modal-bitacora';
+import { ModalCancelarContrato } from '@/components/modal-cancelar-contrato';
+import { BotonContrato, TarjetaContrato } from '@/components/tarjeta-contrato';
 
 const { width } = Dimensions.get('window');
 
@@ -68,13 +71,10 @@ export default function DashboardTrabajador() {
   const [evaluarEstrellas, setEvaluarEstrellas] = useState('5');
   const [evaluarComentario, setEvaluarComentario] = useState('');
 
-  const [modalAvance, setModalAvance] = useState(false);
-  const [obraSeleccionada, setObraSeleccionada] = useState<any>(null);
-  const [avanceAsistio, setAvanceAsistio] = useState(true);
-  const [avanceNota, setAvanceNota] = useState('');
-  const [avanceEvidencia, setAvanceEvidencia] = useState<string | null>(null);
-  
-  const [misObrasContratadas, setMisObrasContratadas] = useState<any[]>([]);
+  // CONTRATOS DEL TRABAJADOR (PROPUESTAS, OBRAS ACTIVAS, TERMINADAS...) Y LAS VENTANAS DE BITÁCORA Y CANCELACIÓN
+  const [contratos, setContratos] = useState<any[]>([]);
+  const [contratoBitacora, setContratoBitacora] = useState<any>(null);
+  const [contratoCancelar, setContratoCancelar] = useState<any>(null);
 
   // MAGIA: SI VENIMOS DE OTRA PANTALLA, ABRIR LA PESTAÑA CORRECTA
   useEffect(() => {
@@ -109,17 +109,18 @@ export default function DashboardTrabajador() {
           } catch (e) { setUbicacionLegible(data.ubicacion_texto || 'Ubicación guardada en BD'); }
         } else { setUbicacionLegible(data.ubicacion_texto || 'Sin datos de GPS'); }
 
-        const postRef = query(collection(db, 'Postulaciones'), where('id_trabajador', '==', usuarioActual.uid), where('estado', '==', 'Aceptada (En Proceso)'));
-        const snapPost = await getDocs(postRef);
-        const obrasAsignadas = [];
-        for (const p of snapPost.docs) {
-           const pData = p.data();
-           const contDoc = await getDoc(doc(db, 'Contratistas', pData.id_contratista));
-           if (contDoc.exists()) {
-               obrasAsignadas.push({ ...pData, id_postulacion: p.id, contratista_data: contDoc.data() });
-           }
-        }
-        setMisObrasContratadas(obrasAsignadas);
+        // TODOS MIS CONTRATOS, CON LOS DATOS DE CADA CONTRATISTA (UNA SOLA LECTURA POR CONTRATISTA)
+        const snapContratos = await getDocs(query(collection(db, 'Postulaciones'), where('id_trabajador', '==', usuarioActual.uid)));
+        const lista: any[] = snapContratos.docs.map(d => ({ id: d.id, ...d.data() }));
+        const idsContratistas = [...new Set(lista.map(c => c.id_contratista).filter(Boolean))];
+        const contratistas: Record<string, any> = {};
+        await Promise.all(idsContratistas.map(async id => {
+          const contDoc = await getDoc(doc(db, 'Contratistas', id));
+          if (contDoc.exists()) contratistas[id] = contDoc.data();
+        }));
+        lista.forEach(c => { c.contratista_data = contratistas[c.id_contratista] || null; });
+        lista.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+        setContratos(lista);
       }
     } catch (error) { console.log("Error", error); } finally { setCargando(false); }
   };
@@ -142,14 +143,13 @@ export default function DashboardTrabajador() {
     setProcesando(false);
   };
 
-  const seleccionarFoto = async (destino: 'perfil' | 'antes' | 'despues' | 'queja' | 'evidencia_avance') => {
+  const seleccionarFoto = async (destino: 'perfil' | 'antes' | 'despues' | 'queja') => {
     const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsEditing: true, quality: 0.5, base64: true });
     if (!result.canceled && result.assets[0].base64) {
       const base64Data = `data:image/jpeg;base64,${result.assets[0].base64}`;
       if (destino === 'antes') setFotoAntes(base64Data);
       if (destino === 'despues') setFotoDespues(base64Data);
       if (destino === 'queja') setQuejaFoto(base64Data);
-      if (destino === 'evidencia_avance') setAvanceEvidencia(base64Data);
       if (destino === 'perfil') {
         Alert.alert("Actualizar Foto", "¿Deseas guardar esta nueva foto?", [
           { text: "Cancelar", style: "cancel" },
@@ -207,52 +207,6 @@ export default function DashboardTrabajador() {
     Alert.alert("Eliminar Obra", "¿Estás seguro de que deseas borrar este trabajo de tu portafolio?", [
       { text: "Cancelar", style: "cancel" }, { text: "Sí, Eliminar", style: "destructive", onPress: async () => { setProcesando(true); try { const portafolioActualizado = (userData.portafolio || []).filter((o: any) => o && typeof o === 'object' && o.id_obra !== idObra); await updateDoc(doc(db, userData.refPath), { portafolio: portafolioActualizado }); await cargarPerfil(); setObraExpandida(null); Alert.alert("Obra Eliminada", "El trabajo ha sido borrado de tu perfil."); } catch (error) { Alert.alert("Error", "No se pudo eliminar la obra."); } setProcesando(false); } }
     ]);
-  };
-
-  const guardarAvanceDiario = async () => {
-    if (!avanceNota) { Alert.alert("Aviso", "Describe brevemente qué hiciste o por qué faltaste hoy."); return; }
-    if (avanceAsistio && !avanceEvidencia) { Alert.alert("Evidencia Requerida", "Para comprobar tu asistencia con el contratista, debes adjuntar una foto de tu avance de hoy."); return; }
-    setProcesando(true);
-    
-    let urlEvidencia = null;
-    if (avanceEvidencia && avanceEvidencia.startsWith('data:image')) {
-      urlEvidencia = await subirFotoACloudinary(avanceEvidencia);
-    }
-
-    const portafolioActualizado = [...(userData.portafolio || [])];
-    const tituloBuscado = obraSeleccionada?.postulacion?.titulo_vacante;
-    const idVacante = obraSeleccionada?.postulacion?.id_vacante;
-
-    const obraExistente = buscarObraDeVacante(portafolioActualizado, idVacante, tituloBuscado);
-    let indexObra = obraExistente ? portafolioActualizado.indexOf(obraExistente) : -1;
-
-    if (indexObra === -1) {
-      const nuevaObra = {
-        id_obra: new Date().getTime().toString(),
-        id_vacante: idVacante || null, // AMARRA ESTA BITÁCORA A SU VACANTE (ÚNICA), NO SOLO AL TÍTULO
-        titulo: tituloBuscado,
-        lugar: 'Obra asignada por Contratista',
-        estado: 'En Proceso',
-        fecha_inicio: new Date().toLocaleDateString('es-MX'),
-        fecha_fin: 'En progreso',
-        descripcion: 'Proyecto oficial coordinado por un contratista de la plataforma.',
-        bitacora: []
-      };
-      portafolioActualizado.push(nuevaObra);
-      indexObra = portafolioActualizado.length - 1;
-    }
-
-    if (!portafolioActualizado[indexObra].bitacora) portafolioActualizado[indexObra].bitacora = [];
-    
-    portafolioActualizado[indexObra].bitacora.push({ 
-      fecha: new Date().toLocaleDateString('es-MX'), asistio: avanceAsistio, nota: avanceNota, evidencia: urlEvidencia, timestamp: new Date().getTime() 
-    });
-
-    await updateDoc(doc(db, userData.refPath), { portafolio: portafolioActualizado });
-    await cargarPerfil();
-    Alert.alert("Bitácora Actualizada", "Tu avance de hoy fue registrado con éxito. El contratista ya puede revisarlo.");
-    
-    setProcesando(false); setModalAvance(false); setAvanceNota(''); setAvanceAsistio(true); setAvanceEvidencia(null); setObraSeleccionada(null);
   };
 
   const abrirModalQueja = async () => {
@@ -329,6 +283,94 @@ export default function DashboardTrabajador() {
     ]);
   };
 
+  // ---------------------------------------------------------------- CONTRATOS
+
+  // PIDE CONFIRMACIÓN, MANDA LA ACCIÓN AL SERVIDOR Y RECARGA
+  const confirmarAccion = (accion: AccionContrato, contrato: any, titulo: string, pregunta: string, exito: string) => {
+    Alert.alert(titulo, pregunta, [
+      { text: "Volver", style: "cancel" },
+      { text: "Sí", onPress: async () => {
+          setProcesando(true);
+          try {
+            await accionContrato(accion, { id_contrato: contrato.id });
+            Alert.alert("Listo", exito);
+            await cargarPerfil();
+          } catch (error: any) { Alert.alert("No se pudo", error?.message || "Intenta de nuevo."); }
+          setProcesando(false);
+        }
+      }
+    ]);
+  };
+
+  const datosContratista = (contrato: any) => ({
+    id: contrato.id_contratista,
+    nombre: contrato.contratista_data ? `${contrato.contratista_data.nombre} ${contrato.contratista_data.apellidos}` : (contrato.contratista || 'Contratista'),
+    foto: contrato.contratista_data?.foto_rostro_url,
+  });
+
+  const calificarContratista = (contrato: any) => {
+    setUsuarioSeleccionadoParaEvaluar({
+      id: contrato.id_contratista, nombre: contrato.contratista_data?.nombre || contrato.contratista, apellidos: contrato.contratista_data?.apellidos || '',
+      foto_rostro_url: contrato.contratista_data?.foto_rostro_url, rol: 'Contratista',
+    });
+    setModalEvaluar(true);
+  };
+
+  // QUÉ PUEDE HACER EL TRABAJADOR CON CADA CONTRATO, SEGÚN SU ESTADO
+  const botonesDelContrato = (contrato: any): BotonContrato[] => {
+    const contratista = datosContratista(contrato);
+    const chatear: BotonContrato = { texto: 'Chatear', icono: 'chatbubbles-outline', color: '#3B82F6', onPress: () => abrirChatCon({ id: contratista.id, nombre: contratista.nombre, rol: 'Contratista', foto: contratista.foto }) };
+    const bitacora: BotonContrato = { texto: 'Bitácora', icono: 'reader-outline', color: '#0D2340', onPress: () => setContratoBitacora(contrato) };
+    const calificar: BotonContrato = { texto: 'Calificar', icono: 'star-outline', color: '#F59E0B', onPress: () => calificarContratista(contrato) };
+
+    switch (contrato.estado) {
+      case ESTADOS.PROPUESTA: return [
+        { texto: 'Aceptar', icono: 'checkmark-circle', color: '#00D06C', relleno: true, onPress: () => confirmarAccion('aceptar', contrato, "Aceptar obra", `¿Aceptas trabajar en "${contrato.titulo_vacante}"? Con esto se cierra el trato con el contratista.`, "¡Trato cerrado! La obra ya aparece en tus obras activas.") },
+        { texto: 'Rechazar', icono: 'close-circle-outline', color: '#DC2626', onPress: () => confirmarAccion('rechazar', contrato, "Rechazar propuesta", "¿Seguro que no quieres esta obra?", "Rechazaste la propuesta.") },
+        chatear,
+      ];
+      case ESTADOS.ACTIVA: return [
+        { ...bitacora, texto: 'Llenar bitácora', relleno: true },
+        chatear,
+        { texto: 'Cancelar obra', icono: 'warning-outline', color: '#DC2626', onPress: () => setContratoCancelar(contrato) },
+      ];
+      case ESTADOS.POR_CONFIRMAR_FIN: return [
+        { texto: 'Sí, terminó', icono: 'flag', color: '#00D06C', relleno: true, onPress: () => confirmarAccion('confirmar_fin', contrato, "Confirmar fin de obra", "¿Confirmas que la obra ya terminó? Pasará a tu historial y a tu portafolio.", "¡Obra finalizada! Ya puedes calificar al contratista.") },
+        { texto: 'Aún no', icono: 'arrow-undo-outline', color: '#F59E0B', onPress: () => confirmarAccion('rechazar_fin', contrato, "La obra no ha terminado", "La obra regresará a activa. Platica con el contratista lo que falta.", "La obra sigue activa.") },
+        bitacora,
+        chatear,
+      ];
+      case ESTADOS.SUSPENDIDA: return [bitacora, calificar];
+      case ESTADOS.FINALIZADA: return [bitacora, calificar];
+      case ESTADOS.CANCELADA: return [bitacora, calificar];
+      default: return [];
+    }
+  };
+
+  // UNA SECCIÓN DE LA PESTAÑA "OBRAS" (SOLO APARECE SI TIENE CONTRATOS)
+  const seccionContratos = (titulo: string, estados: string[], aviso?: string) => {
+    const lista = contratos.filter(c => estados.includes(c.estado));
+    if (lista.length === 0) return null;
+    return (
+      <View style={{ marginBottom: 10 }}>
+        <Text style={styles.categoryTitle}>{titulo}</Text>
+        {lista.map(contrato => {
+          const contratista = datosContratista(contrato);
+          return (
+            <TarjetaContrato
+              key={contrato.id}
+              contrato={contrato}
+              otraParte={{ nombre: contratista.nombre, foto: contratista.foto, detalle: 'Contratista' }}
+              aviso={contrato.estado === ESTADOS.SUSPENDIDA && contrato.cancelado_por === userData?.id ? 'Tú cancelaste esta obra. El administrador la está revisando.' : aviso}
+              botones={botonesDelContrato(contrato).filter(b => b.texto !== 'Calificar' || sePuedeCalificar(contrato.estado))}
+              deshabilitado={procesando}
+            />
+          );
+        })}
+      </View>
+    );
+  };
+
   if (cargando) { return ( <View style={styles.loadingCenter}><ActivityIndicator size="large" color="#00D06C" /><Text style={styles.loadingText}>Cargando perfil...</Text></View> ); }
 
   const portafolio = (userData?.portafolio || []).filter((obra: any) => obra && typeof obra === 'object');
@@ -394,7 +436,22 @@ export default function DashboardTrabajador() {
                     <TouchableOpacity style={styles.addBtn} onPress={abrirModalNuevaObra}><Ionicons name="add" size={16} color="#FFF" /><Text style={styles.addBtnText}>Añadir Obra</Text></TouchableOpacity>
                   </View>
 
-                  {portafolio.length === 0 && (
+                  {/* OBRAS TERMINADAS CON CONTRATISTAS DE LA PLATAFORMA: SALEN SOLAS DE LOS CONTRATOS FINALIZADOS */}
+                  {contratos.some(c => c.estado === ESTADOS.FINALIZADA) && (
+                    <View style={{marginBottom: 20}}>
+                      <Text style={styles.categoryTitle}>🤝 Obras realizadas en PalanteMX</Text>
+                      {contratos.filter(c => c.estado === ESTADOS.FINALIZADA).map(contrato => (
+                        <TarjetaContrato
+                          key={contrato.id}
+                          contrato={contrato}
+                          otraParte={{ nombre: datosContratista(contrato).nombre, foto: datosContratista(contrato).foto, detalle: 'Contratista' }}
+                          botones={[{ texto: 'Ver bitácora', icono: 'reader-outline', color: '#0D2340', onPress: () => setContratoBitacora(contrato) }]}
+                        />
+                      ))}
+                    </View>
+                  )}
+
+                  {portafolio.length === 0 && !contratos.some(c => c.estado === ESTADOS.FINALIZADA) && (
                     <View style={styles.emptyState}>
                       <Ionicons name="construct-outline" size={40} color="#D1D5DB" />
                       <Text style={styles.emptyStateText}>Tu portafolio está vacío.</Text>
@@ -513,38 +570,24 @@ export default function DashboardTrabajador() {
           <View style={{flex: 1}}>
             <View style={styles.headerDark}>
               <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center'}}>
-                <Text style={styles.headerDarkTitle}>Mis Obras Asignadas</Text>
+                <Text style={styles.headerDarkTitle}>Mis Obras</Text>
                 {refreshing ? <ActivityIndicator color="#00D06C" /> : <TouchableOpacity onPress={onRefresh}><Ionicons name="refresh" size={24} color="#00D06C" /></TouchableOpacity>}
               </View>
-              <Text style={styles.headerDarkSub}>Registra tu bitácora diaria para que el contratista la revise.</Text>
+              <Text style={styles.headerDarkSub}>Acepta propuestas, lleva tu bitácora y cierra tus obras con el contratista.</Text>
             </View>
-            
+
             <View style={styles.contentSection}>
-              {misObrasContratadas.length > 0 ? (
-                misObrasContratadas.map((obra, idx) => {
-                  const obraMatch = buscarObraDeVacante(userData?.portafolio, obra.id_vacante, obra.titulo_vacante);
-                  return (
-                    <View key={idx} style={[styles.projectCard, {borderColor: '#00D06C', borderWidth: 1}]}>
-                      <View style={{flexDirection: 'row', alignItems: 'center', padding: 15, backgroundColor: '#F0FDF4'}}>
-                        <Image source={{uri: obra.contratista_data?.foto_rostro_url || 'https://via.placeholder.com/150'}} style={{width: 50, height: 50, borderRadius: 25, marginRight: 15, borderWidth: 1, borderColor: '#00D06C'}} />
-                        <View style={{flex: 1}}>
-                          <Text style={{fontSize: 16, fontWeight: 'bold', color: '#0D2340'}}>{obra.titulo_vacante}</Text>
-                          <Text style={{fontSize: 12, color: '#6B7280'}}>Contratista: {obra.contratista_data?.nombre}</Text>
-                        </View>
-                      </View>
-                      
-                      <TouchableOpacity style={{backgroundColor: '#0D2340', flexDirection: 'row', justifyContent: 'center', alignItems: 'center', padding: 15, margin: 15, borderRadius: 12}} onPress={() => { setObraSeleccionada({postulacion: obra, obraMatch: obraMatch}); setAvanceEvidencia(null); setModalAvance(true); }}>
-                        <Ionicons name="reader" size={20} color="#FFF" style={{marginRight: 8}} />
-                        <Text style={{color: '#FFF', fontWeight: 'bold', fontSize: 14}}>Ver / Llenar Bitácora Diaria</Text>
-                      </TouchableOpacity>
-                    </View>
-                  );
-                })
-              ) : (
+              {seccionContratos('📩 Propuestas para ti', [ESTADOS.PROPUESTA], 'Un contratista te propone esta obra. Platiquen por chat y, si te conviene, acéptala.')}
+              {seccionContratos('🏗️ Obras activas', [ESTADOS.ACTIVA])}
+              {seccionContratos('🏁 Por confirmar que terminó', [ESTADOS.POR_CONFIRMAR_FIN], 'El contratista marcó la obra como terminada. ¿Confirmas?')}
+              {seccionContratos('⚠️ Suspendidas', [ESTADOS.SUSPENDIDA], 'Se canceló y el administrador la está revisando.')}
+              {seccionContratos('📁 Historial', [ESTADOS.FINALIZADA, ESTADOS.CANCELADA])}
+
+              {contratos.filter(c => c.estado !== ESTADOS.PENDIENTE && c.estado !== ESTADOS.RECHAZADA).length === 0 && (
                 <View style={styles.emptyState}>
                   <Ionicons name="briefcase-outline" size={40} color="#D1D5DB" />
-                  <Text style={styles.emptyStateText}>No tienes obras asignadas por el momento.</Text>
-                  <Text style={styles.emptyStateSub}>Postúlate a las vacantes de los contratistas desde la pestaña Trabajo.</Text>
+                  <Text style={styles.emptyStateText}>No tienes obras ni propuestas por el momento.</Text>
+                  <Text style={styles.emptyStateSub}>Postúlate a las vacantes desde la pestaña Trabajo. Tus solicitudes enviadas aparecen ahí, en "Mis Postulaciones".</Text>
                 </View>
               )}
             </View>
@@ -700,63 +743,9 @@ export default function DashboardTrabajador() {
         </View>
       </Modal>
 
-      <Modal visible={modalAvance} animationType="slide" transparent>
-        <View style={styles.modalBgDark}>
-          <SafeAreaView style={{flex: 1, backgroundColor: '#F3F4F6', borderRadius: 20, overflow: 'hidden', marginTop: 30}}>
-            <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#0D2340', padding: 15}}>
-              <Text style={{color: '#FFF', fontWeight: 'bold', fontSize: 16}}>Bitácora de Obra</Text>
-              <TouchableOpacity onPress={() => setModalAvance(false)}><Ionicons name="close" size={28} color="#FFF"/></TouchableOpacity>
-            </View>
-            
-            <ScrollView contentContainerStyle={{padding: 20}}>
-              <Text style={styles.sectionTitle}>{obraSeleccionada?.postulacion?.titulo_vacante || obraSeleccionada?.titulo}</Text>
-              
-              <Text style={{fontSize: 14, fontWeight: 'bold', color: '#0D2340', marginBottom: 15, marginTop: 10}}>HISTORIAL (ENVIADO AL CONTRATISTA):</Text>
-              {obraSeleccionada?.obraMatch?.bitacora && obraSeleccionada.obraMatch.bitacora.length > 0 ? (
-                obraSeleccionada.obraMatch.bitacora.map((dia: any, i: number, arr: any[]) => (
-                  <View key={i} style={styles.trackerRow}>
-                    <View style={styles.trackerTimeline}>
-                      <View style={[styles.trackerDot, { backgroundColor: dia.asistio ? '#00D06C' : '#D32F2F' }]} />
-                      {i !== arr.length - 1 && <View style={styles.trackerLine} />}
-                    </View>
-                    <View style={styles.trackerContent}>
-                      <Text style={styles.trackerDate}>{dia.fecha} - {dia.asistio ? '✅ Asistió' : '❌ Faltó'}</Text>
-                      <Text style={styles.trackerNote}>{dia.nota}</Text>
-                      {dia.evidencia && (<Image source={{uri: dia.evidencia}} style={{width: 60, height: 60, borderRadius: 8, marginTop: 5, borderWidth: 1, borderColor: '#E5E7EB'}} />)}
-                    </View>
-                  </View>
-                ))
-              ) : (
-                <Text style={{color: '#6B7280', fontStyle: 'italic', marginBottom: 20}}>Aún no has reportado ningún día. Comienza llenando el formulario de abajo.</Text>
-              )}
-
-              <View style={{backgroundColor: '#FFF', padding: 15, borderRadius: 16, borderWidth: 1, borderColor: '#E5E7EB', marginTop: 20}}>
-                <Text style={{fontSize: 16, fontWeight: 'bold', color: '#0D2340', marginBottom: 15}}>Reportar Avance de Hoy</Text>
-                
-                <Text style={styles.modalLabel}>¿Asististe a la obra hoy?</Text>
-                <View style={styles.pickerBox}>
-                  <Picker selectedValue={avanceAsistio} onValueChange={(itemValue) => setAvanceAsistio(itemValue)}>
-                    <Picker.Item label="✅ Sí asistí y trabajé" value={true} />
-                    <Picker.Item label="❌ No pude asistir" value={false} />
-                  </Picker>
-                </View>
-                
-                <Text style={styles.modalLabel}>Notas y Avances (Obligatorio)</Text>
-                <TextInput style={[styles.modalInput, {height: 80, textAlignVertical: 'top'}]} multiline value={avanceNota} onChangeText={setAvanceNota} />
-                
-                <Text style={styles.modalLabel}>Evidencia Fotográfica (Para el Contratista)</Text>
-                <TouchableOpacity style={styles.uploadArea} onPress={() => seleccionarFoto('evidencia_avance')}>
-                  {avanceEvidencia ? <Image source={{uri: avanceEvidencia}} style={styles.uploadedImagePreview} /> : <><Ionicons name="camera-outline" size={30} color="#9CA3AF"/><Text style={styles.uploadText}>Subir Foto de Avance Diario</Text></>}
-                </TouchableOpacity>
-
-                <TouchableOpacity style={[styles.modalBtnSave, {marginTop: 10}]} onPress={guardarAvanceDiario} disabled={procesando}>
-                  {procesando ? <ActivityIndicator color="#FFF" /> : <Text style={styles.modalBtnTextS}>Guardar y Enviar al Contratista</Text>}
-                </TouchableOpacity>
-              </View>
-            </ScrollView>
-          </SafeAreaView>
-        </View>
-      </Modal>
+      {/* BITÁCORA (COMPARTIDA CON EL CONTRATISTA) Y VENTANA PARA CANCELAR UNA OBRA */}
+      <ModalBitacora contrato={contratoBitacora} puedeEscribir onClose={() => setContratoBitacora(null)} />
+      <ModalCancelarContrato contrato={contratoCancelar} onClose={() => setContratoCancelar(null)} onCancelado={() => { setContratoCancelar(null); cargarPerfil(); }} />
 
       <Modal visible={modalQueja} animationType="fade" transparent>
         <View style={styles.modalBg}>

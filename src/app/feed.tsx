@@ -6,8 +6,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 // FIREBASE
 // @ts-ignore
-import { addDoc, collection, getDocs, query, where } from 'firebase/firestore';
+import { collection, getDocs, query, where } from 'firebase/firestore';
 import { auth, db } from '../../firebaseConfig';
+import { abrirChatCon, accionContrato, ESTADOS, estiloEstado } from '@/lib/contratos';
 
 export default function FeedTrabajador() {
   const [cargando, setCargando] = useState(true);
@@ -79,42 +80,14 @@ export default function FeedTrabajador() {
         { text: "Sí, postularme", onPress: async () => {
             setProcesando(true);
             try {
-              const usuarioActual = auth.currentUser;
-              if (!usuarioActual) { Alert.alert("Error", "Inicia sesión primero."); return; }
-
-              // VERIFICAR SI YA ESTÁ POSTULADO PARA NO DUPLICAR
-              const yaPostulado = misPostulaciones.find(p => p.id_vacante === vacante.id);
-              if (yaPostulado) {
-                Alert.alert("Aviso", "Ya te has postulado a esta vacante anteriormente. Revisa la pestaña 'Mis Postulaciones'.");
-                setProcesando(false);
-                return;
-              }
-
-              // GUARDAMOS LA POSTULACIÓN REAL EN FIREBASE
-              await addDoc(collection(db, 'Postulaciones'), {
-                id_trabajador: usuarioActual.uid,
-                id_vacante: vacante.id,
-                titulo_vacante: vacante.titulo,
-                contratista: vacante.contratista,
-                vacante: {
-                  titulo: vacante.titulo,
-                  contratista: vacante.contratista,
-                  ubicacion: vacante.ubicacion,
-                  pago: vacante.pago,
-                  foto_contratista: vacante.foto_contratista || 'https://via.placeholder.com/150'
-                },
-                estado: 'Pendiente',
-                fecha_postulacion: new Date().toLocaleDateString('es-MX'),
-                timestamp: new Date().getTime()
-              });
-
-              // RECARGAMOS LOS DATOS Y CAMBIAMOS DE PESTAÑA PARA QUE VEA SU POSTULACIÓN
+              // EL SERVIDOR CREA LA SOLICITUD (Y REVISA QUE NO ESTÉS YA POSTULADO Y QUE LA VACANTE TENGA CUPO).
+              // EL CONTRATISTA LA REVISA, PLATICAN POR CHAT Y, SI LA ACEPTA, SE CIERRA EL TRATO.
+              await accionContrato('postular', { id_vacante: vacante.id });
               await cargarDatos();
-              Alert.alert("¡Postulación Enviada!", "El contratista ahora puede revisar tu portafolio.");
+              Alert.alert("¡Solicitud enviada!", "El contratista revisará tu perfil. Pueden platicar por chat; cuando él acepte, la obra aparecerá en tu pestaña Obras.");
               setPestañaFeed('Postulaciones');
-              
-            } catch (error) {
-              Alert.alert("Error", "No se pudo enviar la postulación. Revisa tu conexión.");
+            } catch (error: any) {
+              Alert.alert("No se pudo enviar", error?.message || "Revisa tu conexión.");
             } finally {
               setProcesando(false);
             }
@@ -124,7 +97,23 @@ export default function FeedTrabajador() {
     );
   };
 
-  const vacantesFiltradas = vacantes.filter(v => 
+  // RETIRAR UNA SOLICITUD QUE EL CONTRATISTA TODAVÍA NO RESPONDE
+  const retirarSolicitud = (post: any) => {
+    Alert.alert("Retirar solicitud", `¿Ya no quieres postularte a "${post.vacante?.titulo || post.titulo_vacante}"?`, [
+      { text: "Volver", style: "cancel" },
+      { text: "Sí, retirar", style: "destructive", onPress: async () => {
+          setProcesando(true);
+          try {
+            await accionContrato('rechazar', { id_contrato: post.id_postulacion });
+            await cargarDatos();
+          } catch (error: any) { Alert.alert("No se pudo", error?.message || "Intenta de nuevo."); }
+          setProcesando(false);
+        }
+      }
+    ]);
+  };
+
+  const vacantesFiltradas = vacantes.filter(v =>
     (filtroActivo === 'Todos' || v.categoria === filtroActivo) &&
     v.titulo.toLowerCase().includes(busqueda.toLowerCase())
   );
@@ -296,22 +285,31 @@ export default function FeedTrabajador() {
                     <View style={styles.estadoContainer}>
                       <View style={styles.estadoLinea}>
                         <Text style={styles.estadoLabel}>Estado actual:</Text>
-                        <View style={[
-                          styles.estadoBadge, 
-                          post.estado.includes('Aceptada') ? {backgroundColor: '#00D06C'} 
-                          : post.estado.includes('Rechazada') ? {backgroundColor: '#DC2626'} 
-                          : {backgroundColor: '#F59E0B'}
-                        ]}>
-                          <Text style={styles.estadoBadgeText}>{post.estado?.toUpperCase()}</Text>
+                        <View style={[styles.estadoBadge, { backgroundColor: estiloEstado(post.estado).color }]}>
+                          <Text style={styles.estadoBadgeText}>{estiloEstado(post.estado).texto}</Text>
                         </View>
                       </View>
                       <Text style={styles.fechaPostulacion}>Enviada: {post.fecha_postulacion}</Text>
                     </View>
 
-                    {post.estado.includes('Aceptada') && (
+                    {/* MIENTRAS EL CONTRATISTA NO RESPONDA: PLATICAR CON ÉL, O RETIRAR LA SOLICITUD */}
+                    {post.estado === ESTADOS.PENDIENTE && (
+                      <View style={styles.accionesPostulacion}>
+                        {post.id_contratista ? (
+                          <TouchableOpacity style={[styles.botonPostulacion, { borderColor: '#3B82F6' }]} onPress={() => abrirChatCon({ id: post.id_contratista, nombre: post.vacante?.contratista || post.contratista || 'Contratista', rol: 'Contratista', foto: post.vacante?.foto_contratista })}>
+                            <Ionicons name="chatbubbles-outline" size={16} color="#3B82F6" /><Text style={[styles.botonPostulacionTexto, { color: '#3B82F6' }]}>Chatear</Text>
+                          </TouchableOpacity>
+                        ) : null}
+                        <TouchableOpacity style={[styles.botonPostulacion, { borderColor: '#DC2626' }]} disabled={procesando} onPress={() => retirarSolicitud(post)}>
+                          <Ionicons name="close-circle-outline" size={16} color="#DC2626" /><Text style={[styles.botonPostulacionTexto, { color: '#DC2626' }]}>Retirar solicitud</Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
+
+                    {post.estado !== ESTADOS.PENDIENTE && post.estado !== ESTADOS.RECHAZADA && (
                       <View style={styles.mensajeAceptado}>
                         <Ionicons name="briefcase" size={16} color="#005530" style={{marginRight: 5}}/>
-                        <Text style={styles.mensajeAceptadoText}>¡Felicidades! Esta obra ahora aparece en tu Perfil de Trabajador en "Obras en Proceso". Pónte en contacto con el contratista en la pestaña de Mensajes.</Text>
+                        <Text style={styles.mensajeAceptadoText}>Esta obra ya aparece en tu pestaña "Obras", con su bitácora. Platica con el contratista en Mensajes.</Text>
                       </View>
                     )}
 
@@ -426,6 +424,9 @@ const styles = StyleSheet.create({
   estadoBadgeText: { color: '#FFF', fontSize: 10, fontWeight: 'bold' },
   fechaPostulacion: { fontSize: 11, color: '#9CA3AF' },
   
+  accionesPostulacion: { flexDirection: 'row', marginTop: 10, marginHorizontal: -4 },
+  botonPostulacion: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderRadius: 10, paddingVertical: 9, marginHorizontal: 4 },
+  botonPostulacionTexto: { fontSize: 12, fontWeight: 'bold', marginLeft: 5 },
   mensajeAceptado: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F0FDF4', padding: 10, borderRadius: 8, marginTop: 10, borderWidth: 1, borderColor: '#BBEFD3' },
   mensajeAceptadoText: { flex: 1, fontSize: 11, color: '#005530', fontWeight: 'bold' },
 
