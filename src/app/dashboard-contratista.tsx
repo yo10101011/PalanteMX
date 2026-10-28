@@ -16,8 +16,11 @@ import { signOut } from 'firebase/auth';
 import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, query, updateDoc, where } from 'firebase/firestore';
 import { auth, db } from '../../firebaseConfig';
 import { subirFotoACloudinary } from '@/lib/cloudinary';
-import { buscarObraDeVacante } from '@/lib/obras';
 import { eliminarCuentaEnServidor } from '@/lib/cuenta';
+import { abrirChatCon, accionContrato, AccionContrato, ESTADOS, sePuedeCalificar } from '@/lib/contratos';
+import { ModalBitacora } from '@/components/modal-bitacora';
+import { ModalCancelarContrato } from '@/components/modal-cancelar-contrato';
+import { BotonContrato, TarjetaContrato } from '@/components/tarjeta-contrato';
 
 const { width } = Dimensions.get('window');
 
@@ -58,8 +61,9 @@ export default function DashboardContratista() {
   
   // ESTADOS PARA PERFIL Y CONTRATACIÓN DIRECTA
   const [perfilTrabajadorExpandido, setPerfilTrabajadorExpandido] = useState<any>(null);
-  const [obraSupervision, setObraSupervision] = useState<any>(null); 
-  const [fotoEvidencia, setFotoEvidencia] = useState<string | null>(null);
+  // VENTANAS DE BITÁCORA (SOLO LECTURA PARA EL CONTRATISTA) Y DE CANCELACIÓN DE UNA OBRA
+  const [contratoBitacora, setContratoBitacora] = useState<any>(null);
+  const [contratoCancelar, setContratoCancelar] = useState<any>(null);
   const [modalContratarDirecto, setModalContratarDirecto] = useState(false);
   const [trabajadorParaContratar, setTrabajadorParaContratar] = useState<any>(null);
   const [vacanteSeleccionadaParaContratar, setVacanteSeleccionadaParaContratar] = useState<string>('');
@@ -118,22 +122,19 @@ export default function DashboardContratista() {
         listaVac.sort((a, b) => new Date(b.fecha_publicacion).getTime() - new Date(a.fecha_publicacion).getTime());
         setMisVacantes(listaVac);
 
-        const postulacionesSnap = await getDocs(collection(db, 'Postulaciones'));
-        const todasPostulaciones: any[] = postulacionesSnap.docs.map(d => ({id: d.id, ...d.data()}));
-        const postulacionesMias = todasPostulaciones.filter(p => listaVac.some(v => v.id === p.id_vacante));
-
-        const candidatosReales = [];
-        for (const p of postulacionesMias) {
-          const trabajadorDoc = await getDoc(doc(db, 'Usuarios', p.id_trabajador));
-          if (trabajadorDoc.exists()) {
-            candidatosReales.push({
-              ...p,
-              id_trabajador: trabajadorDoc.id,
-              trabajador: { id: trabajadorDoc.id, ...trabajadorDoc.data() }
-            });
-          }
-        }
-        setCandidatos(candidatosReales);
+        // MIS CONTRATOS (SOLICITUDES, PROPUESTAS, OBRAS...). LAS REGLAS SOLO DEJAN LEER LOS PROPIOS,
+        // ASÍ QUE SE PIDEN DIRECTAMENTE (ANTES SE DESCARGABAN LOS DE TODA LA PLATAFORMA Y SE FILTRABAN AQUÍ)
+        const snapContratos = await getDocs(query(collection(db, 'Postulaciones'), where('id_contratista', '==', usuarioActual.uid)));
+        const lista: any[] = snapContratos.docs.map(d => ({ id: d.id, ...d.data() }));
+        const idsTrabajadores = [...new Set(lista.map(c => c.id_trabajador).filter(Boolean))];
+        const trabajadores: Record<string, any> = {};
+        await Promise.all(idsTrabajadores.map(async id => {
+          const trabajadorDoc = await getDoc(doc(db, 'Usuarios', id));
+          if (trabajadorDoc.exists()) trabajadores[id] = { id, ...trabajadorDoc.data() };
+        }));
+        lista.forEach(c => { c.trabajador = trabajadores[c.id_trabajador] || { id: c.id_trabajador, nombre: c.nombre_trabajador || 'Trabajador', apellidos: '' }; });
+        lista.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+        setCandidatos(lista);
       }
     } catch (error) { console.log("Error", error); } finally { setCargando(false); }
   };
@@ -268,7 +269,7 @@ export default function DashboardContratista() {
   const iniciarContratacionDirecta = (trabajador: any) => {
     const vacantesActivas = misVacantes.filter(v => v.estado === 'Activa');
     if (vacantesActivas.length === 0) {
-      Alert.alert("Sin vacantes", "No tienes vacantes activas. Publica una primero para poder asignarle la obra a este trabajador.");
+      Alert.alert("Sin vacantes", "No tienes vacantes activas. Publica una primero para poder proponerle la obra a este trabajador.");
       return;
     }
     setTrabajadorParaContratar(trabajador);
@@ -276,55 +277,17 @@ export default function DashboardContratista() {
     setModalContratarDirecto(true);
   };
 
+  // PROPONER UNA OBRA A UN TRABAJADOR. YA NO LO CONTRATA AL INSTANTE: QUEDA COMO "PROPUESTA" HASTA QUE ÉL ACEPTE
+  // (PRIMERO PLATICAN POR CHAT). EL CUPO DE LA VACANTE SOLO SE OCUPA CUANDO LOS DOS ACEPTARON.
   const confirmarContratacionDirecta = async () => {
     setProcesando(true);
     try {
-      const vacanteRef = doc(db, 'Vacantes', vacanteSeleccionadaParaContratar);
-      const vacanteDoc = await getDoc(vacanteRef);
-      
-      if (vacanteDoc.exists()) {
-        const vData = vacanteDoc.data();
-        const cupoNuevo = (vData.cupo_actual || 0) + 1;
-        const cupoMaximo = vData.cupo_total || 1;
-        let nuevoEstado = vData.estado;
-        
-        if (cupoNuevo >= cupoMaximo) {
-          nuevoEstado = 'Cerrada';
-        }
-        await updateDoc(vacanteRef, { cupo_actual: cupoNuevo, estado: nuevoEstado });
-        
-        // MISMA FORMA QUE LAS POSTULACIONES DE LA BOLSA DE TRABAJO (feed.tsx): "Mis Postulaciones" DEL TRABAJADOR
-        // DIBUJA LA TARJETA CON `vacante` Y ORDENA CON `timestamp`
-        await addDoc(collection(db, 'Postulaciones'), {
-          id_vacante: vacanteRef.id,
-          titulo_vacante: vData.titulo,
-          id_trabajador: trabajadorParaContratar.id,
-          id_contratista: userData.id,
-          contratista: vData.contratista,
-          vacante: {
-            titulo: vData.titulo,
-            contratista: vData.contratista,
-            ubicacion: vData.ubicacion,
-            pago: vData.pago,
-            foto_contratista: vData.foto_contratista || 'https://via.placeholder.com/150'
-          },
-          estado: 'Aceptada (En Proceso)',
-          fecha_postulacion: new Date().toLocaleDateString('es-MX'),
-          timestamp: new Date().getTime()
-        });
-
-        setModalContratarDirecto(false);
-        setPerfilTrabajadorExpandido(null);
-        await cargarPerfil();
-
-        router.replace({
-          pathname: '/mensajes',
-          params: { autoOpenId: trabajadorParaContratar.id, autoOpenNombre: `${trabajadorParaContratar.nombre} ${trabajadorParaContratar.apellidos}`, autoOpenRol: trabajadorParaContratar.oficio_principal || 'Trabajador', autoOpenFoto: trabajadorParaContratar.foto_rostro_url || 'https://via.placeholder.com/150' }
-        } as any);
-      }
-    } catch (error) {
-      Alert.alert("Error", "No se pudo realizar la contratación directa.");
-    }
+      await accionContrato('proponer', { id_vacante: vacanteSeleccionadaParaContratar, id_trabajador: trabajadorParaContratar.id });
+      setModalContratarDirecto(false);
+      setPerfilTrabajadorExpandido(null);
+      Alert.alert("Propuesta enviada", `${trabajadorParaContratar.nombre} verá tu propuesta en su pestaña Obras. Platiquen los detalles por chat; cuando acepte, se cierra el trato.`);
+      abrirChatCon({ id: trabajadorParaContratar.id, nombre: `${trabajadorParaContratar.nombre} ${trabajadorParaContratar.apellidos}`, rol: trabajadorParaContratar.oficio_principal || 'Trabajador', foto: trabajadorParaContratar.foto_rostro_url });
+    } catch (error: any) { Alert.alert("No se pudo proponer", error?.message || "Intenta de nuevo."); }
     setProcesando(false);
   };
 
@@ -388,39 +351,16 @@ export default function DashboardContratista() {
     setProcesando(false);
   };
 
-  const aceptarCandidato = async () => {
+  // ACEPTAR O RECHAZAR UNA SOLICITUD DE UN TRABAJADOR (LO HACE EL SERVIDOR: REVISA EL CUPO Y CIERRA LA VACANTE SI SE LLENA)
+  const responderSolicitud = async (accion: 'aceptar' | 'rechazar') => {
     setProcesando(true);
     try {
-      await updateDoc(doc(db, 'Postulaciones', candidatoSeleccionado.id), { estado: 'Aceptada (En Proceso)' });
-      
-      const vacanteRef = doc(db, 'Vacantes', candidatoSeleccionado.id_vacante);
-      const vacanteDoc = await getDoc(vacanteRef);
-      
-      if (vacanteDoc.exists()) {
-        const vData = vacanteDoc.data();
-        const cupoNuevo = (vData.cupo_actual || 0) + 1;
-        const cupoMaximo = vData.cupo_total || 1;
-        let nuevoEstado = vData.estado;
-        
-        if (cupoNuevo >= cupoMaximo) {
-          nuevoEstado = 'Cerrada';
-          setTimeout(() => { Alert.alert("¡Vacante Llena y Cerrada!", "Has alcanzado el número de trabajadores que necesitabas."); }, 1000);
-        } else {
-          Alert.alert("Trabajador Contratado", `Has aceptado a ${candidatoSeleccionado.trabajador.nombre}. Llevas ${cupoNuevo} de ${cupoMaximo} contratados.`);
-        }
-        await updateDoc(vacanteRef, { cupo_actual: cupoNuevo, estado: nuevoEstado });
-      }
-      await cargarPerfil(); setCandidatoSeleccionado(null);
-    } catch (error) { Alert.alert("Error", "No se pudo aceptar al candidato."); }
-    setProcesando(false);
-  };
-
-  const rechazarCandidato = async () => {
-    setProcesando(true);
-    try {
-      await updateDoc(doc(db, 'Postulaciones', candidatoSeleccionado.id), { estado: 'Rechazada' });
-      await cargarPerfil(); Alert.alert("Candidato Rechazado", "El perfil ha sido descartado."); setCandidatoSeleccionado(null);
-    } catch (error) { Alert.alert("Error", "Hubo un problema."); }
+      await accionContrato(accion, { id_contrato: candidatoSeleccionado.id });
+      Alert.alert(accion === 'aceptar' ? "¡Trato cerrado!" : "Solicitud rechazada",
+        accion === 'aceptar' ? `${candidatoSeleccionado.trabajador.nombre} ya trabaja en "${candidatoSeleccionado.titulo_vacante}". Revisa su avance en la pestaña Obras.` : "El trabajador verá que su solicitud fue rechazada.");
+      setCandidatoSeleccionado(null);
+      await cargarPerfil();
+    } catch (error: any) { Alert.alert("No se pudo", error?.message || "Intenta de nuevo."); }
     setProcesando(false);
   };
 
@@ -444,13 +384,89 @@ export default function DashboardContratista() {
     ]);
   };
 
+  // ---------------------------------------------------------------- CONTRATOS
+
+  // PIDE CONFIRMACIÓN, MANDA LA ACCIÓN AL SERVIDOR Y RECARGA
+  const confirmarAccion = (accion: AccionContrato, contrato: any, titulo: string, pregunta: string, exito: string) => {
+    Alert.alert(titulo, pregunta, [
+      { text: "Volver", style: "cancel" },
+      { text: "Sí", onPress: async () => {
+          setProcesando(true);
+          try {
+            await accionContrato(accion, { id_contrato: contrato.id });
+            Alert.alert("Listo", exito);
+            await cargarPerfil();
+          } catch (error: any) { Alert.alert("No se pudo", error?.message || "Intenta de nuevo."); }
+          setProcesando(false);
+        }
+      }
+    ]);
+  };
+
+  const chatearCon = (contrato: any) => abrirChatCon({
+    id: contrato.id_trabajador,
+    nombre: `${contrato.trabajador?.nombre || ''} ${contrato.trabajador?.apellidos || ''}`.trim() || 'Trabajador',
+    rol: contrato.trabajador?.oficio_principal || 'Trabajador',
+    foto: contrato.trabajador?.foto_rostro_url,
+  });
+
+  // QUÉ PUEDE HACER EL CONTRATISTA CON CADA CONTRATO, SEGÚN SU ESTADO
+  const botonesDelContrato = (contrato: any): BotonContrato[] => {
+    const chatear: BotonContrato = { texto: 'Chatear', icono: 'chatbubbles-outline', color: '#3B82F6', onPress: () => chatearCon(contrato) };
+    const bitacora: BotonContrato = { texto: 'Bitácora', icono: 'reader-outline', color: '#0D2340', onPress: () => setContratoBitacora(contrato) };
+    const perfil: BotonContrato = { texto: 'Perfil', icono: 'person-outline', color: '#6B7280', onPress: () => setPerfilTrabajadorExpandido({ ...contrato.trabajador, yaContratado: true }) };
+    const calificar: BotonContrato = {
+      texto: 'Calificar', icono: 'star-outline', color: '#F59E0B',
+      onPress: () => { setUsuarioSeleccionadoParaEvaluar({ id: contrato.id_trabajador, nombre: contrato.trabajador?.nombre, apellidos: contrato.trabajador?.apellidos, foto_rostro_url: contrato.trabajador?.foto_rostro_url, rol: 'Trabajador' }); setModalEvaluar(true); },
+    };
+
+    switch (contrato.estado) {
+      case ESTADOS.PROPUESTA: return [
+        chatear,
+        { texto: 'Retirar propuesta', icono: 'close-circle-outline', color: '#DC2626', onPress: () => confirmarAccion('rechazar', contrato, "Retirar propuesta", "¿Ya no quieres proponerle esta obra?", "Retiraste la propuesta.") },
+      ];
+      case ESTADOS.ACTIVA: return [
+        { ...bitacora, texto: 'Ver bitácora', relleno: true },
+        chatear,
+        { texto: 'Marcar terminada', icono: 'flag-outline', color: '#00D06C', onPress: () => confirmarAccion('solicitar_fin', contrato, "Marcar obra como terminada", `¿La obra de ${contrato.trabajador?.nombre} ya terminó? Él tendrá que confirmarlo.`, "Listo. Falta que el trabajador confirme que terminó.") },
+        { texto: 'Cancelar obra', icono: 'warning-outline', color: '#DC2626', onPress: () => setContratoCancelar(contrato) },
+      ];
+      case ESTADOS.POR_CONFIRMAR_FIN: return [bitacora, chatear, { texto: 'Cancelar obra', icono: 'warning-outline', color: '#DC2626', onPress: () => setContratoCancelar(contrato) }];
+      case ESTADOS.SUSPENDIDA:
+      case ESTADOS.FINALIZADA:
+      case ESTADOS.CANCELADA: return [bitacora, perfil, calificar];
+      default: return [];
+    }
+  };
+
+  // UNA SECCIÓN DE CONTRATOS (SOLO APARECE SI TIENE ALGUNO)
+  const seccionContratos = (titulo: string, estados: string[], aviso?: string) => {
+    const lista = candidatos.filter(c => estados.includes(c.estado));
+    if (lista.length === 0) return null;
+    return (
+      <View style={{ marginBottom: 10 }}>
+        <Text style={[styles.sectionTitle, { fontSize: 15 }]}>{titulo}</Text>
+        {lista.map(contrato => (
+          <TarjetaContrato
+            key={contrato.id}
+            contrato={contrato}
+            otraParte={{ nombre: `${contrato.trabajador?.nombre || ''} ${contrato.trabajador?.apellidos || ''}`.trim() || 'Trabajador', foto: contrato.trabajador?.foto_rostro_url, detalle: contrato.trabajador?.oficio_principal }}
+            aviso={contrato.estado === ESTADOS.SUSPENDIDA && contrato.cancelado_por === userData?.id ? 'Tú cancelaste esta obra. El administrador la está revisando.' : aviso}
+            botones={botonesDelContrato(contrato).filter(b => b.texto !== 'Calificar' || sePuedeCalificar(contrato.estado))}
+            deshabilitado={procesando}
+          />
+        ))}
+      </View>
+    );
+  };
+
   const categoriasFiltro = ['Todos', 'Albañil', 'Carpintero', 'Electricista', 'Plomero', 'Pintor', 'Cerrajero', 'Bolero', 'Otro'];
   const directorioFiltrado = categoriaExplorar === 'Todos' ? directorio : directorio.filter(t => t.oficio_principal === categoriaExplorar);
 
   if (cargando) { return ( <View style={styles.loadingCenter}><ActivityIndicator size="large" color="#0D2340" /><Text style={styles.loadingText}>Cargando Panel Central...</Text></View> ); }
 
-  const solicitudesPendientes = candidatos.filter(c => c.estado !== 'Rechazada' && c.estado !== 'Aceptada (En Proceso)');
-  const trabajadoresContratados = candidatos.filter(c => c.estado === 'Aceptada (En Proceso)');
+  const solicitudesPendientes = candidatos.filter(c => c.estado === ESTADOS.PENDIENTE);
+  const trabajadoresContratados = candidatos.filter(c => c.estado === ESTADOS.ACTIVA);
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
@@ -536,7 +552,7 @@ export default function DashboardContratista() {
 
                     <TouchableOpacity style={styles.workerFeedBtn} onPress={() => iniciarContratacionDirecta(trabajador)}>
                       <Ionicons name="briefcase" size={18} color="#FFF" style={{marginRight: 5}}/>
-                      <Text style={styles.workerFeedBtnText}>Asignar a Vacante y Contactar</Text>
+                      <Text style={styles.workerFeedBtnText}>Proponer obra y chatear</Text>
                     </TouchableOpacity>
 
                   </TouchableOpacity>
@@ -593,53 +609,19 @@ export default function DashboardContratista() {
           {/* --- PESTAÑA NUEVA: OBRAS ACTIVAS (SUPERVISIÓN) --- */}
           {pestañaActiva === 'Obras' && (
             <View>
-              <Text style={styles.sectionTitle}>Supervisión de Obras Activas</Text>
-              <Text style={{fontSize: 12, color: '#6B7280', marginBottom: 15}}>Lleva el control diario de tus trabajadores contratados y revisa sus evidencias de trabajo.</Text>
-              
-              {trabajadoresContratados.length > 0 ? (
-                trabajadoresContratados.map((cand, index) => (
-                  <View key={index} style={[styles.candidatoCard, {borderColor: '#00D06C', borderWidth: 1}]}>
-                    <View style={styles.candidatoHeader}>
-                      <Image source={{ uri: cand.trabajador.foto_rostro_url || 'https://via.placeholder.com/150' }} style={styles.candidatoAvatar} />
-                      <View style={{flex: 1}}>
-                        <Text style={styles.candidatoName}>{cand.trabajador.nombre} {cand.trabajador.apellidos}</Text>
-                        <Text style={styles.candidatoOficio}>Obra: {cand.titulo_vacante}</Text>
-                      </View>
-                      <View style={{backgroundColor: '#D1FAE5', padding: 5, borderRadius: 20}}>
-                        <Ionicons name="construct" size={16} color="#059669"/>
-                      </View>
-                    </View>
-                    
-                    <View style={{flexDirection: 'row', justifyContent: 'space-between', marginTop: 10}}>
-                      <TouchableOpacity style={[styles.candBtnAccion, {backgroundColor: '#0D2340', borderColor: '#0D2340', flex: 1, marginRight: 5}]} onPress={() => {
-                        // Buscar en el portafolio del trabajador si creó una obra que coincida con este título o esté "En Proceso"
-                        const obraMatch = buscarObraDeVacante(cand.trabajador.portafolio, cand.id_vacante, cand.titulo_vacante);
-                        setObraSupervision({ cand, obraMatch });
-                      }}>
-                        <Ionicons name="reader" size={16} color="#FFF" />
-                        <Text style={[styles.candBtnText, {color: '#FFF', fontSize: 11}]}>Ver Bitácora</Text>
-                      </TouchableOpacity>
+              <Text style={styles.sectionTitle}>Mis Obras Asignadas</Text>
+              <Text style={{fontSize: 12, color: '#6B7280', marginBottom: 15}}>A quién le asignaste cada obra, su bitácora diaria, y el cierre o la cancelación.</Text>
 
-                      <TouchableOpacity style={[styles.candBtnAccion, {backgroundColor: '#3B82F6', borderColor: '#3B82F6', flex: 1, marginHorizontal: 5}]} onPress={() => setPerfilTrabajadorExpandido({ ...cand.trabajador, yaContratado: true })}>
-                        <Ionicons name="person" size={16} color="#FFF" />
-                        <Text style={[styles.candBtnText, {color: '#FFF', fontSize: 11}]}>Ver Perfil</Text>
-                      </TouchableOpacity>
+              {seccionContratos('🏗️ Obras activas', [ESTADOS.ACTIVA])}
+              {seccionContratos('🏁 Esperando que el trabajador confirme el fin', [ESTADOS.POR_CONFIRMAR_FIN], 'Marcaste la obra como terminada. Falta que el trabajador lo confirme.')}
+              {seccionContratos('⚠️ Suspendidas', [ESTADOS.SUSPENDIDA], 'Se canceló y el administrador la está revisando.')}
+              {seccionContratos('📁 Historial', [ESTADOS.FINALIZADA, ESTADOS.CANCELADA])}
 
-                      <TouchableOpacity style={[styles.candBtnAccion, {backgroundColor: '#F59E0B', borderColor: '#F59E0B', flex: 1, marginLeft: 5}]} onPress={() => {
-                        setUsuarioSeleccionadoParaEvaluar({ id: cand.id_trabajador, nombre: cand.trabajador.nombre, apellidos: cand.trabajador.apellidos, foto_rostro_url: cand.trabajador.foto_rostro_url, rol: 'Trabajador' });
-                        setModalEvaluar(true);
-                      }}>
-                        <Ionicons name="star" size={16} color="#FFF" />
-                        <Text style={[styles.candBtnText, {color: '#FFF', fontSize: 11}]}>Calificar</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                ))
-              ) : (
+              {!candidatos.some(c => [ESTADOS.ACTIVA, ESTADOS.POR_CONFIRMAR_FIN, ESTADOS.SUSPENDIDA, ESTADOS.FINALIZADA, ESTADOS.CANCELADA].includes(c.estado)) && (
                 <View style={styles.emptyState}>
                   <Ionicons name="construct-outline" size={40} color="#D1D5DB" />
-                  <Text style={styles.emptyStateTitle}>No tienes obras activas</Text>
-                  <Text style={styles.emptyStateText}>Acepta la solicitud de un trabajador para comenzar a supervisar su bitácora de obra.</Text>
+                  <Text style={styles.emptyStateTitle}>No tienes obras asignadas</Text>
+                  <Text style={styles.emptyStateText}>Propón una obra a un trabajador desde Explorar, o acepta una solicitud en la pestaña Solicitud.</Text>
                 </View>
               )}
             </View>
@@ -669,6 +651,11 @@ export default function DashboardContratista() {
                   <Text style={styles.emptyStateText}>Aún no hay trabajadores nuevos o ya los revisaste todos.</Text>
                 </View>
               )}
+
+              {/* PROPUESTAS QUE YO ENVIÉ DESDE EXPLORAR Y QUE EL TRABAJADOR AÚN NO RESPONDE */}
+              <View style={{marginTop: 20}}>
+                {seccionContratos('📤 Propuestas que enviaste', [ESTADOS.PROPUESTA], 'Esperando a que el trabajador acepte. Platiquen por chat.')}
+              </View>
             </View>
           )}
 
@@ -704,8 +691,8 @@ export default function DashboardContratista() {
       <Modal visible={modalContratarDirecto} animationType="slide" transparent>
         <View style={styles.modalBg}>
           <View style={[styles.modalContainer, {maxHeight: '90%'}]}>
-            <Text style={styles.modalTitle}>Asignar a una Obra</Text>
-            <Text style={{fontSize: 14, color: '#6B7280', marginBottom: 15}}>Selecciona a qué vacante activa deseas asignar a {trabajadorParaContratar?.nombre}. Al confirmar, el cupo de la vacante se actualizará y se abrirá el chat.</Text>
+            <Text style={styles.modalTitle}>Proponer una Obra</Text>
+            <Text style={{fontSize: 14, color: '#6B7280', marginBottom: 15}}>Elige la vacante que le quieres proponer a {trabajadorParaContratar?.nombre}. Le llegará como propuesta y se abrirá el chat para que platiquen; el trato se cierra cuando él acepte.</Text>
             
             <Text style={styles.modalLabel}>Mis Vacantes Activas</Text>
             <View style={styles.pickerBox}>
@@ -718,7 +705,7 @@ export default function DashboardContratista() {
             
             <View style={styles.modalBtnRow}>
               <TouchableOpacity style={styles.modalBtnCancel} onPress={() => setModalContratarDirecto(false)}><Text style={styles.modalBtnTextC}>Cancelar</Text></TouchableOpacity>
-              <TouchableOpacity style={styles.modalBtnSave} onPress={confirmarContratacionDirecta} disabled={procesando}>{procesando ? <ActivityIndicator color="#FFF" /> : <Text style={styles.modalBtnTextS}>Contratar y Hablar</Text>}</TouchableOpacity>
+              <TouchableOpacity style={styles.modalBtnSave} onPress={confirmarContratacionDirecta} disabled={procesando}>{procesando ? <ActivityIndicator color="#FFF" /> : <Text style={styles.modalBtnTextS}>Enviar propuesta</Text>}</TouchableOpacity>
             </View>
           </View>
         </View>
@@ -876,8 +863,8 @@ export default function DashboardContratista() {
                 <Ionicons name="images-outline" size={18} color="#0D2340" style={{marginRight: 8}}/><Text style={styles.verPortafolioText}>Ver Perfil Completo</Text>
               </TouchableOpacity>
               <View style={{flexDirection: 'row', justifyContent: 'space-between', marginTop: 30}}>
-                <TouchableOpacity style={[styles.candBtnAccion, {backgroundColor: '#FEE2E2', borderColor: '#F87171'}]} onPress={rechazarCandidato} disabled={procesando}><Ionicons name="close-circle-outline" size={20} color="#DC2626" /><Text style={[styles.candBtnText, {color: '#DC2626'}]}>Rechazar</Text></TouchableOpacity>
-                <TouchableOpacity style={[styles.candBtnAccion, {backgroundColor: '#0D2340', borderColor: '#0D2340'}]} onPress={aceptarCandidato} disabled={procesando}><Ionicons name="checkmark-circle" size={20} color="#FFF" /><Text style={[styles.candBtnText, {color: '#FFF'}]}>Aceptar</Text></TouchableOpacity>
+                <TouchableOpacity style={[styles.candBtnAccion, {backgroundColor: '#FEE2E2', borderColor: '#F87171'}]} onPress={() => responderSolicitud('rechazar')} disabled={procesando}><Ionicons name="close-circle-outline" size={20} color="#DC2626" /><Text style={[styles.candBtnText, {color: '#DC2626'}]}>Rechazar</Text></TouchableOpacity>
+                <TouchableOpacity style={[styles.candBtnAccion, {backgroundColor: '#0D2340', borderColor: '#0D2340'}]} onPress={() => responderSolicitud('aceptar')} disabled={procesando}><Ionicons name="checkmark-circle" size={20} color="#FFF" /><Text style={[styles.candBtnText, {color: '#FFF'}]}>Aceptar</Text></TouchableOpacity>
               </View>
             </View>
           </View>
@@ -919,7 +906,7 @@ export default function DashboardContratista() {
               
               {!perfilTrabajadorExpandido?.yaContratado && (
                 <TouchableOpacity style={{backgroundColor: '#00D06C', flexDirection: 'row', justifyContent: 'center', alignItems: 'center', padding: 15, borderRadius: 12, marginTop: 20}} onPress={() => iniciarContratacionDirecta(perfilTrabajadorExpandido)}>
-                  <Ionicons name="briefcase" size={20} color="#FFF" style={{marginRight: 8}} /><Text style={{color: '#FFF', fontWeight: 'bold', fontSize: 16}}>Asignar a Vacante y Contactar</Text>
+                  <Ionicons name="briefcase" size={20} color="#FFF" style={{marginRight: 8}} /><Text style={{color: '#FFF', fontWeight: 'bold', fontSize: 16}}>Proponer obra y chatear</Text>
                 </TouchableOpacity>
               )}
             </ScrollView>
@@ -927,53 +914,9 @@ export default function DashboardContratista() {
         </View>
       </Modal>
 
-      {/* --- MODAL PARA SUPERVISAR LA BITÁCORA ESPECÍFICA DE LA OBRA --- */}
-      <Modal visible={!!obraSupervision} animationType="slide" transparent>
-        <View style={styles.modalBgDark}>
-          <SafeAreaView style={{flex: 1, backgroundColor: '#F3F4F6', borderRadius: 20, overflow: 'hidden'}}>
-            <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#0D2340', padding: 15}}>
-              <Text style={{color: '#FFF', fontWeight: 'bold', fontSize: 16, flex: 1}} numberOfLines={1}>
-                Bitácora: {obraSupervision?.cand?.titulo_vacante}
-              </Text>
-              <TouchableOpacity onPress={() => setObraSupervision(null)}>
-                <Ionicons name="close-circle" size={28} color="#FFF"/>
-              </TouchableOpacity>
-            </View>
-            <ScrollView contentContainerStyle={{padding: 20}}>
-              {obraSupervision?.obraMatch && obraSupervision.obraMatch.bitacora && obraSupervision.obraMatch.bitacora.length > 0 ? (
-                <View style={{backgroundColor: '#FFF', padding: 20, borderRadius: 16, elevation: 2}}>
-                  <Text style={{fontSize: 14, fontWeight: 'bold', color: '#0D2340', marginBottom: 15}}>REGISTRO DIARIO DEL TRABAJADOR:</Text>
-                  {obraSupervision.obraMatch.bitacora.map((dia: any, i: number, arr: any[]) => (
-                    <View key={i} style={styles.trackerRow}>
-                      <View style={styles.trackerTimeline}>
-                        <View style={[styles.trackerDot, { backgroundColor: dia.asistio ? '#00D06C' : '#D32F2F' }]} />
-                        {i !== arr.length - 1 && <View style={styles.trackerLine} />}
-                      </View>
-                      <View style={styles.trackerContent}>
-                        <Text style={styles.trackerDate}>{dia.fecha} - {dia.asistio ? '✅ Asistió' : '❌ Faltó'}</Text>
-                        <Text style={styles.trackerNote}>{dia.nota}</Text>
-                        
-                        {/* EVIDENCIA FOTOGRÁFICA DE LA BITÁCORA */}
-                        {dia.evidencia && (
-                          <TouchableOpacity onPress={() => setFotoEvidencia(dia.evidencia)}>
-                            <Image source={{uri: dia.evidencia}} style={{width: 100, height: 100, borderRadius: 8, marginTop: 8, borderWidth: 1, borderColor: '#E5E7EB'}} />
-                          </TouchableOpacity>
-                        )}
-                      </View>
-                    </View>
-                  ))}
-                </View>
-              ) : (
-                <View style={styles.emptyState}>
-                  <Ionicons name="reader-outline" size={50} color="#D1D5DB" />
-                  <Text style={styles.emptyStateTitle}>Bitácora Vacía</Text>
-                  <Text style={styles.emptyStateText}>El trabajador aún no ha registrado avances diarios para esta obra.</Text>
-                </View>
-              )}
-            </ScrollView>
-          </SafeAreaView>
-        </View>
-      </Modal>
+      {/* BITÁCORA (LA MISMA QUE LLENA EL TRABAJADOR; AQUÍ SOLO SE LEE) Y VENTANA PARA CANCELAR UNA OBRA */}
+      <ModalBitacora contrato={contratoBitacora} puedeEscribir={false} onClose={() => setContratoBitacora(null)} />
+      <ModalCancelarContrato contrato={contratoCancelar} onClose={() => setContratoCancelar(null)} onCancelado={() => { setContratoCancelar(null); cargarPerfil(); }} />
 
       <Modal visible={modalEvaluar} animationType="slide" transparent>
         <View style={styles.modalBg}>
@@ -1025,18 +968,6 @@ export default function DashboardContratista() {
 
             </ScrollView>
           </View>
-        </View>
-      </Modal>
-
-      {/* --- MODAL PARA VER FOTO DE EVIDENCIA EN PANTALLA COMPLETA --- */}
-      <Modal visible={!!fotoEvidencia} transparent animationType="fade">
-        <View style={styles.modalBgDark}>
-          <TouchableOpacity style={{position: 'absolute', top: 40, right: 20, zIndex: 10}} onPress={() => setFotoEvidencia(null)}>
-            <Ionicons name="close-circle" size={36} color="#FFF" />
-          </TouchableOpacity>
-          {fotoEvidencia && (
-            <Image source={{uri: fotoEvidencia}} style={{width: width - 40, height: '70%', borderRadius: 16}} resizeMode="contain" />
-          )}
         </View>
       </Modal>
 
