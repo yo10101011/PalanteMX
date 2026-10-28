@@ -546,7 +546,10 @@ export default function Mensajes() {
         <Text style={styles.inboxSubtitle}>Conecta con talento o consigue trabajo</Text>
       </View>
 
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{padding: 20}}>
+      {/* LA LISTA Y EL BOTÓN FLOTANTE VIVEN EN ESTA ZONA, QUE TERMINA DONDE EMPIEZA LA BARRA DE ABAJO:
+          ASÍ EL BOTÓN SIEMPRE QUEDA ARRIBA DE LA BARRA Y NUNCA TAPADO POR ELLA, EN CUALQUIER TAMAÑO DE PANTALLA */}
+      <View style={{flex: 1}}>
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{padding: 20, paddingBottom: 100}}>
         {chats.length > 0 ? (
           chats.map((chat, index) => {
             // BLINDAJE: Si el chat no tiene el formato correcto, lo ignoramos para no tronar la app
@@ -596,6 +599,7 @@ export default function Mensajes() {
       <TouchableOpacity style={styles.fab} onPress={abrirBuscadorNuevoChat}>
         <Ionicons name="chatbubbles" size={24} color="#FFF" />
       </TouchableOpacity>
+      </View>
 
       {/* --- MENÚ INFERIOR CON ORDEN CORRECTO Y PARÁMETROS --- */}
       <View style={styles.bottomNavigation}>
@@ -668,7 +672,7 @@ const styles = StyleSheet.create({
   emptyInbox: { alignItems: 'center', marginTop: 60, paddingHorizontal: 30 },
   emptyInboxTitle: { fontSize: 18, fontWeight: 'bold', color: '#0D2340', marginTop: 15, marginBottom: 5 },
   emptyInboxText: { fontSize: 14, color: '#6B7280', textAlign: 'center' },
-  fab: { position: 'absolute', bottom: 90, right: 20, backgroundColor: '#00D06C', width: 60, height: 60, borderRadius: 30, justifyContent: 'center', alignItems: 'center', elevation: 5, shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 5 },
+  fab: { position: 'absolute', bottom: 20, right: 20, backgroundColor: '#00D06C', width: 60, height: 60, borderRadius: 30, justifyContent: 'center', alignItems: 'center', elevation: 5, shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 5 },
   chatHeader: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#0D2340', paddingHorizontal: 15, paddingVertical: 15, borderBottomLeftRadius: 15, borderBottomRightRadius: 15 },
   backBtn: { padding: 5, marginRight: 10 },
   chatAvatar: { width: 40, height: 40, borderRadius: 20, marginRight: 12, backgroundColor: '#E5E7EB', borderWidth: 1, borderColor: '#FFF' },
