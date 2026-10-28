@@ -14,6 +14,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  KeyboardAvoidingView,
   TouchableOpacity,
   View
 } from 'react-native';
@@ -29,7 +30,25 @@ import { collection, deleteDoc, doc, getDoc, getDocs, setDoc, updateDoc } from '
 import { auth, db } from '../../firebaseConfig';
 import { subirFotoACloudinary } from '@/lib/cloudinary';
 import { eliminarCuentaEnServidor } from '@/lib/cuenta';
-import { accionContrato } from '@/lib/contratos';
+import { accionContrato, resolverReporte } from '@/lib/contratos';
+
+// QUÉ PUEDE DECIDIR EL ADMIN SEGÚN EL TIPO DE REPORTE. LAS CANCELACIONES DE OBRA SE DECIDEN CON EL CONTRATO
+// (REACTIVAR O CANCELAR); LOS DEMÁS, CON /reportes. EN TODOS SE ESCRIBE UNA NOTA QUE LES LLEGA A LAS DOS PARTES.
+const esCancelacion = (q: any) => !!q.id_contrato && (q.tipo === 'cancelacion' || (!q.tipo && q.motivo === 'Cancelación de obra'));
+const opcionesDeReporte = (q: any): { valor: string; texto: string; color: string }[] => {
+  if (esCancelacion(q)) return [
+    { valor: 'admin_reactivar', texto: 'Reactivar la obra', color: '#00D06C' },
+    { valor: 'admin_cancelar', texto: 'Cancelar definitivamente', color: '#DC2626' },
+  ];
+  if (q.tipo === 'bitacora') return [
+    { valor: 'a_favor_trabajador', texto: 'El trabajador tiene razón: el día cuenta', color: '#00D06C' },
+    { valor: 'a_favor_contratista', texto: 'El contratista tiene razón: se descuenta', color: '#DC2626' },
+  ];
+  return [
+    { valor: 'procede', texto: `${q.nombre_reportante || 'Quien reporta'} tiene razón`, color: '#00D06C' },
+    { valor: 'no_procede', texto: 'El reporte no procede', color: '#6B7280' },
+  ];
+};
 
 const { width } = Dimensions.get('window');
 
@@ -51,6 +70,10 @@ export default function AdminDashboard() {
   const [usuarioExpandido, setUsuarioExpandido] = useState<any>(null);
   const [vacanteExpandida, setVacanteExpandida] = useState<any>(null);
   const [fotoEvidencia, setFotoEvidencia] = useState<string | null>(null);
+  // VENTANA PARA RESOLVER UN REPORTE: LA DECISIÓN ELEGIDA Y LA NOTA QUE SE LES ENVÍA A LAS DOS PARTES
+  const [quejaResolviendo, setQuejaResolviendo] = useState<any>(null);
+  const [decision, setDecision] = useState('');
+  const [notaAdmin, setNotaAdmin] = useState('');
 
   const [modalEditarAdmin, setModalEditarAdmin] = useState(false);
   const [editAdminNombre, setEditAdminNombre] = useState('');
@@ -248,40 +271,32 @@ export default function AdminDashboard() {
     ]);
   };
 
-  // OBRA SUSPENDIDA POR UNA CANCELACIÓN: REACTIVARLA O CANCELARLA DEFINITIVAMENTE (LIBERA SU LUGAR EN LA VACANTE).
-  // LO HACE EL SERVIDOR, QUE TAMBIÉN ARCHIVA EL REPORTE COMO RESUELTO.
-  const decidirObraSuspendida = (queja: any, accion: 'admin_reactivar' | 'admin_cancelar') => {
-    const reactivar = accion === 'admin_reactivar';
-    Alert.alert(reactivar ? "Reactivar obra" : "Cancelar obra definitivamente",
-      reactivar ? "La obra vuelve a estar activa y el trabajador podrá seguir llenando su bitácora." : "La obra queda cancelada para siempre y se libera su lugar en la vacante. Las dos partes podrán calificarse.", [
-      { text: "Volver", style: "cancel" },
-      { text: "Sí", style: reactivar ? 'default' : 'destructive', onPress: async () => {
-          setProcesando(true);
-          try {
-            await accionContrato(accion, { id_contrato: queja.id_contrato });
-            await cargarDatosAdmin();
-          } catch (error: any) { Alert.alert("No se pudo", error?.message || "Intenta de nuevo."); }
-          setProcesando(false);
-        }
-      }
-    ]);
+  // ABRE EL PERFIL DE QUIEN REPORTA O DE QUIEN FUE REPORTADO (PARA NO CONFUNDIR PERSONAS CON EL MISMO NOMBRE)
+  const verPerfilDe = (id: string) => {
+    const usuario = [...trabajadores, ...contratistas].find(u => u.id === id);
+    if (usuario) setUsuarioExpandido(usuario);
+    else Alert.alert("Perfil no encontrado", "Esta cuenta ya no existe o fue eliminada.");
   };
 
-  const resolverQueja = async (id: string) => {
-    Alert.alert("Atender Reporte", "¿Marcar esta queja como atendida/resuelta? Se guardará en el historial legal.", [
-      { text: "Cancelar", style: "cancel" },
-      { text: "Sí, Resolver", onPress: async () => {
-          setProcesando(true);
-          await updateDoc(doc(db, 'Quejas_Soporte', id), { 
-            estado: 'Resuelta', 
-            fecha_resolucion: new Date().toISOString(),
-            atendida_por: adminData.nombre
-          });
-          await cargarDatosAdmin();
-          setProcesando(false);
-        }
+  const abrirResolucion = (queja: any) => { setQuejaResolviendo(queja); setDecision(''); setNotaAdmin(''); };
+
+  // RESUELVE EL REPORTE EN EL SERVIDOR: CAMBIA LA OBRA O EL DÍA DE BITÁCORA SI TOCA, ARCHIVA EL REPORTE
+  // Y LES MANDA UN AVISO CON LA NOTA A LAS DOS PARTES
+  const confirmarResolucion = async () => {
+    if (!decision) { Alert.alert("Aviso", "Elige tu decisión."); return; }
+    if (!notaAdmin.trim()) { Alert.alert("Aviso", "Escribe una nota explicando tu decisión. Les llegará a las dos partes."); return; }
+    setProcesando(true);
+    try {
+      if (esCancelacion(quejaResolviendo)) {
+        await accionContrato(decision as 'admin_reactivar' | 'admin_cancelar', { id_contrato: quejaResolviendo.id_contrato, nota: notaAdmin.trim() });
+      } else {
+        await resolverReporte(quejaResolviendo.id, decision, notaAdmin.trim());
       }
-    ]);
+      setQuejaResolviendo(null);
+      await cargarDatosAdmin();
+      Alert.alert("Reporte resuelto", "Se archivó en el historial legal y se les avisó a las dos partes.");
+    } catch (error: any) { Alert.alert("No se pudo", error?.message || "Intenta de nuevo."); }
+    setProcesando(false);
   };
 
   if (cargando) { return ( <View style={styles.loadingCenter}><ActivityIndicator size="large" color="#D32F2F" /><Text style={styles.loadingText}>Accediendo a la Base de Datos...</Text></View> ); }
@@ -410,9 +425,18 @@ export default function AdminDashboard() {
                   </View>
                   
                   <Text style={{fontSize: 16, fontWeight: 'bold', color: '#0D2340'}}>{queja.motivo}</Text>
-                  <Text style={{fontSize: 12, color: '#6B7280', marginTop: 2}}><Text style={{fontWeight: 'bold'}}>Reporta:</Text> {queja.nombre_reportante} ({queja.rol_reportante || 'Usuario'})</Text>
-                  <Text style={{fontSize: 12, color: '#DC2626', marginTop: 2}}><Text style={{fontWeight: 'bold'}}>Acusa a:</Text> {queja.acusado}</Text>
-                  
+                  {queja.titulo_obra ? <Text style={{fontSize: 12, color: '#B45309', marginTop: 2, fontWeight: 'bold'}}>Obra: "{queja.titulo_obra}"</Text> : null}
+
+                  {/* QUIÉN REPORTA Y A QUIÉN: SE TOCA PARA VER SU PERFIL COMPLETO */}
+                  <TouchableOpacity style={styles.filaPersona} onPress={() => verPerfilDe(queja.id_reportante)}>
+                    <Text style={{fontSize: 12, color: '#6B7280', flex: 1}}><Text style={{fontWeight: 'bold'}}>Reporta:</Text> {queja.nombre_reportante} ({queja.rol_reportante || 'Usuario'})</Text>
+                    <Text style={styles.verPerfilTexto}>Ver perfil ›</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.filaPersona} onPress={() => verPerfilDe(queja.id_acusado)}>
+                    <Text style={{fontSize: 12, color: '#DC2626', flex: 1}}><Text style={{fontWeight: 'bold'}}>Acusa a:</Text> {queja.acusado}{queja.rol_acusado ? ` (${queja.rol_acusado})` : ''}</Text>
+                    <Text style={styles.verPerfilTexto}>Ver perfil ›</Text>
+                  </TouchableOpacity>
+
                   <View style={styles.quejaDescBox}>
                     <Text style={{fontSize: 13, color: '#4B5563'}}>{queja.descripcion}</Text>
                   </View>
@@ -424,29 +448,22 @@ export default function AdminDashboard() {
                     </TouchableOpacity>
                   )}
 
-                  {queja.estado !== 'Resuelta' && queja.id_contrato ? (
-                    // REPORTE AUTOMÁTICO DE UNA OBRA CANCELADA: LA OBRA ESTÁ SUSPENDIDA Y EL ADMIN DECIDE QUÉ PASA
+                  {queja.estado !== 'Resuelta' ? (
                     <View style={{marginTop: 15}}>
-                      <Text style={{fontSize: 12, color: '#B45309', fontWeight: 'bold', marginBottom: 8}}>Obra suspendida: "{queja.titulo_obra}". ¿Qué decides?</Text>
-                      <View style={[styles.actionButtonsRow, {marginTop: 0, borderTopWidth: 0, paddingTop: 0}]}>
-                        <TouchableOpacity style={[styles.btnWarning, {flex: 1, backgroundColor: '#00D06C'}]} disabled={procesando} onPress={() => decidirObraSuspendida(queja, 'admin_reactivar')}>
-                          <Text style={styles.btnTextWhite}>Reactivar obra</Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity style={[styles.btnDanger, {flex: 1}]} disabled={procesando} onPress={() => decidirObraSuspendida(queja, 'admin_cancelar')}>
-                          <Text style={styles.btnTextWhite}>Cancelar definitivamente</Text>
-                        </TouchableOpacity>
-                      </View>
-                    </View>
-                  ) : queja.estado !== 'Resuelta' ? (
-                    <View style={[styles.actionButtonsRow, {marginTop: 15}]}>
-                      <TouchableOpacity style={[styles.btnWarning, {flex: 1, backgroundColor: '#00D06C'}]} onPress={() => resolverQueja(queja.id)}>
-                        <Text style={styles.btnTextWhite}>Atender y Archivar al Historial</Text>
+                      {esCancelacion(queja) && <Text style={{fontSize: 12, color: '#B45309', fontWeight: 'bold', marginBottom: 8}}>La obra está suspendida hasta que decidas.</Text>}
+                      {queja.tipo === 'bitacora' && <Text style={{fontSize: 12, color: '#B45309', fontWeight: 'bold', marginBottom: 8}}>El contratista rechazó el día {queja.fecha_dia} de la bitácora. Decide si cuenta o se descuenta.</Text>}
+                      <TouchableOpacity style={[styles.btnWarning, {backgroundColor: '#0D2340'}]} disabled={procesando} onPress={() => abrirResolucion(queja)}>
+                        <Text style={styles.btnTextWhite}>Resolver y avisar a las dos partes</Text>
                       </TouchableOpacity>
                     </View>
                   ) : (
-                    <View style={{marginTop: 15, flexDirection: 'row', alignItems: 'center', backgroundColor: '#F3F4F6', padding: 10, borderRadius: 8}}>
-                      <Ionicons name="lock-closed" size={16} color="#6B7280" style={{marginRight: 8}}/>
-                      <Text style={{fontSize: 11, color: '#6B7280', flex: 1}}>Registro inmutable para fines legales. Atendida por: {queja.atendida_por || 'Admin'}</Text>
+                    <View style={{marginTop: 15, backgroundColor: '#F3F4F6', padding: 10, borderRadius: 8}}>
+                      {queja.resolucion ? <Text style={{fontSize: 12, color: '#0D2340', fontWeight: 'bold'}}>Decisión: {queja.resolucion}</Text> : null}
+                      {queja.nota_admin ? <Text style={{fontSize: 12, color: '#4B5563', marginTop: 3}}>Nota: "{queja.nota_admin}"</Text> : null}
+                      <View style={{flexDirection: 'row', alignItems: 'center', marginTop: 6}}>
+                        <Ionicons name="lock-closed" size={16} color="#6B7280" style={{marginRight: 8}}/>
+                        <Text style={{fontSize: 11, color: '#6B7280', flex: 1}}>Registro inmutable para fines legales. Atendida por: {queja.atendida_por || 'Admin'}</Text>
+                      </View>
                     </View>
                   )}
                 </View>
@@ -549,6 +566,31 @@ export default function AdminDashboard() {
             </ScrollView>
           </View>
         </View>
+      </Modal>
+
+      {/* RESOLVER UN REPORTE: ELEGIR LA DECISIÓN Y ESCRIBIR LA NOTA QUE LES LLEGA A LAS DOS PARTES */}
+      <Modal visible={!!quejaResolviendo} animationType="fade" transparent onRequestClose={() => setQuejaResolviendo(null)}>
+        <KeyboardAvoidingView style={styles.modalBg} behavior="padding">
+          <View style={[styles.modalContainer, {maxHeight: '90%'}]}>
+            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+              <Text style={[styles.modalTitle, {marginBottom: 6}]}>Resolver reporte</Text>
+              <Text style={{fontSize: 13, color: '#6B7280', marginBottom: 12}}>{quejaResolviendo?.motivo}{quejaResolviendo?.titulo_obra ? ` • "${quejaResolviendo.titulo_obra}"` : ''}</Text>
+              <Text style={styles.modalLabel}>Tu decisión</Text>
+              {quejaResolviendo && opcionesDeReporte(quejaResolviendo).map(op => (
+                <TouchableOpacity key={op.valor} style={[styles.opcionDecision, decision === op.valor && {borderColor: op.color, backgroundColor: `${op.color}18`}]} onPress={() => setDecision(op.valor)}>
+                  <Ionicons name={decision === op.valor ? 'radio-button-on' : 'radio-button-off'} size={20} color={op.color} />
+                  <Text style={{marginLeft: 8, fontWeight: 'bold', color: '#1F2937', flex: 1}}>{op.texto}</Text>
+                </TouchableOpacity>
+              ))}
+              <Text style={[styles.modalLabel, {marginTop: 10}]}>Nota para las dos partes (obligatoria)</Text>
+              <TextInput style={[styles.modalInput, {height: 100, textAlignVertical: 'top'}]} multiline value={notaAdmin} onChangeText={setNotaAdmin} placeholder="Ej. Revisamos la evidencia: el contratista no entregó el material acordado..." />
+              <View style={styles.modalBtnRow}>
+                <TouchableOpacity style={styles.modalBtnCancel} onPress={() => setQuejaResolviendo(null)}><Text style={styles.modalBtnTextC}>Volver</Text></TouchableOpacity>
+                <TouchableOpacity style={[styles.modalBtnSave, {backgroundColor: '#0D2340'}]} onPress={confirmarResolucion} disabled={procesando}>{procesando ? <ActivityIndicator color="#FFF" /> : <Text style={styles.modalBtnTextS}>Resolver</Text>}</TouchableOpacity>
+              </View>
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* VISTA DETALLADA DEL USUARIO/TRABAJADOR */}
@@ -829,5 +871,8 @@ const styles = StyleSheet.create({
   progressBarBg: { height: 4, backgroundColor: '#E5E7EB', borderRadius: 2, overflow: 'hidden' },
   progressBarFill: { height: '100%', backgroundColor: '#00D06C' },
   pickerBox: { borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, backgroundColor: '#F9FAFB', marginBottom: 15, overflow: 'hidden' },
+  filaPersona: { flexDirection: 'row', alignItems: 'center', marginTop: 4, paddingVertical: 4 },
+  verPerfilTexto: { fontSize: 12, color: '#3B82F6', fontWeight: 'bold', marginLeft: 8 },
+  opcionDecision: { flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 12, padding: 12, marginBottom: 8 },
   fab: { position: 'absolute', bottom: 30, right: 20, backgroundColor: '#00D06C', width: 60, height: 60, borderRadius: 30, justifyContent: 'center', alignItems: 'center', elevation: 5, shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 5 },
 });

@@ -6,14 +6,14 @@
 //               │            │                      │
 //               └─► Rechazada └──── cancelar ───────┴─► Suspendida ─► (admin) Cancelada, o reactivada
 import { router } from 'expo-router';
-import { addDoc, collection, getDocs } from 'firebase/firestore';
+import { collection, doc, getDocs, setDoc } from 'firebase/firestore';
 import { auth, db } from '../../firebaseConfig';
 
 // ABRE EL CHAT CON LA OTRA PARTE (SI NO EXISTE, MENSAJES LO CREA). EL TRATO SE PLATICA AHÍ ANTES DE ACEPTAR.
 export const abrirChatCon = (persona: { id: string; nombre: string; rol: string; foto?: string }) => {
   router.replace({
     pathname: '/mensajes',
-    params: { autoOpenId: persona.id, autoOpenNombre: persona.nombre, autoOpenRol: persona.rol, autoOpenFoto: persona.foto || 'https://via.placeholder.com/150' },
+    params: { autoOpenId: persona.id, autoOpenNombre: persona.nombre, autoOpenRol: persona.rol, autoOpenFoto: persona.foto || '' },
   } as any);
 };
 
@@ -47,38 +47,87 @@ export const sePuedeCalificar = (estado: string) => [ESTADOS.FINALIZADA, ESTADOS
 export type AccionContrato =
   | 'proponer' | 'postular' | 'aceptar' | 'rechazar'
   | 'solicitar_fin' | 'confirmar_fin' | 'rechazar_fin' | 'cancelar'
+  | 'revisar_bitacora' | 'reportar_problema'
   | 'admin_reactivar' | 'admin_cancelar';
 
-// PIDE UNA ACCIÓN AL SERVIDOR. SI NO SE PUEDE, LANZA UN ERROR CON EL MOTIVO (LISTO PARA MOSTRARLO EN UN Alert)
-export const accionContrato = async (accion: AccionContrato, datos: { id_contrato?: string; id_vacante?: string; id_trabajador?: string; motivo?: string } = {}) => {
+type DatosAccion = {
+  id_contrato?: string; id_vacante?: string; id_trabajador?: string; motivo?: string;
+  id_entrada?: string; veredicto?: 'confirmar' | 'rechazar'; categoria?: string; nota?: string;
+};
+
+// LLAMA A UNA RUTA DEL SERVIDOR CON LA SESIÓN. SI NO SE PUEDE, LANZA UN ERROR CON EL MOTIVO (LISTO PARA UN Alert)
+const llamarServidor = async (ruta: string, cuerpo: Record<string, unknown>, errorPorDefecto: string) => {
   const KYC_API_URL = process.env.EXPO_PUBLIC_KYC_API_URL;
   if (!KYC_API_URL) throw new Error("Falta configurar EXPO_PUBLIC_KYC_API_URL en el archivo .env");
 
   const idToken = await auth.currentUser?.getIdToken();
   if (!idToken) throw new Error("Tu sesión expiró. Vuelve a iniciar sesión.");
 
-  const response = await fetch(`${KYC_API_URL}/contratos`, {
+  const response = await fetch(`${KYC_API_URL}${ruta}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${idToken}` },
-    body: JSON.stringify({ accion, ...datos }),
+    body: JSON.stringify(cuerpo),
   });
   const resultado = await response.json();
-  if (!response.ok) throw new Error(resultado.error || "No se pudo actualizar el contrato.");
-  return resultado as { estado?: string; id_contrato?: string };
+  if (!response.ok) throw new Error(resultado.error || errorPorDefecto);
+  return resultado;
 };
+
+// PIDE UNA ACCIÓN SOBRE UN CONTRATO AL SERVIDOR
+export const accionContrato = async (accion: AccionContrato, datos: DatosAccion = {}) =>
+  (await llamarServidor('/contratos', { accion, ...datos }, "No se pudo actualizar el contrato.")) as { estado?: string; id_contrato?: string };
+
+// EL ADMIN RESUELVE UN REPORTE (QUE NO SEA UNA CANCELACIÓN DE OBRA). EL SERVIDOR LES AVISA A LAS DOS PARTES.
+//   bitácora: 'a_favor_trabajador' | 'a_favor_contratista'      otros: 'procede' | 'no_procede'
+export const resolverReporte = (idQueja: string, decision: string, nota: string) =>
+  llamarServidor('/reportes', { id_queja: idQueja, decision, nota }, "No se pudo resolver el reporte.");
+
+// ---------------------------------------------------------------- BITÁCORA
+
+// REVISIÓN DE CADA DÍA: EL CONTRATISTA CONFIRMA QUE SÍ SE TRABAJÓ, O LO RECHAZA Y EL ADMIN DECIDE
+export const REVISION = {
+  PENDIENTE: 'Pendiente',
+  CONFIRMADA: 'Confirmada',
+  EN_DISPUTA: 'En disputa',
+  DESCONTADA: 'Descontada',
+};
+
+// TEXTO Y COLOR DE CADA DÍA (EN LA LISTA Y EN EL CALENDARIO). UNA FALTA NO SE REVISA: YA NO CUENTA.
+export const estiloDia = (dia: any): { texto: string; color: string } => {
+  if (!dia.asistio) return { texto: 'Faltó', color: '#9CA3AF' };
+  switch (dia.revision) {
+    case REVISION.CONFIRMADA: return { texto: 'Confirmado', color: '#00D06C' };
+    case REVISION.EN_DISPUTA: return { texto: 'En disputa (lo revisa el admin)', color: '#EA580C' };
+    case REVISION.DESCONTADA: return { texto: 'Descontado', color: '#DC2626' };
+    default: return { texto: 'Por revisar', color: '#F59E0B' };
+  }
+};
+
+// CLAVE "AAAA-MM-DD" DEL DÍA (HORA DEL TELÉFONO). ES EL ID DE CADA DÍA DE LA BITÁCORA
+export const claveDia = (fecha: Date) =>
+  `${fecha.getFullYear()}-${String(fecha.getMonth() + 1).padStart(2, '0')}-${String(fecha.getDate()).padStart(2, '0')}`;
 
 // BITÁCORA DIARIA: VIVE DENTRO DE CADA CONTRATO (Postulaciones/{id}/Bitacora), ASÍ LAS DOS PARTES VEN LA MISMA
 export const leerBitacora = async (idContrato: string) => {
   const snap = await getDocs(collection(db, 'Postulaciones', idContrato, 'Bitacora'));
-  return snap.docs.map(d => ({ id: d.id, ...d.data() } as any)).sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+  return snap.docs
+    .map(d => ({ id: d.id, ...d.data() } as any))
+    .map(d => ({ ...d, dia: claveDia(new Date(d.timestamp || 0)) }))
+    .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
 };
 
+// UN SOLO REGISTRO POR DÍA: EL DOCUMENTO SE LLAMA COMO LA FECHA Y LAS REGLAS NO DEJAN REESCRIBIRLO
 export const agregarABitacora = async (idContrato: string, entrada: { asistio: boolean; nota: string; evidencia: string | null }) => {
   const ahora = new Date();
-  await addDoc(collection(db, 'Postulaciones', idContrato, 'Bitacora'), {
-    ...entrada,
-    autor_id: auth.currentUser?.uid,
-    fecha: ahora.toLocaleDateString('es-MX'),
-    timestamp: ahora.getTime(),
-  });
+  try {
+    await setDoc(doc(db, 'Postulaciones', idContrato, 'Bitacora', claveDia(ahora)), {
+      ...entrada,
+      autor_id: auth.currentUser?.uid,
+      fecha: ahora.toLocaleDateString('es-MX'),
+      timestamp: ahora.getTime(),
+    });
+  } catch (error: any) {
+    if (error?.code === 'permission-denied') throw new Error("Ya registraste el avance de hoy (solo se permite uno por día), o la obra ya no está activa.");
+    throw error;
+  }
 };

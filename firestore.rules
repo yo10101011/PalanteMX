@@ -43,9 +43,10 @@ service cloud.firestore {
 
     // CAMPOS DEL PERFIL QUE EL DUEÑO NO PUEDE TOCAR (LOS PONE EL SERVIDOR O EL ADMIN).
     // LAS RESEÑAS (calificacion, numero_resenas, resenas) SOLO LAS ESCRIBE EL WORKER, QUE REVISA QUE HAYAN TRABAJADO JUNTOS.
+    // obras_realizadas (OBRAS TERMINADAS EN LA PLATAFORMA) TAMBIÉN LA ESCRIBE SOLO EL WORKER, AL FINALIZAR UN CONTRATO.
     function camposProtegidos() {
       return ['rol_usuario', 'nombre', 'apellidos', 'correo', 'nombre_usuario', 'kyc_aprobado',
-              'estado_cuenta', 'fecha_registro', 'calificacion', 'numero_resenas', 'resenas'];
+              'estado_cuenta', 'fecha_registro', 'calificacion', 'numero_resenas', 'resenas', 'obras_realizadas'];
     }
 
     // REGLAS COMPARTIDAS POR /Usuarios (TRABAJADORES) Y /Contratistas
@@ -108,7 +109,9 @@ service cloud.firestore {
         return get(/databases/$(database)/documents/Postulaciones/$(contratoId)).data;
       }
 
-      // BITÁCORA DIARIA DE LA OBRA: LA VEN LAS DOS PARTES; LA ESCRIBE SOLO EL TRABAJADOR, Y SOLO CON LA OBRA ACTIVA
+      // BITÁCORA DIARIA DE LA OBRA: LA VEN LAS DOS PARTES; LA ESCRIBE SOLO EL TRABAJADOR, Y SOLO CON LA OBRA ACTIVA.
+      // CADA DÍA ES UN DOCUMENTO CON ID "AAAA-MM-DD": COMO NO HAY REGLA DE update, NO SE PUEDE REESCRIBIR UN DÍA
+      // NI REGISTRAR DOS VECES EL MISMO. LA REVISIÓN DEL CONTRATISTA (revision) LA ESCRIBE SOLO EL WORKER.
       match /Bitacora/{entradaId} {
         allow read: if esAdmin()
           || (conSesion() && (request.auth.uid == contrato().id_trabajador
@@ -116,7 +119,8 @@ service cloud.firestore {
         allow create: if cuentaActiva()
           && request.auth.uid == contrato().id_trabajador
           && contrato().estado == 'Aceptada (En Proceso)'
-          && request.resource.data.autor_id == request.auth.uid;
+          && request.resource.data.autor_id == request.auth.uid
+          && request.resource.data.keys().hasOnly(['asistio', 'nota', 'evidencia', 'autor_id', 'fecha', 'timestamp']);
       }
     }
 
@@ -153,6 +157,15 @@ service cloud.firestore {
     match /Quejas_Soporte/{quejaId} {
       allow create: if cuentaActiva() && request.resource.data.id_reportante == request.auth.uid;
       allow read, update, delete: if esAdmin();
+    }
+
+    // AVISOS PARA CADA USUARIO (DECISIONES DEL ADMIN, BITÁCORA RECHAZADA...). LOS CREA SOLO EL WORKER;
+    // EL DUEÑO LOS LEE Y SOLO PUEDE MARCARLOS COMO LEÍDOS O BORRARLOS.
+    match /Notificaciones/{id} {
+      allow read, delete: if conSesion() && resource.data.id_usuario == request.auth.uid;
+      allow update: if conSesion() && resource.data.id_usuario == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['leida']);
+      allow create: if false;
     }
 
     // LAS RESEÑAS LAS CREA SOLO EL WORKER (RUTA /resenas)

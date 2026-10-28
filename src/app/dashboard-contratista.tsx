@@ -1,7 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Picker } from '@react-native-picker/picker';
 import * as ImagePicker from 'expo-image-picker';
-import * as Location from 'expo-location';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Dimensions, Image, LogBox, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
@@ -18,9 +17,21 @@ import { auth, db } from '../../firebaseConfig';
 import { subirFotoACloudinary } from '@/lib/cloudinary';
 import { eliminarCuentaEnServidor } from '@/lib/cuenta';
 import { abrirChatCon, accionContrato, AccionContrato, ESTADOS, sePuedeCalificar } from '@/lib/contratos';
+import { distanciaKm, ESTADOS_MEXICO, PERIODOS_PAGO, textoDistancia, textoPrecio, ubicacionDesdeGPS } from '@/lib/ubicacion';
+import { AvisosNotificaciones } from '@/components/avisos-notificaciones';
+import { FiltrosBusqueda, TODOS_LOS_ESTADOS } from '@/components/filtros-busqueda';
 import { ModalBitacora } from '@/components/modal-bitacora';
 import { ModalCancelarContrato } from '@/components/modal-cancelar-contrato';
+import { ModalReportarProblema } from '@/components/modal-reportar-problema';
 import { BotonContrato, TarjetaContrato } from '@/components/tarjeta-contrato';
+import { VisorFoto } from '@/components/visor-foto';
+
+// ORDEN DE LOS TRABAJADORES EN EXPLORAR
+const ORDENES_TRABAJADORES = [
+  { valor: 'calificacion', texto: 'Mejor calificados' },
+  { valor: 'cercania', texto: 'Más cerca de mí' },
+  { valor: 'precio', texto: 'Menor precio' },
+];
 
 const { width } = Dimensions.get('window');
 
@@ -33,7 +44,11 @@ export default function DashboardContratista() {
   const [ubicacionLegible, setUbicacionLegible] = useState('Calculando ubicación...');
   
   const [categoriaExplorar, setCategoriaExplorar] = useState('Todos');
+  const [filtroEstado, setFiltroEstado] = useState(TODOS_LOS_ESTADOS);
+  const [ordenExplorar, setOrdenExplorar] = useState('calificacion');
+  const [precioMaximo, setPrecioMaximo] = useState('');
   const [mensajesSinLeer, setMensajesSinLeer] = useState(0);
+  const [fotoGrande, setFotoGrande] = useState<string | null>(null);
 
   const [directorio, setDirectorio] = useState<any[]>([]); 
   const [misVacantes, setMisVacantes] = useState<any[]>([]);
@@ -44,13 +59,16 @@ export default function DashboardContratista() {
   const [editApellidos, setEditApellidos] = useState('');
   const [editEmpresa, setEditEmpresa] = useState('');
   const [editUbicacion, setEditUbicacion] = useState('');
+  const [editEstado, setEditEstado] = useState('');
 
   const [modalVacante, setModalVacante] = useState(false);
   const [vacanteEditandoId, setVacanteEditandoId] = useState<string | null>(null);
   const [vacanteExpandida, setVacanteExpandida] = useState<any>(null); 
   const [vacanteTitulo, setVacanteTitulo] = useState('');
   const [vacanteUbicacion, setVacanteUbicacion] = useState('');
-  const [vacantePago, setVacantePago] = useState('');
+  const [vacantePago, setVacantePago] = useState(''); // MONTO EN PESOS (SOLO NÚMEROS)
+  const [vacantePeriodo, setVacantePeriodo] = useState('por semana');
+  const [vacanteEstado, setVacanteEstado] = useState('');
   const [vacanteHorario, setVacanteHorario] = useState('');
   const [vacanteDesc, setVacanteDesc] = useState('');
   const [vacanteCupo, setVacanteCupo] = useState('1'); 
@@ -64,6 +82,7 @@ export default function DashboardContratista() {
   // VENTANAS DE BITÁCORA (SOLO LECTURA PARA EL CONTRATISTA) Y DE CANCELACIÓN DE UNA OBRA
   const [contratoBitacora, setContratoBitacora] = useState<any>(null);
   const [contratoCancelar, setContratoCancelar] = useState<any>(null);
+  const [contratoReportar, setContratoReportar] = useState<any>(null);
   const [modalContratarDirecto, setModalContratarDirecto] = useState(false);
   const [trabajadorParaContratar, setTrabajadorParaContratar] = useState<any>(null);
   const [vacanteSeleccionadaParaContratar, setVacanteSeleccionadaParaContratar] = useState<string>('');
@@ -97,23 +116,21 @@ export default function DashboardContratista() {
         setEditNombre(data.nombre || '');
         setEditApellidos(data.apellidos || '');
         setEditEmpresa(data.empresa || '');
-        
-        if (data.ubicacion && data.ubicacion.latitud && data.ubicacion.longitud) {
-          try {
-            const geo = await Location.reverseGeocodeAsync({ latitude: data.ubicacion.latitud, longitude: data.ubicacion.longitud });
-            if (geo && geo.length > 0) {
-              const place = geo[0];
-              const ciudadTraducida = `${place.city || place.subregion || place.name || ''}, ${place.region || ''}`.replace(/^, /, '').trim();
-              setUbicacionLegible(ciudadTraducida);
-              setEditUbicacion(data.ubicacion_texto || ciudadTraducida);
-            } else { setUbicacionLegible(data.ubicacion_texto || 'Ubicación GPS desconocida'); }
-          } catch (e) { setUbicacionLegible(data.ubicacion_texto || 'Ubicación de base de datos'); }
-        } else { setUbicacionLegible(data.ubicacion_texto || 'Sin datos GPS'); }
 
+        // CIUDAD Y ESTADO: LOS QUE EL USUARIO ESCRIBIÓ, O LOS DEL GPS DEL REGISTRO. EL ESTADO SE GUARDA EN EL PERFIL
+        // (ubicacion_estado) PORQUE CON ÉL FILTRAN LOS DEMÁS USUARIOS.
+        const gps = await ubicacionDesdeGPS(data.ubicacion);
+        const estado = data.ubicacion_estado || gps?.estado || '';
+        if (estado && !data.ubicacion_estado) updateDoc(doc(db, userDoc.ref.path), { ubicacion_estado: estado }).catch(() => {});
+        const ciudad = data.ubicacion_texto || gps?.ciudad || '';
+        setUbicacionLegible([ciudad, estado].filter(Boolean).join(', ') || 'Sin ubicación');
+        setEditUbicacion(ciudad);
+        setEditEstado(estado);
+        setUserData({ id: userDoc.id, refPath: userDoc.ref.path, ...data, ubicacion_estado: estado });
+
+        // EL ORDEN Y LOS FILTROS SE APLICAN AL DIBUJAR (VER directorioFiltrado)
         const snapDir = await getDocs(collection(db, 'Usuarios'));
-        const listaDir = snapDir.docs.map(d => ({id: d.id, ...d.data()}));
-        listaDir.sort((a: any, b: any) => (parseFloat(b.calificacion) || 0) - (parseFloat(a.calificacion) || 0));
-        setDirectorio(listaDir);
+        setDirectorio(snapDir.docs.map(d => ({id: d.id, ...d.data()})));
 
         const qVacantes = query(collection(db, 'Vacantes'), where('id_contratista', '==', usuarioActual.uid));
         const vacantesSnap = await getDocs(qVacantes);
@@ -184,12 +201,15 @@ export default function DashboardContratista() {
 
   const guardarEdicionPerfil = async () => {
     setProcesando(true);
-    await updateDoc(doc(db, userData.refPath), { empresa: editEmpresa, ubicacion_texto: editUbicacion });
-    await cargarPerfil(); setProcesando(false); setModalEditar(false);
+    try {
+      await updateDoc(doc(db, userData.refPath), { empresa: editEmpresa, ubicacion_texto: editUbicacion, ubicacion_estado: editEstado });
+      await cargarPerfil(); setModalEditar(false);
+    } catch (error: any) { Alert.alert("No se pudo guardar", error?.message || "Intenta de nuevo."); }
+    setProcesando(false);
   };
 
   const abrirModalNuevaVacante = () => {
-    setVacanteEditandoId(null); setVacanteTitulo(''); setVacanteUbicacion(''); setVacantePago(''); setVacanteHorario(''); setVacanteDesc(''); setVacanteCupo('1'); setVacanteFoto(null); setVacanteCategoria('Albañilería');
+    setVacanteEditandoId(null); setVacanteTitulo(''); setVacanteUbicacion(''); setVacantePago(''); setVacantePeriodo('por semana'); setVacanteEstado(userData?.ubicacion_estado || ''); setVacanteHorario(''); setVacanteDesc(''); setVacanteCupo('1'); setVacanteFoto(null); setVacanteCategoria('Albañilería');
     setModalVacante(true);
   };
 
@@ -198,7 +218,10 @@ export default function DashboardContratista() {
     setVacanteEditandoId(vacante.id);
     setVacanteTitulo(vacante.titulo);
     setVacanteUbicacion(vacante.ubicacion);
-    setVacantePago(vacante.pago);
+    // LAS VACANTES VIEJAS SOLO TRAEN EL PAGO COMO TEXTO ("$2500 Semanal"): SE RESCATA EL NÚMERO
+    setVacantePago(vacante.pago_monto ? String(vacante.pago_monto) : (String(vacante.pago || '').replace(/[^0-9]/g, '')));
+    setVacantePeriodo(vacante.pago_periodo || 'por semana');
+    setVacanteEstado(vacante.estado_republica || userData?.ubicacion_estado || '');
     setVacanteHorario(vacante.horario);
     setVacanteDesc(vacante.descripcion);
     setVacanteCupo(vacante.cupo_total ? vacante.cupo_total.toString() : '1');
@@ -208,30 +231,39 @@ export default function DashboardContratista() {
   };
 
   const publicarOEditarVacante = async () => {
-    if (!vacanteTitulo || !vacanteUbicacion || !vacanteDesc || !vacanteHorario) { 
-      Alert.alert("Aviso", "Faltan campos obligatorios para publicar la vacante."); return; 
+    if (!vacanteTitulo || !vacanteUbicacion || !vacanteDesc || !vacanteHorario || !vacanteEstado) {
+      Alert.alert("Aviso", "Faltan campos obligatorios para publicar la vacante (título, estado, ubicación, horario y descripción)."); return;
     }
     setProcesando(true);
-    let urlFotoTrabajo = vacanteFoto;
-    if (vacanteFoto && vacanteFoto.startsWith('data:image')) {
-      urlFotoTrabajo = await subirFotoACloudinary(vacanteFoto);
-    }
-    
-    if (vacanteEditandoId) {
-      await updateDoc(doc(db, 'Vacantes', vacanteEditandoId), {
-        titulo: vacanteTitulo, ubicacion: vacanteUbicacion, pago: vacantePago || 'A convenir', horario: vacanteHorario, descripcion: vacanteDesc, categoria: vacanteCategoria, cupo_total: parseInt(vacanteCupo) || 1, foto_trabajo: urlFotoTrabajo,
-      });
-      Alert.alert("¡Vacante Actualizada!", "Tus cambios ya están en la Bolsa de Trabajo.");
-    } else {
-      const nuevaVacante = {
-        titulo: vacanteTitulo, contratista: `${userData.nombre} ${userData.apellidos}`, foto_contratista: userData.foto_rostro_url || null, empresa: userData.empresa || 'Independiente', id_contratista: userData.id, ubicacion: vacanteUbicacion, pago: vacantePago || 'A convenir', horario: vacanteHorario, descripcion: vacanteDesc, categoria: vacanteCategoria, cupo_total: parseInt(vacanteCupo) || 1, cupo_actual: 0, foto_trabajo: urlFotoTrabajo, etiquetas: ['Nueva'], estado: 'Activa', postulantes: 0, fecha_publicacion: new Date().toISOString()
+    try {
+      let urlFotoTrabajo = vacanteFoto;
+      if (vacanteFoto && vacanteFoto.startsWith('data:image')) {
+        urlFotoTrabajo = await subirFotoACloudinary(vacanteFoto);
+      }
+      // EL PAGO SE GUARDA COMO NÚMERO (PARA FILTRAR Y ORDENAR) Y COMO TEXTO (PARA MOSTRARLO)
+      const monto = parseInt(vacantePago) || null;
+      const datosVacante = {
+        titulo: vacanteTitulo, ubicacion: vacanteUbicacion, estado_republica: vacanteEstado,
+        pago: textoPrecio(monto, vacantePeriodo), pago_monto: monto, pago_periodo: vacantePeriodo,
+        horario: vacanteHorario, descripcion: vacanteDesc, categoria: vacanteCategoria, cupo_total: parseInt(vacanteCupo) || 1, foto_trabajo: urlFotoTrabajo,
+        coordenadas: userData.ubicacion || null, // PARA ORDENAR "MÁS CERCA DE MÍ" EN LA BOLSA DE TRABAJO
       };
-      await addDoc(collection(db, 'Vacantes'), nuevaVacante);
-      Alert.alert("¡Vacante Publicada!", "Tu oferta ya está visible en la Bolsa de Trabajo.");
-    }
-    
-    await cargarPerfil();
-    setProcesando(false); setModalVacante(false);
+
+      if (vacanteEditandoId) {
+        await updateDoc(doc(db, 'Vacantes', vacanteEditandoId), datosVacante);
+        Alert.alert("¡Vacante Actualizada!", "Tus cambios ya están en la Bolsa de Trabajo.");
+      } else {
+        await addDoc(collection(db, 'Vacantes'), {
+          ...datosVacante,
+          contratista: `${userData.nombre} ${userData.apellidos}`, foto_contratista: userData.foto_rostro_url || null, empresa: userData.empresa || 'Independiente', id_contratista: userData.id,
+          cupo_actual: 0, etiquetas: ['Nueva'], estado: 'Activa', postulantes: 0, fecha_publicacion: new Date().toISOString(),
+        });
+        Alert.alert("¡Vacante Publicada!", "Tu oferta ya está visible en la Bolsa de Trabajo.");
+      }
+      await cargarPerfil();
+      setModalVacante(false);
+    } catch (error: any) { Alert.alert("No se pudo guardar la vacante", error?.message || "Intenta de nuevo."); }
+    setProcesando(false);
   };
 
   const cerrarVacante = async (id: string) => {
@@ -263,6 +295,16 @@ export default function DashboardContratista() {
         }
       }
     ]);
+  };
+
+  // ABRE EL PERFIL DE UN TRABAJADOR Y LO VUELVE A LEER DE FIRESTORE, PARA VER SUS OBRAS, RESEÑAS Y UBICACIÓN
+  // AL DÍA (LA LISTA DE EXPLORAR SE CARGÓ AL ENTRAR Y PUEDE ESTAR VIEJA)
+  const verPerfilTrabajador = async (trabajador: any, yaContratado = false) => {
+    setPerfilTrabajadorExpandido({ ...trabajador, yaContratado });
+    try {
+      const fresco = await getDoc(doc(db, 'Usuarios', trabajador.id));
+      if (fresco.exists()) setPerfilTrabajadorExpandido({ id: fresco.id, ...fresco.data(), yaContratado });
+    } catch (error) { console.log("No se pudo actualizar el perfil", error); }
   };
 
   // --- NUEVA LÓGICA DE CONTRATACIÓN DIRECTA ---
@@ -414,7 +456,8 @@ export default function DashboardContratista() {
   const botonesDelContrato = (contrato: any): BotonContrato[] => {
     const chatear: BotonContrato = { texto: 'Chatear', icono: 'chatbubbles-outline', color: '#3B82F6', onPress: () => chatearCon(contrato) };
     const bitacora: BotonContrato = { texto: 'Bitácora', icono: 'reader-outline', color: '#0D2340', onPress: () => setContratoBitacora(contrato) };
-    const perfil: BotonContrato = { texto: 'Perfil', icono: 'person-outline', color: '#6B7280', onPress: () => setPerfilTrabajadorExpandido({ ...contrato.trabajador, yaContratado: true }) };
+    const perfil: BotonContrato = { texto: 'Perfil', icono: 'person-outline', color: '#6B7280', onPress: () => verPerfilTrabajador(contrato.trabajador, true) };
+    const reportar: BotonContrato = { texto: 'Reportar problema', icono: 'flag-outline', color: '#EA580C', onPress: () => setContratoReportar(contrato) };
     const calificar: BotonContrato = {
       texto: 'Calificar', icono: 'star-outline', color: '#F59E0B',
       onPress: () => { setUsuarioSeleccionadoParaEvaluar({ id: contrato.id_trabajador, nombre: contrato.trabajador?.nombre, apellidos: contrato.trabajador?.apellidos, foto_rostro_url: contrato.trabajador?.foto_rostro_url, rol: 'Trabajador' }); setModalEvaluar(true); },
@@ -429,9 +472,10 @@ export default function DashboardContratista() {
         { ...bitacora, texto: 'Ver bitácora', relleno: true },
         chatear,
         { texto: 'Marcar terminada', icono: 'flag-outline', color: '#00D06C', onPress: () => confirmarAccion('solicitar_fin', contrato, "Marcar obra como terminada", `¿La obra de ${contrato.trabajador?.nombre} ya terminó? Él tendrá que confirmarlo.`, "Listo. Falta que el trabajador confirme que terminó.") },
+        reportar,
         { texto: 'Cancelar obra', icono: 'warning-outline', color: '#DC2626', onPress: () => setContratoCancelar(contrato) },
       ];
-      case ESTADOS.POR_CONFIRMAR_FIN: return [bitacora, chatear, { texto: 'Cancelar obra', icono: 'warning-outline', color: '#DC2626', onPress: () => setContratoCancelar(contrato) }];
+      case ESTADOS.POR_CONFIRMAR_FIN: return [bitacora, chatear, reportar, { texto: 'Cancelar obra', icono: 'warning-outline', color: '#DC2626', onPress: () => setContratoCancelar(contrato) }];
       case ESTADOS.SUSPENDIDA:
       case ESTADOS.FINALIZADA:
       case ESTADOS.CANCELADA: return [bitacora, perfil, calificar];
@@ -461,7 +505,20 @@ export default function DashboardContratista() {
   };
 
   const categoriasFiltro = ['Todos', 'Albañil', 'Carpintero', 'Electricista', 'Plomero', 'Pintor', 'Cerrajero', 'Bolero', 'Otro'];
-  const directorioFiltrado = categoriaExplorar === 'Todos' ? directorio : directorio.filter(t => t.oficio_principal === categoriaExplorar);
+  // TRABAJADORES DE EXPLORAR: FILTRADOS POR OFICIO, ESTADO Y PRECIO, Y ORDENADOS (POR DEFECTO, MEJOR CALIFICADOS PRIMERO).
+  // LOS QUE NO TIENEN PRECIO ("A CONVENIR") NO SE QUITAN AL FILTRAR POR PRECIO, Y QUEDAN AL FINAL AL ORDENAR POR PRECIO.
+  const calificacionDe = (t: any) => parseFloat(t.calificacion) || 0;
+  const directorioFiltrado = directorio
+    .map(t => ({ ...t, distancia: distanciaKm(userData?.ubicacion, t.ubicacion) }))
+    .filter(t => categoriaExplorar === 'Todos' || t.oficio_principal === categoriaExplorar)
+    .filter(t => filtroEstado === TODOS_LOS_ESTADOS || t.ubicacion_estado === filtroEstado)
+    .filter(t => !precioMaximo || !t.tarifa_monto || t.tarifa_monto <= parseInt(precioMaximo))
+    .sort((a, b) => {
+      if (ordenExplorar === 'cercania') return (a.distancia ?? Infinity) - (b.distancia ?? Infinity);
+      if (ordenExplorar === 'precio') return (a.tarifa_monto || Infinity) - (b.tarifa_monto || Infinity);
+      return calificacionDe(b) - calificacionDe(a) || (b.numero_resenas || 0) - (a.numero_resenas || 0);
+    });
+  const obrasDe = (t: any) => (t.portafolio?.length || 0) + (t.obras_realizadas?.length || 0);
 
   if (cargando) { return ( <View style={styles.loadingCenter}><ActivityIndicator size="large" color="#0D2340" /><Text style={styles.loadingText}>Cargando Panel Central...</Text></View> ); }
 
@@ -517,9 +574,17 @@ export default function DashboardContratista() {
                 ))}
               </ScrollView>
 
+              <FiltrosBusqueda
+                estado={filtroEstado} onEstado={setFiltroEstado}
+                orden={ordenExplorar} onOrden={setOrdenExplorar} opcionesOrden={ORDENES_TRABAJADORES}
+                precio={precioMaximo} onPrecio={setPrecioMaximo} etiquetaPrecio="Precio máximo"
+                miEstado={userData?.ubicacion_estado}
+              />
+              <Text style={{fontSize: 12, color: '#6B7280', marginBottom: 10}}>{directorioFiltrado.length} trabajador{directorioFiltrado.length === 1 ? '' : 'es'}</Text>
+
               {directorioFiltrado.length > 0 ? (
                 directorioFiltrado.map((trabajador, index) => (
-                  <TouchableOpacity key={index} style={styles.workerFeedCard} activeOpacity={0.9} onPress={() => setPerfilTrabajadorExpandido({ ...trabajador, yaContratado: false })}>
+                  <TouchableOpacity key={index} style={styles.workerFeedCard} activeOpacity={0.9} onPress={() => verPerfilTrabajador(trabajador)}>
                     
                     <View style={[styles.workerFeedStatusBadge, {backgroundColor: trabajador.disponibilidad === 'Ocupado' ? '#F59E0B' : '#00D06C'}]}>
                       <Text style={styles.workerFeedStatusText}>{trabajador.disponibilidad === 'Ocupado' ? 'TRABAJANDO' : 'DISPONIBLE'}</Text>
@@ -530,13 +595,19 @@ export default function DashboardContratista() {
                       <View style={{flex: 1, paddingRight: 80}}>
                         <Text style={styles.workerFeedName} numberOfLines={2}>{trabajador.nombre} {trabajador.apellidos}</Text>
                         <Text style={styles.workerFeedOficio}>{trabajador.oficio_principal || 'Trabajador General'}</Text>
+                        <Text style={styles.workerFeedPrecio}>{textoPrecio(trabajador.tarifa_monto, trabajador.tarifa_periodo)}</Text>
                       </View>
                     </View>
 
                     <View style={styles.workerFeedDetailsGrid}>
-                      <View style={styles.workerFeedDetailRow}><Ionicons name="star" size={16} color="#F59E0B" /><Text style={[styles.workerFeedDetailText, {color: '#B45309', fontWeight: 'bold'}]}>{trabajador.calificacion || '0.0'}</Text></View>
-                      <View style={styles.workerFeedDetailRow}><Ionicons name="location-outline" size={16} color="#6B7280" /><Text style={styles.workerFeedDetailText}>{trabajador.ubicacion_texto?.split(',')[0] || 'Sin ubicación'}</Text></View>
-                      <View style={styles.workerFeedDetailRow}><Ionicons name="images-outline" size={16} color="#0D2340" /><Text style={styles.workerFeedDetailText}>{trabajador.portafolio?.length || 0} Obras</Text></View>
+                      <View style={styles.workerFeedDetailRow}><Ionicons name="star" size={16} color="#F59E0B" /><Text style={[styles.workerFeedDetailText, {color: '#B45309', fontWeight: 'bold'}]}>{trabajador.calificacion || '0.0'} ({trabajador.numero_resenas || 0})</Text></View>
+                      <View style={styles.workerFeedDetailRow}><Ionicons name="images-outline" size={16} color="#0D2340" /><Text style={styles.workerFeedDetailText}>{obrasDe(trabajador)} Obras</Text></View>
+                    </View>
+                    <View style={[styles.workerFeedDetailRow, {marginBottom: 12}]}>
+                      <Ionicons name="location-outline" size={16} color="#6B7280" />
+                      <Text style={[styles.workerFeedDetailText, {flex: 1}]} numberOfLines={1}>
+                        {[trabajador.ubicacion_texto, trabajador.ubicacion_estado].filter(Boolean).join(', ') || 'Sin ubicación'}{trabajador.distancia !== null ? ` • ${textoDistancia(trabajador.distancia)}` : ''}
+                      </Text>
                     </View>
                     
                     {trabajador.portafolio && trabajador.portafolio.length > 0 && (
@@ -561,7 +632,7 @@ export default function DashboardContratista() {
                 <View style={styles.emptyState}>
                   <Ionicons name="search-outline" size={40} color="#D1D5DB" />
                   <Text style={styles.emptyStateTitle}>Sin resultados</Text>
-                  <Text style={{textAlign: 'center', color: '#9CA3AF'}}>Aún no hay trabajadores registrados en la plataforma para esta categoría.</Text>
+                  <Text style={{textAlign: 'center', color: '#9CA3AF'}}>No hay trabajadores con estos filtros. Prueba con otro oficio, estado o precio.</Text>
                 </View>
               )}
             </View>
@@ -630,18 +701,26 @@ export default function DashboardContratista() {
           {pestañaActiva === 'Candidatos' && (
             <View>
               <Text style={styles.sectionTitle}>Nuevas Solicitudes</Text>
+              {solicitudesPendientes.length > 0 && (
+                <Text style={{fontSize: 12, color: '#6B7280', marginBottom: 12}}>Antes de aceptar, platica con el trabajador por chat. Cuando los dos estén de acuerdo, acepta y se cierra el trato.</Text>
+              )}
               {solicitudesPendientes.length > 0 ? (
                 solicitudesPendientes.map((cand, index) => (
                   <TouchableOpacity key={index} style={styles.candidatoCard} activeOpacity={0.8} onPress={() => setCandidatoSeleccionado(cand)}>
                     <View style={styles.candidatoHeader}>
-                      <Image source={{ uri: cand.trabajador.foto_rostro_url || 'https://via.placeholder.com/150' }} style={styles.candidatoAvatar} />
+                      <Image source={{ uri: cand.trabajador.foto_rostro_url || undefined }} style={styles.candidatoAvatar} />
                       <View style={{flex: 1}}>
                         <Text style={styles.candidatoName}>{cand.trabajador.nombre} {cand.trabajador.apellidos}</Text>
-                        <Text style={styles.candidatoOficio}>{cand.trabajador.oficio_principal} • {cand.trabajador.calificacion || 'Nuevo'} <Ionicons name="star" size={12} color="#F59E0B"/></Text>
+                        <Text style={styles.candidatoOficio}>{cand.trabajador.oficio_principal} • {cand.trabajador.calificacion || 'Nuevo'} <Ionicons name="star" size={12} color="#F59E0B"/> • {textoPrecio(cand.trabajador.tarifa_monto, cand.trabajador.tarifa_periodo)}</Text>
                       </View>
                       <Ionicons name="chevron-forward" size={20} color="#9CA3AF" />
                     </View>
                     <View style={styles.candidatoFooter}><Text style={styles.candidatoFooterText}><Text style={{fontWeight: 'bold'}}>Postuló para:</Text> {cand.titulo_vacante}</Text></View>
+                    <View style={{flexDirection: 'row', marginTop: 10}}>
+                      <TouchableOpacity style={[styles.candBtnAccion, {borderColor: '#3B82F6', backgroundColor: '#EFF6FF', marginHorizontal: 0, padding: 10}]} onPress={() => chatearCon(cand)}>
+                        <Ionicons name="chatbubbles-outline" size={18} color="#3B82F6" /><Text style={[styles.candBtnText, {color: '#3B82F6'}]}>Chatear antes de aceptar</Text>
+                      </TouchableOpacity>
+                    </View>
                   </TouchableOpacity>
                 ))
               ) : (
@@ -750,7 +829,14 @@ export default function DashboardContratista() {
               <Text style={styles.modalLabel}>Nombre del Representante (verificado con INE)</Text><TextInput style={[styles.modalInput, {backgroundColor: '#E5E7EB', color: '#6B7280'}]} value={editNombre} editable={false}/>
               <Text style={styles.modalLabel}>Apellidos (verificados con INE)</Text><TextInput style={[styles.modalInput, {backgroundColor: '#E5E7EB', color: '#6B7280'}]} value={editApellidos} editable={false}/>
               <Text style={styles.modalLabel}>Nombre de la Empresa</Text><TextInput style={styles.modalInput} placeholder="Ej. Constructora Palante" value={editEmpresa} onChangeText={setEditEmpresa} />
-              <Text style={styles.modalLabel}>Sede / Ubicación Principal</Text><TextInput style={styles.modalInput} value={editUbicacion} onChangeText={setEditUbicacion} />
+              <Text style={styles.modalLabel}>Estado</Text>
+              <View style={styles.pickerBox}>
+                <Picker selectedValue={editEstado} onValueChange={setEditEstado}>
+                  <Picker.Item label="Elige tu estado..." value="" />
+                  {ESTADOS_MEXICO.map(e => <Picker.Item key={e} label={e} value={e} />)}
+                </Picker>
+              </View>
+              <Text style={styles.modalLabel}>Ciudad / Sede principal</Text><TextInput style={styles.modalInput} placeholder="Ej. Toluca" value={editUbicacion} onChangeText={setEditUbicacion} />
               <View style={styles.modalBtnRow}>
                 <TouchableOpacity style={styles.modalBtnCancel} onPress={() => setModalEditar(false)}><Text style={styles.modalBtnTextC}>Cancelar</Text></TouchableOpacity>
                 <TouchableOpacity style={[styles.modalBtnSave, {backgroundColor: '#0D2340'}]} onPress={guardarEdicionPerfil} disabled={procesando}>{procesando ? <ActivityIndicator color="#FFF" /> : <Text style={styles.modalBtnTextS}>Guardar</Text>}</TouchableOpacity>
@@ -777,9 +863,24 @@ export default function DashboardContratista() {
                 </View>
                 <View style={{flex: 1, marginLeft: 5}}><Text style={styles.modalLabel}>¿Cuántos necesitas?</Text><TextInput style={styles.modalInput} placeholder="Ej. 1" value={vacanteCupo} onChangeText={setVacanteCupo} keyboardType="numeric" /></View>
               </View>
+              <Text style={styles.modalLabel}>Estado</Text>
+              <View style={styles.pickerBox}>
+                <Picker selectedValue={vacanteEstado} onValueChange={setVacanteEstado}>
+                  <Picker.Item label="Elige el estado..." value="" />
+                  {ESTADOS_MEXICO.map(e => <Picker.Item key={e} label={e} value={e} />)}
+                </Picker>
+              </View>
+              <Text style={styles.modalLabel}>Ciudad / colonia</Text><TextInput style={styles.modalInput} placeholder="Ej. Toluca" value={vacanteUbicacion} onChangeText={setVacanteUbicacion} />
               <View style={{flexDirection: 'row', justifyContent: 'space-between'}}>
-                <View style={{flex: 1, marginRight: 5}}><Text style={styles.modalLabel}>Ubicación</Text><TextInput style={styles.modalInput} placeholder="Ej. Toluca" value={vacanteUbicacion} onChangeText={setVacanteUbicacion} /></View>
-                <View style={{flex: 1, marginLeft: 5}}><Text style={styles.modalLabel}>Pago</Text><TextInput style={styles.modalInput} placeholder="Ej. $2500 Semanal" value={vacantePago} onChangeText={setVacantePago} /></View>
+                <View style={{flex: 1, marginRight: 5}}><Text style={styles.modalLabel}>Pago ($, solo número)</Text><TextInput style={styles.modalInput} placeholder="Vacío = a convenir" keyboardType="numeric" value={vacantePago} onChangeText={t => setVacantePago(t.replace(/[^0-9]/g, ''))} /></View>
+                <View style={{flex: 1, marginLeft: 5}}>
+                  <Text style={styles.modalLabel}>Cada cuánto</Text>
+                  <View style={styles.pickerBox}>
+                    <Picker selectedValue={vacantePeriodo} onValueChange={setVacantePeriodo}>
+                      {PERIODOS_PAGO.map(p => <Picker.Item key={p} label={p} value={p} />)}
+                    </Picker>
+                  </View>
+                </View>
               </View>
               <Text style={styles.modalLabel}>Horario / Días de Trabajo</Text><TextInput style={styles.modalInput} placeholder="Ej. Lunes a Sábado de 8 a 5" value={vacanteHorario} onChangeText={setVacanteHorario} />
               <Text style={styles.modalLabel}>Descripción del Trabajo (Sé específico)</Text><TextInput style={[styles.modalInput, {height: 80, textAlignVertical: 'top'}]} placeholder="Se requiere levantar muros..." multiline value={vacanteDesc} onChangeText={setVacanteDesc} />
@@ -854,15 +955,19 @@ export default function DashboardContratista() {
               <Text style={styles.candOficioBig}>{candidatoSeleccionado?.trabajador?.oficio_principal}</Text>
               <View style={styles.candStatsRow}>
                 <View style={styles.candStatBox}><Text style={styles.candStatValue}>{candidatoSeleccionado?.trabajador?.calificacion || '0.0'} <Ionicons name="star" size={14} color="#F59E0B"/></Text><Text style={styles.candStatLabel}>Estrellas</Text></View>
-                <View style={styles.candStatBox}><Text style={styles.candStatValue}>{candidatoSeleccionado?.trabajador?.portafolio?.length || 0}</Text><Text style={styles.candStatLabel}>Obras</Text></View>
+                <View style={styles.candStatBox}><Text style={styles.candStatValue}>{candidatoSeleccionado?.trabajador ? obrasDe(candidatoSeleccionado.trabajador) : 0}</Text><Text style={styles.candStatLabel}>Obras</Text></View>
               </View>
             </View>
             <View style={{padding: 20}}>
               <Text style={styles.candInfoLabel}>Postulado para la vacante:</Text><Text style={styles.candInfoValue}>{candidatoSeleccionado?.titulo_vacante}</Text>
-              <TouchableOpacity style={styles.verPortafolioBtn} onPress={() => { const trabajadorCompleto = candidatoSeleccionado.trabajador; setCandidatoSeleccionado(null); setPerfilTrabajadorExpandido({ ...trabajadorCompleto, yaContratado: false }); }}>
+              <TouchableOpacity style={styles.verPortafolioBtn} onPress={() => { const trabajadorCompleto = candidatoSeleccionado.trabajador; setCandidatoSeleccionado(null); verPerfilTrabajador(trabajadorCompleto, true); }}>
                 <Ionicons name="images-outline" size={18} color="#0D2340" style={{marginRight: 8}}/><Text style={styles.verPortafolioText}>Ver Perfil Completo</Text>
               </TouchableOpacity>
-              <View style={{flexDirection: 'row', justifyContent: 'space-between', marginTop: 30}}>
+              <TouchableOpacity style={[styles.verPortafolioBtn, {marginTop: 10, borderColor: '#3B82F6', backgroundColor: '#EFF6FF'}]} onPress={() => { const cand = candidatoSeleccionado; setCandidatoSeleccionado(null); chatearCon(cand); }}>
+                <Ionicons name="chatbubbles-outline" size={18} color="#3B82F6" style={{marginRight: 8}}/><Text style={[styles.verPortafolioText, {color: '#3B82F6'}]}>Chatear antes de aceptar</Text>
+              </TouchableOpacity>
+              <Text style={{fontSize: 11, color: '#6B7280', textAlign: 'center', marginTop: 12}}>Acepta solo cuando ya se pusieron de acuerdo por chat: al aceptar se cierra el trato y empieza la obra.</Text>
+              <View style={{flexDirection: 'row', justifyContent: 'space-between', marginTop: 20}}>
                 <TouchableOpacity style={[styles.candBtnAccion, {backgroundColor: '#FEE2E2', borderColor: '#F87171'}]} onPress={() => responderSolicitud('rechazar')} disabled={procesando}><Ionicons name="close-circle-outline" size={20} color="#DC2626" /><Text style={[styles.candBtnText, {color: '#DC2626'}]}>Rechazar</Text></TouchableOpacity>
                 <TouchableOpacity style={[styles.candBtnAccion, {backgroundColor: '#0D2340', borderColor: '#0D2340'}]} onPress={() => responderSolicitud('aceptar')} disabled={procesando}><Ionicons name="checkmark-circle" size={20} color="#FFF" /><Text style={[styles.candBtnText, {color: '#FFF'}]}>Aceptar</Text></TouchableOpacity>
               </View>
@@ -887,7 +992,48 @@ export default function DashboardContratista() {
               </View>
             </View>
             <ScrollView contentContainerStyle={{padding: 20}}>
-              <Text style={styles.sectionTitle}>Historial de Obras</Text>
+              {/* DATOS DEL TRABAJADOR: FOTO, OFICIO, PRECIO, UBICACIÓN Y CALIFICACIÓN */}
+              <View style={[styles.feedJobCard, {alignItems: 'center'}]}>
+                <TouchableOpacity onPress={() => perfilTrabajadorExpandido?.foto_rostro_url && setFotoGrande(perfilTrabajadorExpandido.foto_rostro_url)}>
+                  <Image source={{ uri: perfilTrabajadorExpandido?.foto_rostro_url || undefined }} style={styles.candAvatarBig} />
+                </TouchableOpacity>
+                <Text style={styles.candNameBig}>{perfilTrabajadorExpandido?.nombre} {perfilTrabajadorExpandido?.apellidos}</Text>
+                <Text style={styles.candOficioBig}>{perfilTrabajadorExpandido?.oficio_principal || 'Trabajador General'}</Text>
+                <Text style={[styles.workerFeedPrecio, {fontSize: 15, marginTop: 6}]}>{textoPrecio(perfilTrabajadorExpandido?.tarifa_monto, perfilTrabajadorExpandido?.tarifa_periodo)}</Text>
+                <View style={[styles.locationBadge, {marginTop: 10}]}>
+                  <Ionicons name="location" size={12} color="#0D2340" />
+                  <Text style={styles.locationText}>
+                    {[perfilTrabajadorExpandido?.ubicacion_texto, perfilTrabajadorExpandido?.ubicacion_estado].filter(Boolean).join(', ') || 'Sin ubicación registrada'}
+                    {distanciaKm(userData?.ubicacion, perfilTrabajadorExpandido?.ubicacion) !== null ? ` • ${textoDistancia(distanciaKm(userData?.ubicacion, perfilTrabajadorExpandido?.ubicacion))}` : ''}
+                  </Text>
+                </View>
+                <View style={styles.candStatsRow}>
+                  <View style={styles.candStatBox}><Text style={styles.candStatValue}>{perfilTrabajadorExpandido?.calificacion || '0.0'} <Ionicons name="star" size={14} color="#F59E0B"/></Text><Text style={styles.candStatLabel}>Calificación</Text></View>
+                  <View style={styles.candStatBox}><Text style={styles.candStatValue}>{perfilTrabajadorExpandido?.numero_resenas || 0}</Text><Text style={styles.candStatLabel}>Reseñas</Text></View>
+                  <View style={styles.candStatBox}><Text style={styles.candStatValue}>{perfilTrabajadorExpandido ? obrasDe(perfilTrabajadorExpandido) : 0}</Text><Text style={styles.candStatLabel}>Obras</Text></View>
+                </View>
+              </View>
+
+              {/* OBRAS TERMINADAS DENTRO DE PALANTEMX (LAS AGREGA EL SERVIDOR AL FINALIZAR CADA CONTRATO) */}
+              {perfilTrabajadorExpandido?.obras_realizadas?.length > 0 && (
+                <View style={{marginBottom: 10}}>
+                  <Text style={styles.sectionTitle}>🤝 Obras realizadas en PalanteMX</Text>
+                  {[...perfilTrabajadorExpandido.obras_realizadas].reverse().map((obra: any, idx: number) => (
+                    <View key={idx} style={[styles.feedJobCard, {padding: 0, overflow: 'hidden', marginBottom: 12}]}>
+                      {obra.foto_trabajo ? (
+                        <TouchableOpacity onPress={() => setFotoGrande(obra.foto_trabajo)}><Image source={{uri: obra.foto_trabajo}} style={{width: '100%', height: 140}} /></TouchableOpacity>
+                      ) : null}
+                      <View style={{padding: 14}}>
+                        <Text style={{fontSize: 15, fontWeight: 'bold', color: '#0D2340'}}>{obra.titulo}</Text>
+                        <Text style={{fontSize: 12, color: '#6B7280', marginTop: 2}}>Para: {obra.contratista}{obra.ubicacion ? ` • ${obra.ubicacion}` : ''}</Text>
+                        <Text style={{fontSize: 12, color: '#6B7280', marginTop: 2}}>Del {obra.fecha_inicio || '—'} al {obra.fecha_fin}</Text>
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              )}
+
+              <Text style={styles.sectionTitle}>Portafolio (subido por el trabajador)</Text>
               {perfilTrabajadorExpandido?.portafolio && perfilTrabajadorExpandido.portafolio.length > 0 ? (
                 perfilTrabajadorExpandido.portafolio.map((trabajo: any, idx: number) => (
                   <View key={idx} style={[styles.feedJobCard, {padding: 0, overflow: 'hidden', elevation: 2}]}>
@@ -902,8 +1048,27 @@ export default function DashboardContratista() {
                     </View>
                   </View>
                 ))
-              ) : ( <Text style={{textAlign: 'center', color: '#6B7280', marginTop: 20}}>Este trabajador aún no ha subido fotos de sus obras pasadas.</Text> )}
-              
+              ) : ( <Text style={{textAlign: 'center', color: '#6B7280', marginBottom: 20}}>Este trabajador aún no ha subido fotos de sus obras pasadas.</Text> )}
+
+              <Text style={styles.sectionTitle}>Reseñas</Text>
+              {perfilTrabajadorExpandido?.resenas?.length > 0 ? (
+                [...perfilTrabajadorExpandido.resenas].reverse().map((resena: any, idx: number) => (
+                  <View key={idx} style={styles.reviewCard}>
+                    <View style={styles.reviewHeader}>
+                      <Image source={{uri: resena.evaluador_foto || undefined}} style={styles.reviewAvatar} />
+                      <View>
+                        <Text style={styles.reviewName}>{resena.evaluador_nombre}</Text>
+                        <View style={styles.reviewStarsRow}>
+                          {[...Array(5)].map((_, i) => (<Ionicons key={i} name={i < resena.estrellas ? "star" : "star-outline"} size={12} color="#F59E0B" />))}
+                          <Text style={styles.reviewDate}> • {resena.fecha}</Text>
+                        </View>
+                      </View>
+                    </View>
+                    <Text style={styles.reviewComment}>"{resena.comentario}"</Text>
+                  </View>
+                ))
+              ) : ( <Text style={{textAlign: 'center', color: '#6B7280'}}>Todavía no tiene reseñas.</Text> )}
+
               {!perfilTrabajadorExpandido?.yaContratado && (
                 <TouchableOpacity style={{backgroundColor: '#00D06C', flexDirection: 'row', justifyContent: 'center', alignItems: 'center', padding: 15, borderRadius: 12, marginTop: 20}} onPress={() => iniciarContratacionDirecta(perfilTrabajadorExpandido)}>
                   <Ionicons name="briefcase" size={20} color="#FFF" style={{marginRight: 8}} /><Text style={{color: '#FFF', fontWeight: 'bold', fontSize: 16}}>Proponer obra y chatear</Text>
@@ -915,8 +1080,12 @@ export default function DashboardContratista() {
       </Modal>
 
       {/* BITÁCORA (LA MISMA QUE LLENA EL TRABAJADOR; AQUÍ SOLO SE LEE) Y VENTANA PARA CANCELAR UNA OBRA */}
-      <ModalBitacora contrato={contratoBitacora} puedeEscribir={false} onClose={() => setContratoBitacora(null)} />
+      <ModalBitacora contrato={contratoBitacora} rol="contratista" onClose={() => setContratoBitacora(null)} />
       <ModalCancelarContrato contrato={contratoCancelar} onClose={() => setContratoCancelar(null)} onCancelado={() => { setContratoCancelar(null); cargarPerfil(); }} />
+      <ModalReportarProblema contrato={contratoReportar} rol="contratista" onClose={() => setContratoReportar(null)} />
+      <VisorFoto uri={fotoGrande} onClose={() => setFotoGrande(null)} />
+      {/* AVISOS DEL SERVIDOR (DECISIONES DEL ADMIN...). AL LLEGAR UNO SE RECARGA, PORQUE PUDO CAMBIAR UNA OBRA */}
+      <AvisosNotificaciones onNuevos={cargarPerfil} />
 
       <Modal visible={modalEvaluar} animationType="slide" transparent>
         <View style={styles.modalBg}>
@@ -1019,6 +1188,7 @@ const styles = StyleSheet.create({
   workerFeedAvatar: { width: 60, height: 60, borderRadius: 30, backgroundColor: '#E5E7EB', marginRight: 15, borderWidth: 2, borderColor: '#F3F4F6' },
   workerFeedName: { fontSize: 18, fontWeight: 'bold', color: '#0D2340', marginBottom: 2 },
   workerFeedOficio: { fontSize: 14, color: '#6B7280', fontWeight: '500' },
+  workerFeedPrecio: { fontSize: 13, color: '#00A355', fontWeight: 'bold', marginTop: 2 },
   workerFeedDetailsGrid: { flexDirection: 'row', backgroundColor: '#F9FAFB', borderRadius: 10, padding: 12, marginBottom: 15, borderWidth: 1, borderColor: '#E5E7EB', justifyContent: 'space-around' },
   workerFeedDetailRow: { flexDirection: 'row', alignItems: 'center' },
   workerFeedDetailText: { fontSize: 13, color: '#4B5563', marginLeft: 6 },

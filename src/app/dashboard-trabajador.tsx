@@ -2,7 +2,6 @@ import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Picker } from '@react-native-picker/picker';
 import * as ImagePicker from 'expo-image-picker';
-import * as Location from 'expo-location';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Dimensions, Image, Modal, Platform, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
@@ -16,8 +15,11 @@ import { auth, db } from '../../firebaseConfig';
 import { subirFotoACloudinary } from '@/lib/cloudinary';
 import { eliminarCuentaEnServidor } from '@/lib/cuenta';
 import { abrirChatCon, accionContrato, AccionContrato, ESTADOS, sePuedeCalificar } from '@/lib/contratos';
+import { ESTADOS_MEXICO, PERIODOS_PAGO, textoPrecio, ubicacionDesdeGPS } from '@/lib/ubicacion';
+import { AvisosNotificaciones } from '@/components/avisos-notificaciones';
 import { ModalBitacora } from '@/components/modal-bitacora';
 import { ModalCancelarContrato } from '@/components/modal-cancelar-contrato';
+import { ModalReportarProblema } from '@/components/modal-reportar-problema';
 import { BotonContrato, TarjetaContrato } from '@/components/tarjeta-contrato';
 
 const { width } = Dimensions.get('window');
@@ -38,6 +40,9 @@ export default function DashboardTrabajador() {
   const [editApellidos, setEditApellidos] = useState('');
   const [editOficio, setEditOficio] = useState('');
   const [editUbicacion, setEditUbicacion] = useState('');
+  const [editEstado, setEditEstado] = useState('');
+  const [editTarifa, setEditTarifa] = useState(''); // MI PRECIO EN PESOS (SOLO NÚMEROS)
+  const [editPeriodo, setEditPeriodo] = useState('por día');
 
   const [modalTrabajo, setModalTrabajo] = useState(false);
   const [obraEditandoId, setObraEditandoId] = useState<string | null>(null); 
@@ -75,6 +80,7 @@ export default function DashboardTrabajador() {
   const [contratos, setContratos] = useState<any[]>([]);
   const [contratoBitacora, setContratoBitacora] = useState<any>(null);
   const [contratoCancelar, setContratoCancelar] = useState<any>(null);
+  const [contratoReportar, setContratoReportar] = useState<any>(null);
 
   // MAGIA: SI VENIMOS DE OTRA PANTALLA, ABRIR LA PESTAÑA CORRECTA
   useEffect(() => {
@@ -96,18 +102,18 @@ export default function DashboardTrabajador() {
         setEditApellidos(data.apellidos || '');
         setEditOficio(data.oficio_principal || 'Albañil');
         setDisponibilidad(data.disponibilidad || 'Disponible');
-        
-        if (data.ubicacion && data.ubicacion.latitud && data.ubicacion.longitud) {
-          try {
-            const geo = await Location.reverseGeocodeAsync({ latitude: data.ubicacion.latitud, longitude: data.ubicacion.longitud });
-            if (geo && geo.length > 0) {
-              const place = geo[0];
-              const ciudadTraducida = `${place.city || place.subregion || place.name || ''}, ${place.region || ''}`.replace(/^, /, '').trim();
-              setUbicacionLegible(ciudadTraducida);
-              setEditUbicacion(data.ubicacion_texto || ciudadTraducida);
-            } else { setUbicacionLegible(data.ubicacion_texto || 'Ubicación GPS desconocida'); }
-          } catch (e) { setUbicacionLegible(data.ubicacion_texto || 'Ubicación guardada en BD'); }
-        } else { setUbicacionLegible(data.ubicacion_texto || 'Sin datos de GPS'); }
+        setEditTarifa(data.tarifa_monto ? String(data.tarifa_monto) : '');
+        setEditPeriodo(data.tarifa_periodo || 'por día');
+
+        // CIUDAD Y ESTADO: LOS QUE EL USUARIO ESCRIBIÓ, O LOS DEL GPS DEL REGISTRO. EL ESTADO SE GUARDA EN EL PERFIL
+        // (ubicacion_estado) PORQUE CON ÉL LOS CONTRATISTAS FILTRAN A LOS TRABAJADORES.
+        const gps = await ubicacionDesdeGPS(data.ubicacion);
+        const estado = data.ubicacion_estado || gps?.estado || '';
+        if (estado && !data.ubicacion_estado) updateDoc(doc(db, userDoc.ref.path), { ubicacion_estado: estado }).catch(() => {});
+        const ciudad = data.ubicacion_texto || gps?.ciudad || '';
+        setUbicacionLegible([ciudad, estado].filter(Boolean).join(', ') || 'Sin ubicación');
+        setEditUbicacion(ciudad);
+        setEditEstado(estado);
 
         // TODOS MIS CONTRATOS, CON LOS DATOS DE CADA CONTRATISTA (UNA SOLA LECTURA POR CONTRATISTA)
         const snapContratos = await getDocs(query(collection(db, 'Postulaciones'), where('id_trabajador', '==', usuarioActual.uid)));
@@ -169,10 +175,16 @@ export default function DashboardTrabajador() {
   };
 
   const guardarEdicionPerfil = async () => {
-    if (!editUbicacion) { Alert.alert("Aviso", "Llena tu ubicación exacta."); return; }
+    if (!editUbicacion || !editEstado) { Alert.alert("Aviso", "Elige tu estado y escribe tu ciudad: así te encuentran los contratistas de tu zona."); return; }
     setProcesando(true);
-    await updateDoc(doc(db, userData.refPath), { oficio_principal: editOficio, ubicacion_texto: editUbicacion });
-    await cargarPerfil(); setProcesando(false); setModalEditar(false);
+    try {
+      await updateDoc(doc(db, userData.refPath), {
+        oficio_principal: editOficio, ubicacion_texto: editUbicacion, ubicacion_estado: editEstado,
+        tarifa_monto: parseInt(editTarifa) || null, tarifa_periodo: editPeriodo,
+      });
+      await cargarPerfil(); setModalEditar(false);
+    } catch (error: any) { Alert.alert("No se pudo guardar", error?.message || "Intenta de nuevo."); }
+    setProcesando(false);
   };
 
   const abrirModalNuevaObra = () => {
@@ -322,6 +334,7 @@ export default function DashboardTrabajador() {
     const chatear: BotonContrato = { texto: 'Chatear', icono: 'chatbubbles-outline', color: '#3B82F6', onPress: () => abrirChatCon({ id: contratista.id, nombre: contratista.nombre, rol: 'Contratista', foto: contratista.foto }) };
     const bitacora: BotonContrato = { texto: 'Bitácora', icono: 'reader-outline', color: '#0D2340', onPress: () => setContratoBitacora(contrato) };
     const calificar: BotonContrato = { texto: 'Calificar', icono: 'star-outline', color: '#F59E0B', onPress: () => calificarContratista(contrato) };
+    const reportar: BotonContrato = { texto: 'Reportar problema', icono: 'flag-outline', color: '#EA580C', onPress: () => setContratoReportar(contrato) };
 
     switch (contrato.estado) {
       case ESTADOS.PROPUESTA: return [
@@ -332,6 +345,7 @@ export default function DashboardTrabajador() {
       case ESTADOS.ACTIVA: return [
         { ...bitacora, texto: 'Llenar bitácora', relleno: true },
         chatear,
+        reportar,
         { texto: 'Cancelar obra', icono: 'warning-outline', color: '#DC2626', onPress: () => setContratoCancelar(contrato) },
       ];
       case ESTADOS.POR_CONFIRMAR_FIN: return [
@@ -339,6 +353,7 @@ export default function DashboardTrabajador() {
         { texto: 'Aún no', icono: 'arrow-undo-outline', color: '#F59E0B', onPress: () => confirmarAccion('rechazar_fin', contrato, "La obra no ha terminado", "La obra regresará a activa. Platica con el contratista lo que falta.", "La obra sigue activa.") },
         bitacora,
         chatear,
+        reportar,
       ];
       case ESTADOS.SUSPENDIDA: return [bitacora, calificar];
       case ESTADOS.FINALIZADA: return [bitacora, calificar];
@@ -399,6 +414,9 @@ export default function DashboardTrabajador() {
 
               <Text style={styles.userName}>{userData?.nombre} {userData?.apellidos}</Text>
               <Text style={styles.userRole}>{userData?.oficio_principal || userData?.rol_usuario}</Text>
+              <TouchableOpacity onPress={() => setModalEditar(true)}>
+                <Text style={{color: '#00A355', fontWeight: 'bold', marginTop: 4}}>{userData?.tarifa_monto ? textoPrecio(userData.tarifa_monto, userData.tarifa_periodo) : 'Pon tu precio para aparecer en los filtros ✏️'}</Text>
+              </TouchableOpacity>
               
               <TouchableOpacity style={[styles.dispBadge, disponibilidad === 'Disponible' ? styles.dispDisponible : styles.dispOcupado]} onPress={toggleDisponibilidad} disabled={procesando}>
                 <View style={styles.dispDot} />
@@ -412,7 +430,7 @@ export default function DashboardTrabajador() {
               <View style={styles.statsRow}>
                 <View style={styles.statBox}><Text style={styles.statNumber}>{userData?.calificacion || '0.0'} <Ionicons name="star" size={14} color="#F59E0B" /></Text><Text style={styles.statLabel}>Calificación</Text></View>
                 <View style={styles.statDivider} />
-                <View style={styles.statBox}><Text style={styles.statNumber}>{portafolio.length}</Text><Text style={styles.statLabel}>Obras</Text></View>
+                <View style={styles.statBox}><Text style={styles.statNumber}>{portafolio.length + contratos.filter(c => c.estado === ESTADOS.FINALIZADA).length}</Text><Text style={styles.statLabel}>Obras</Text></View>
                 <View style={styles.statDivider} />
                 <View style={styles.statBox}><Text style={styles.statNumber}>{userData?.numero_resenas || 0}</Text><Text style={styles.statLabel}>Reseñas</Text></View>
                 <View style={styles.statDivider} />
@@ -684,7 +702,23 @@ export default function DashboardTrabajador() {
               {/* NOMBRE Y APELLIDOS QUEDARON VERIFICADOS CONTRA LA INE: LAS REGLAS DE FIRESTORE NO PERMITEN CAMBIARLOS */}
               <Text style={styles.modalLabel}>Nombres Oficiales (verificados con tu INE)</Text><TextInput style={[styles.modalInput, {backgroundColor: '#E5E7EB', color: '#6B7280'}]} value={editNombre} editable={false}/>
               <Text style={styles.modalLabel}>Apellidos (verificados con tu INE)</Text><TextInput style={[styles.modalInput, {backgroundColor: '#E5E7EB', color: '#6B7280'}]} value={editApellidos} editable={false}/>
-              <Text style={styles.modalLabel}>Ubicación visible en perfil</Text><TextInput style={styles.modalInput} placeholder="Ej. San Felipe del Progreso, Edo Mex" value={editUbicacion} onChangeText={setEditUbicacion} />
+              <Text style={styles.modalLabel}>Estado</Text>
+              <View style={styles.pickerBox}>
+                <Picker selectedValue={editEstado} onValueChange={setEditEstado}>
+                  <Picker.Item label="Elige tu estado..." value="" />
+                  {ESTADOS_MEXICO.map(e => <Picker.Item key={e} label={e} value={e} />)}
+                </Picker>
+              </View>
+              <Text style={styles.modalLabel}>Ciudad / municipio</Text><TextInput style={styles.modalInput} placeholder="Ej. San Felipe del Progreso" value={editUbicacion} onChangeText={setEditUbicacion} />
+              <Text style={styles.modalLabel}>Mi precio (los contratistas filtran por esto)</Text>
+              <View style={{flexDirection: 'row'}}>
+                <TextInput style={[styles.modalInput, {flex: 1, marginRight: 5}]} placeholder="Vacío = a convenir" keyboardType="numeric" value={editTarifa} onChangeText={t => setEditTarifa(t.replace(/[^0-9]/g, ''))} />
+                <View style={[styles.pickerBox, {flex: 1, marginLeft: 5}]}>
+                  <Picker selectedValue={editPeriodo} onValueChange={setEditPeriodo}>
+                    {PERIODOS_PAGO.map(p => <Picker.Item key={p} label={p} value={p} />)}
+                  </Picker>
+                </View>
+              </View>
               <Text style={styles.modalLabel}>Oficio Principal</Text>
               <View style={styles.pickerBox}>
                 <Picker selectedValue={editOficio} onValueChange={(itemValue) => setEditOficio(itemValue)}>
@@ -744,8 +778,11 @@ export default function DashboardTrabajador() {
       </Modal>
 
       {/* BITÁCORA (COMPARTIDA CON EL CONTRATISTA) Y VENTANA PARA CANCELAR UNA OBRA */}
-      <ModalBitacora contrato={contratoBitacora} puedeEscribir onClose={() => setContratoBitacora(null)} />
+      <ModalBitacora contrato={contratoBitacora} rol="trabajador" onClose={() => setContratoBitacora(null)} />
       <ModalCancelarContrato contrato={contratoCancelar} onClose={() => setContratoCancelar(null)} onCancelado={() => { setContratoCancelar(null); cargarPerfil(); }} />
+      <ModalReportarProblema contrato={contratoReportar} rol="trabajador" onClose={() => setContratoReportar(null)} />
+      {/* AVISOS DEL SERVIDOR (DECISIONES DEL ADMIN, BITÁCORA RECHAZADA...). AL LLEGAR UNO SE RECARGA, PORQUE PUDO CAMBIAR UNA OBRA */}
+      <AvisosNotificaciones onNuevos={cargarPerfil} />
 
       <Modal visible={modalQueja} animationType="fade" transparent>
         <View style={styles.modalBg}>

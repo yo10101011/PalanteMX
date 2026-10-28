@@ -81,6 +81,35 @@ export default function Mensajes() {
   const escuchaChatsRef = useRef<(() => void) | null>(null);
   const escuchaMensajesRef = useRef<(() => void) | null>(null);
 
+  // FOTOS Y NOMBRES ACTUALES DE CADA PERSONA. EL CHAT GUARDA UNA COPIA DE CUANDO SE CREÓ (datos_usuarios), QUE NO
+  // CAMBIA SI LA PERSONA CAMBIA SU FOTO: POR ESO SE LEE SU PERFIL Y SE USA ESTO PRIMERO.
+  const [perfilesActuales, setPerfilesActuales] = useState<Record<string, { foto?: string; nombre?: string }>>({});
+  const perfilesPedidosRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!miPerfil) return;
+    const pendientes = [...new Set(chats.flatMap(c => (Array.isArray(c.usuarios_ids) ? c.usuarios_ids : [])))]
+      .filter((id: string) => id !== miPerfil.id && !perfilesPedidosRef.current.has(id));
+    pendientes.forEach(async (id: string) => {
+      perfilesPedidosRef.current.add(id);
+      try {
+        let perfil = await getDoc(doc(db, 'Usuarios', id));
+        if (!perfil.exists()) perfil = await getDoc(doc(db, 'Contratistas', id));
+        if (perfil.exists()) {
+          const datos = perfil.data();
+          setPerfilesActuales(prev => ({ ...prev, [id]: { foto: datos.foto_rostro_url, nombre: `${datos.nombre} ${datos.apellidos}`.trim() } }));
+        }
+      } catch (error) { console.log("No se pudo leer el perfil", id, error); }
+    });
+  }, [chats, miPerfil]);
+
+  // DATOS DE LA OTRA PERSONA DE UN CHAT: LA COPIA DEL CHAT, CORREGIDA CON SU PERFIL ACTUAL
+  const datosDe = (chat: any, id?: string) => {
+    const copia = (id && chat.datos_usuarios?.[id]) || { nombre: 'Usuario Desconocido', rol: 'N/A' };
+    const actual = id ? perfilesActuales[id] : undefined;
+    return { ...copia, foto: actual?.foto || copia.foto, nombre: actual?.nombre || copia.nombre };
+  };
+
   useEffect(() => {
     cargarMisChats();
     return () => {
@@ -356,7 +385,7 @@ export default function Mensajes() {
     
     // BLINDAJE PARA EVITAR CRASH SI EL CHAT ESTÁ ROTO EN FIREBASE
     const otroUsuarioId = datosChatEnTiempoReal.usuarios_ids?.find((id: string) => id !== miPerfil.id);
-    const otroUsuarioData = otroUsuarioId && datosChatEnTiempoReal.datos_usuarios ? datosChatEnTiempoReal.datos_usuarios[otroUsuarioId] : { nombre: 'Usuario Desconocido', rol: 'N/A', foto: 'https://via.placeholder.com/150' };
+    const otroUsuarioData = datosDe(datosChatEnTiempoReal, otroUsuarioId);
 
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
@@ -367,7 +396,7 @@ export default function Mensajes() {
             <TouchableOpacity style={styles.backBtn} onPress={() => { escuchaMensajesRef.current?.(); escuchaMensajesRef.current = null; setChatActivo(null); router.setParams({ autoOpenId: '', autoOpenNombre: '' }); }}>
               <Ionicons name="arrow-back" size={24} color="#FFF" />
             </TouchableOpacity>
-            <Image source={{uri: otroUsuarioData.foto}} style={styles.chatAvatar} />
+            <Image source={{uri: otroUsuarioData.foto || undefined}} style={styles.chatAvatar} />
             <View style={{flex: 1}}>
               <Text style={styles.chatName} numberOfLines={1}>{otroUsuarioData.nombre}</Text>
               <Text style={styles.chatRole}>{otroUsuarioData.rol}</Text>
@@ -558,15 +587,15 @@ export default function Mensajes() {
             const otroUsuarioId = chat.usuarios_ids.find((id: string) => id !== miPerfil?.id);
             if (!otroUsuarioId) return null;
 
-            const otroUsuarioData = chat.datos_usuarios[otroUsuarioId];
-            if (!otroUsuarioData) return null;
+            if (!chat.datos_usuarios[otroUsuarioId]) return null;
+            const otroUsuarioData = datosDe(chat, otroUsuarioId);
 
             const esUltimoMio = chat.ultimo_emisor_id === miPerfil.id;
             const noLeido = !esUltimoMio && chat.leido === false;
 
             return (
               <TouchableOpacity key={index} style={[styles.chatListItem, noLeido && styles.chatListItemUnread, chat.bloqueado && {opacity: 0.5}]} activeOpacity={0.7} onPress={() => abrirChat(chat)}>
-                <Image source={{uri: otroUsuarioData.foto || 'https://via.placeholder.com/150'}} style={styles.chatListAvatar} />
+                <Image source={{uri: otroUsuarioData.foto || undefined}} style={styles.chatListAvatar} />
                 <View style={{flex: 1}}>
                   <View style={styles.chatListTopRow}>
                     <Text style={[styles.chatListName, noLeido && {fontWeight: '900', color: '#000'}]} numberOfLines={1}>{otroUsuarioData.nombre}</Text>

@@ -6,9 +6,21 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 // FIREBASE
 // @ts-ignore
-import { collection, getDocs, query, where } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
 import { auth, db } from '../../firebaseConfig';
 import { abrirChatCon, accionContrato, ESTADOS, estiloEstado } from '@/lib/contratos';
+import { distanciaKm, textoDistancia } from '@/lib/ubicacion';
+import { AvisosNotificaciones } from '@/components/avisos-notificaciones';
+import { FiltrosBusqueda, TODOS_LOS_ESTADOS } from '@/components/filtros-busqueda';
+import { VisorFoto } from '@/components/visor-foto';
+
+// ORDEN DE LAS VACANTES
+const ORDENES_VACANTES = [
+  { valor: 'calificacion', texto: 'Contratistas mejor calificados' },
+  { valor: 'cercania', texto: 'Más cerca de mí' },
+  { valor: 'pago', texto: 'Mejor pago' },
+  { valor: 'recientes', texto: 'Más recientes' },
+];
 
 export default function FeedTrabajador() {
   const [cargando, setCargando] = useState(true);
@@ -23,6 +35,12 @@ export default function FeedTrabajador() {
   
   const [filtroActivo, setFiltroActivo] = useState('Todos');
   const [busqueda, setBusqueda] = useState('');
+  const [filtroEstado, setFiltroEstado] = useState(TODOS_LOS_ESTADOS);
+  const [orden, setOrden] = useState('calificacion');
+  const [pagoMinimo, setPagoMinimo] = useState('');
+  const [miPerfil, setMiPerfil] = useState<any>(null);
+  const [contratistas, setContratistas] = useState<Record<string, any>>({}); // PARA LA CALIFICACIÓN DE CADA CONTRATISTA
+  const [fotoGrande, setFotoGrande] = useState<string | null>(null);
 
   const categorias = ['Todos', 'Albañilería', 'Plomería', 'Electricidad', 'Carpintería', 'Pintura', 'Limpieza', 'Varios'];
 
@@ -39,9 +57,19 @@ export default function FeedTrabajador() {
       const listaVacantes: any[] = [];
       vacantesSnap.forEach(doc => listaVacantes.push({ id: doc.id, ...doc.data() }));
       
-      // Ordenamos para que las más nuevas salgan arriba
-      listaVacantes.sort((a, b) => new Date(b.fecha_publicacion).getTime() - new Date(a.fecha_publicacion).getTime());
+      // EL ORDEN Y LOS FILTROS SE APLICAN AL DIBUJAR (VER vacantesFiltradas)
       setVacantes(listaVacantes);
+
+      // MI PERFIL (UBICACIÓN PARA "MÁS CERCA" Y "MI ESTADO") Y LOS CONTRATISTAS DE ESTAS VACANTES (SU CALIFICACIÓN)
+      const miDoc = await getDoc(doc(db, 'Usuarios', usuarioActual.uid));
+      if (miDoc.exists()) setMiPerfil(miDoc.data());
+      const idsContratistas = [...new Set(listaVacantes.map(v => v.id_contratista).filter(Boolean))];
+      const mapa: Record<string, any> = {};
+      await Promise.all(idsContratistas.map(async id => {
+        const c = await getDoc(doc(db, 'Contratistas', id));
+        if (c.exists()) mapa[id] = c.data();
+      }));
+      setContratistas(mapa);
 
       // 2. CARGAR MIS POSTULACIONES REALES
       const postulacionesRef = collection(db, 'Postulaciones');
@@ -113,10 +141,24 @@ export default function FeedTrabajador() {
     ]);
   };
 
-  const vacantesFiltradas = vacantes.filter(v =>
-    (filtroActivo === 'Todos' || v.categoria === filtroActivo) &&
-    v.titulo.toLowerCase().includes(busqueda.toLowerCase())
-  );
+  // VACANTES FILTRADAS (CATEGORÍA, BÚSQUEDA, ESTADO Y PAGO MÍNIMO) Y ORDENADAS (POR DEFECTO, LAS DE LOS CONTRATISTAS
+  // MEJOR CALIFICADOS PRIMERO). LAS VACANTES VIEJAS SIN ESTADO SE BUSCAN POR EL TEXTO DE SU UBICACIÓN.
+  // LAS DE PAGO "A CONVENIR" NO SE QUITAN AL FILTRAR POR PAGO, Y QUEDAN AL FINAL AL ORDENAR POR PAGO.
+  const calificacionDe = (v: any) => parseFloat(contratistas[v.id_contratista]?.calificacion) || 0;
+  const vacantesFiltradas = vacantes
+    .map(v => ({ ...v, distancia: distanciaKm(miPerfil?.ubicacion, v.coordenadas || contratistas[v.id_contratista]?.ubicacion) }))
+    .filter(v => filtroActivo === 'Todos' || v.categoria === filtroActivo)
+    .filter(v => `${v.titulo} ${v.descripcion || ''} ${v.ubicacion || ''}`.toLowerCase().includes(busqueda.toLowerCase()))
+    .filter(v => filtroEstado === TODOS_LOS_ESTADOS || v.estado_republica === filtroEstado
+      || (!v.estado_republica && String(v.ubicacion || '').toLowerCase().includes(filtroEstado.toLowerCase())))
+    .filter(v => !pagoMinimo || !v.pago_monto || v.pago_monto >= parseInt(pagoMinimo))
+    .sort((a, b) => {
+      if (orden === 'cercania') return (a.distancia ?? Infinity) - (b.distancia ?? Infinity);
+      if (orden === 'pago') return (b.pago_monto || 0) - (a.pago_monto || 0);
+      const recientes = new Date(b.fecha_publicacion).getTime() - new Date(a.fecha_publicacion).getTime();
+      if (orden === 'recientes') return recientes;
+      return calificacionDe(b) - calificacionDe(a) || recientes;
+    });
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
@@ -186,6 +228,12 @@ export default function FeedTrabajador() {
                 contentContainerStyle={styles.feedContainer}
                 refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={['#00D06C']} />}
               >
+                <FiltrosBusqueda
+                  estado={filtroEstado} onEstado={setFiltroEstado}
+                  orden={orden} onOrden={setOrden} opcionesOrden={ORDENES_VACANTES}
+                  precio={pagoMinimo} onPrecio={setPagoMinimo} etiquetaPrecio="Pago mínimo"
+                  miEstado={miPerfil?.ubicacion_estado}
+                />
                 <Text style={styles.feedResultsText}>{vacantesFiltradas.length} oportunidades publicadas</Text>
 
                 {vacantesFiltradas.length > 0 ? (
@@ -194,26 +242,29 @@ export default function FeedTrabajador() {
                       
                       {/* CABECERA: FOTO DEL CONTRATISTA Y EMPRESA */}
                       <View style={styles.jobHeader}>
-                        <Image source={{ uri: item.foto_contratista || 'https://via.placeholder.com/150' }} style={styles.contractorAvatar} />
+                        <Image source={{ uri: contratistas[item.id_contratista]?.foto_rostro_url || item.foto_contratista || undefined }} style={styles.contractorAvatar} />
                         <View style={{flex: 1}}>
                           <Text style={styles.jobTitle} numberOfLines={2}>{item.titulo}</Text>
                           <Text style={styles.jobCompany}>{item.contratista} • {item.empresa}</Text>
+                          <Text style={styles.jobRating}>
+                            <Ionicons name="star" size={12} color="#F59E0B" /> {contratistas[item.id_contratista]?.calificacion || '0.0'} ({contratistas[item.id_contratista]?.numero_resenas || 0} reseñas)
+                          </Text>
                         </View>
                       </View>
 
-                      {/* FOTO DE LA OBRA */}
+                      {/* FOTO DE LA OBRA: SE TOCA PARA VERLA COMPLETA */}
                       {item.foto_trabajo && (
-                        <View style={styles.jobImageContainer}>
+                        <TouchableOpacity activeOpacity={0.9} style={styles.jobImageContainer} onPress={() => setFotoGrande(item.foto_trabajo)}>
                           <Image source={{ uri: item.foto_trabajo }} style={styles.jobImage} />
-                          <View style={styles.jobImageTag}><Text style={styles.jobImageTagText}>Foto del proyecto</Text></View>
-                        </View>
+                          <View style={styles.jobImageTag}><Text style={styles.jobImageTagText}>Toca para ver completa</Text></View>
+                        </TouchableOpacity>
                       )}
 
                       {/* DETALLES TÉCNICOS Y DE HORARIO */}
                       <View style={styles.jobDetailsGrid}>
                         <View style={styles.jobDetailRow}>
                           <Ionicons name="location-outline" size={16} color="#6B7280" />
-                          <Text style={styles.jobDetailText}>{item.ubicacion}</Text>
+                          <Text style={styles.jobDetailText}>{[item.ubicacion, item.estado_republica].filter(Boolean).join(', ')}{item.distancia !== null ? ` • ${textoDistancia(item.distancia)}` : ''}</Text>
                         </View>
                         <View style={styles.jobDetailRow}>
                           <Ionicons name="cash-outline" size={16} color="#00D06C" />
@@ -246,7 +297,7 @@ export default function FeedTrabajador() {
                   <View style={styles.emptyState}>
                     <Ionicons name="search-outline" size={50} color="#D1D5DB" />
                     <Text style={styles.emptyStateTitle}>El muro está vacío</Text>
-                    <Text style={styles.emptyStateText}>Actualmente no hay vacantes activas publicadas por los contratistas en esta categoría.</Text>
+                    <Text style={styles.emptyStateText}>No hay vacantes activas con estos filtros. Prueba con otra categoría, estado o pago.</Text>
                   </View>
                 )}
               </ScrollView>
@@ -351,6 +402,8 @@ export default function FeedTrabajador() {
         </TouchableOpacity>
       </View>
 
+      <VisorFoto uri={fotoGrande} onClose={() => setFotoGrande(null)} />
+      <AvisosNotificaciones onNuevos={cargarDatos} />
     </SafeAreaView>
   );
 }
@@ -389,6 +442,7 @@ const styles = StyleSheet.create({
   contractorAvatar: { width: 50, height: 50, borderRadius: 25, backgroundColor: '#E5E7EB', marginRight: 15, borderWidth: 1, borderColor: '#D1D5DB' },
   jobTitle: { fontSize: 16, fontWeight: 'bold', color: '#0D2340', marginBottom: 4 },
   jobCompany: { fontSize: 13, color: '#6B7280', fontWeight: '500' },
+  jobRating: { fontSize: 12, color: '#B45309', fontWeight: 'bold', marginTop: 2 },
   
   jobImageContainer: { position: 'relative', marginBottom: 15 },
   jobImage: { width: '100%', height: 180, borderRadius: 12, backgroundColor: '#E5E7EB' },

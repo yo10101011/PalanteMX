@@ -1,8 +1,10 @@
 // TARJETA DE UN CONTRATO (OBRA): QUIÉN ES LA OTRA PARTE, LA VACANTE, SU ESTADO Y LOS BOTONES QUE TOQUEN.
 // LA USAN LOS PANELES DEL TRABAJADOR Y DEL CONTRATISTA, CADA UNO CON SUS PROPIOS BOTONES.
 import { Ionicons } from '@expo/vector-icons';
+import { useState } from 'react';
 import { Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
+import { VisorFoto } from '@/components/visor-foto';
 import { estiloEstado } from '@/lib/contratos';
 
 export type BotonContrato = {
@@ -24,11 +26,14 @@ type Props = {
 export function TarjetaContrato({ contrato, otraParte, aviso, botones, deshabilitado }: Props) {
   const estado = estiloEstado(contrato.estado);
   const vacante = contrato.vacante || {};
+  const [fotoGrande, setFotoGrande] = useState<string | null>(null);
 
   return (
     <View style={[styles.tarjeta, { borderLeftColor: estado.color }]}>
       <View style={styles.encabezado}>
-        <Image source={{ uri: otraParte.foto || 'https://via.placeholder.com/150' }} style={styles.foto} />
+        <TouchableOpacity onPress={() => otraParte.foto && setFotoGrande(otraParte.foto)}>
+          <Image source={{ uri: otraParte.foto || undefined }} style={styles.foto} />
+        </TouchableOpacity>
         <View style={{ flex: 1 }}>
           <Text style={styles.titulo} numberOfLines={2}>{contrato.titulo_vacante || vacante.titulo}</Text>
           <Text style={styles.subtitulo} numberOfLines={1}>{otraParte.nombre}{otraParte.detalle ? ` • ${otraParte.detalle}` : ''}</Text>
@@ -39,11 +44,21 @@ export function TarjetaContrato({ contrato, otraParte, aviso, botones, deshabili
         <Text style={styles.etiquetaTexto}>{estado.texto}</Text>
       </View>
 
-      {(vacante.ubicacion || vacante.pago) ? (
+      {/* FOTO DE LA OBRA: SE TOCA PARA VERLA COMPLETA */}
+      {vacante.foto_trabajo ? (
+        <TouchableOpacity activeOpacity={0.9} onPress={() => setFotoGrande(vacante.foto_trabajo)}>
+          <Image source={{ uri: vacante.foto_trabajo }} style={styles.fotoObra} />
+          <View style={styles.fotoAviso}><Ionicons name="expand-outline" size={12} color="#FFF" /><Text style={styles.fotoAvisoTexto}>Toca para ver completa</Text></View>
+        </TouchableOpacity>
+      ) : null}
+
+      {(vacante.ubicacion || vacante.pago || vacante.horario || vacante.descripcion) ? (
         <View style={styles.detalles}>
           {vacante.ubicacion ? <View style={styles.fila}><Ionicons name="location-outline" size={14} color="#6B7280" /><Text style={styles.detalleTexto}>{vacante.ubicacion}</Text></View> : null}
           {vacante.pago ? <View style={styles.fila}><Ionicons name="cash-outline" size={14} color="#00D06C" /><Text style={[styles.detalleTexto, { color: '#00D06C', fontWeight: 'bold' }]}>{vacante.pago}</Text></View> : null}
+          {vacante.horario ? <View style={styles.fila}><Ionicons name="time-outline" size={14} color="#B45309" /><Text style={styles.detalleTexto}>{vacante.horario}</Text></View> : null}
           {contrato.fecha_inicio ? <View style={styles.fila}><Ionicons name="calendar-outline" size={14} color="#6B7280" /><Text style={styles.detalleTexto}>Inició: {contrato.fecha_inicio}{contrato.fecha_fin ? ` • Terminó: ${contrato.fecha_fin}` : ''}</Text></View> : null}
+          {vacante.descripcion ? <Text style={styles.descripcion}>{vacante.descripcion}</Text> : null}
         </View>
       ) : null}
 
@@ -63,6 +78,8 @@ export function TarjetaContrato({ contrato, otraParte, aviso, botones, deshabili
           ))}
         </View>
       )}
+
+      <VisorFoto uri={fotoGrande} onClose={() => setFotoGrande(null)} />
     </View>
   );
 }
@@ -78,6 +95,10 @@ const styles = StyleSheet.create({
   detalles: { backgroundColor: '#F9FAFB', borderRadius: 10, padding: 10, marginTop: 10 },
   fila: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
   detalleTexto: { fontSize: 12, color: '#4B5563', marginLeft: 6, flexShrink: 1 },
+  descripcion: { fontSize: 12, color: '#4B5563', marginTop: 4, lineHeight: 17 },
+  fotoObra: { width: '100%', height: 170, borderRadius: 12, marginTop: 10, backgroundColor: '#E5E7EB' },
+  fotoAviso: { position: 'absolute', bottom: 8, right: 8, flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 },
+  fotoAvisoTexto: { color: '#FFF', fontSize: 10, fontWeight: 'bold', marginLeft: 4 },
   aviso: { fontSize: 12, fontWeight: 'bold', marginTop: 10 },
   botones: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 12, marginHorizontal: -4 },
   boton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderRadius: 10, paddingVertical: 9, paddingHorizontal: 10, margin: 4, flexGrow: 1 },

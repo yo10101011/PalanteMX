@@ -6,7 +6,9 @@
 //   POST /resenas              -> deja una reseña (solo entre quienes trabajaron juntos, una vez).
 //   POST /firma-subida         -> da permiso firmado para subir UNA foto/archivo a Cloudinary (solo usuarios con sesión).
 //   POST /eliminar-cuenta      -> borra por completo una cuenta (la propia, o cualquiera si quien llama es admin).
-//   POST /contratos            -> todos los pasos de un contrato (proponer, postular, aceptar, terminar, cancelar...).
+//   POST /contratos            -> todos los pasos de un contrato (proponer, postular, aceptar, terminar, cancelar,
+//                                 revisar la bitácora, reportar un problema...).
+//   POST /reportes             -> el admin resuelve un reporte y se les avisa a las dos partes.
 import { createRemoteJWKSet, importPKCS8, jwtVerify, SignJWT } from 'jose';
 
 interface Env {
@@ -49,6 +51,7 @@ export default {
     if (request.method === 'POST' && url.pathname === '/firma-subida') return firmarSubida(request, env);
     if (request.method === 'POST' && url.pathname === '/eliminar-cuenta') return eliminarCuenta(request, env);
     if (request.method === 'POST' && url.pathname === '/contratos') return gestionarContrato(request, env);
+    if (request.method === 'POST' && url.pathname === '/reportes') return resolverReporte(request, env);
     return responder(404, { error: 'Ruta no encontrada' });
   },
 };
@@ -466,7 +469,7 @@ const gestionarContrato = async (request: Request, env: Env) => {
   if (!sesion) return responder(401, { error: 'Sesión inválida o expirada' });
   const uid = sesion.uid;
 
-  let datos: { accion?: unknown; id_contrato?: unknown; id_vacante?: unknown; id_trabajador?: unknown; motivo?: unknown };
+  let datos: DatosContrato;
   try {
     datos = await request.json();
   } catch {
@@ -505,7 +508,7 @@ const gestionarContrato = async (request: Request, env: Env) => {
       const soyContratista = uid === idContratista;
 
       const resultado = await aplicarAccion(env, {
-        accion: datos.accion, motivo: datos.motivo, uid, esAdmin, soyTrabajador, soyContratista,
+        accion: datos.accion, motivo: datos.motivo, datos, uid, esAdmin, soyTrabajador, soyContratista,
         rutaContrato, contrato, estado, idTrabajador, idContratista, idVacante, vacante,
       });
       if (resultado) return resultado;
@@ -564,7 +567,10 @@ const crearContrato = async (env: Env, uid: string, quienInicia: 'contratista' |
           contratista: texto(vacante.fields.contratista),
           ubicacion: texto(vacante.fields.ubicacion),
           pago: texto(vacante.fields.pago),
-          foto_contratista: texto(vacante.fields.foto_contratista) || 'https://via.placeholder.com/150',
+          horario: texto(vacante.fields.horario),
+          descripcion: texto(vacante.fields.descripcion),
+          foto_trabajo: texto(vacante.fields.foto_trabajo),
+          foto_contratista: texto(vacante.fields.foto_contratista),
         },
         estado: quienInicia === 'contratista' ? ESTADOS.PROPUESTA : ESTADOS.PENDIENTE,
         origen: quienInicia,
@@ -577,8 +583,13 @@ const crearContrato = async (env: Env, uid: string, quienInicia: 'contratista' |
   return responder(200, { id_contrato: idContrato, estado: quienInicia === 'contratista' ? ESTADOS.PROPUESTA : ESTADOS.PENDIENTE });
 };
 
+type DatosContrato = {
+  accion?: unknown; id_contrato?: unknown; id_vacante?: unknown; id_trabajador?: unknown; motivo?: unknown;
+  id_entrada?: unknown; veredicto?: unknown; nota?: unknown; categoria?: unknown;
+};
+
 type ContextoAccion = {
-  accion: unknown; motivo: unknown; uid: string; esAdmin: boolean; soyTrabajador: boolean; soyContratista: boolean;
+  accion: unknown; motivo: unknown; datos: DatosContrato; uid: string; esAdmin: boolean; soyTrabajador: boolean; soyContratista: boolean;
   rutaContrato: string; contrato: DocumentoLeido; estado: string;
   idTrabajador: string; idContratista: string; idVacante: string; vacante: DocumentoLeido | null;
 };
@@ -598,6 +609,29 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
   });
   const guardar = async (writes: Record<string, unknown>[], nuevoEstado: string) =>
     (await confirmarEscrituras(env, writes)) ? responder(200, { estado: nuevoEstado }) : null;
+  const tituloObra = texto(c.contrato.fields.titulo_vacante);
+  const idContrato = c.rutaContrato.split('/')[1];
+  // REPORTE NUEVO PARA EL ADMIN SOBRE ESTA OBRA, LEVANTADO POR UNA DE LAS DOS PARTES CONTRA LA OTRA
+  const nuevoReporte = (idQueja: string, nombres: NombresPartes, campos: Record<string, unknown>) => ({
+    update: {
+      name: `${nombreBase}/Quejas_Soporte/${idQueja}`,
+      fields: aCamposFirestore({
+        id_reportante: c.uid,
+        nombre_reportante: c.soyTrabajador ? nombres.trabajador : nombres.contratista,
+        rol_reportante: c.soyTrabajador ? 'Trabajador' : 'Contratista',
+        id_acusado: c.soyTrabajador ? c.idContratista : c.idTrabajador,
+        acusado: c.soyTrabajador ? nombres.contratista : nombres.trabajador,
+        rol_acusado: c.soyTrabajador ? 'Contratista' : 'Trabajador',
+        id_contrato: idContrato,
+        titulo_obra: tituloObra,
+        estado: 'En Revisión Administrativa',
+        fecha_reporte: ahora.toISOString(),
+        ...campos,
+      }),
+    },
+    currentDocument: { exists: false },
+  });
+  const otraParte = c.soyTrabajador ? c.idContratista : c.idTrabajador;
 
   switch (c.accion) {
     // ---- LA PARTE QUE ESPERA ACEPTA: EL TRABAJADOR UNA PROPUESTA, O EL CONTRATISTA UNA SOLICITUD ----
@@ -640,7 +674,27 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
     case 'confirmar_fin': {
       if (!c.soyTrabajador) return prohibido('El trabajador es quien confirma que la obra terminó.');
       if (c.estado !== ESTADOS.POR_CONFIRMAR_FIN) return noSePuede();
-      return guardar([cambioContrato({ estado: ESTADOS.FINALIZADA, fecha_fin: ahora.toLocaleDateString('es-MX', { timeZone: 'America/Mexico_City' }), timestamp_fin: ahora.getTime() })], ESTADOS.FINALIZADA);
+      const fechaFin = ahora.toLocaleDateString('es-MX', { timeZone: 'America/Mexico_City' });
+      const writes: Record<string, unknown>[] = [cambioContrato({ estado: ESTADOS.FINALIZADA, fecha_fin: fechaFin, timestamp_fin: ahora.getTime() })];
+
+      // LA OBRA TERMINADA SE AGREGA AL PERFIL PÚBLICO DEL TRABAJADOR (obras_realizadas), PARA QUE CUALQUIER CONTRATISTA
+      // LA VEA EN SU PERFIL. LOS CONTRATOS SON PRIVADOS (SOLO LAS DOS PARTES LOS LEEN), POR ESO SE COPIA UN RESUMEN.
+      const rutaTrabajador = `Usuarios/${c.idTrabajador}`;
+      if ((await leerDocumentos(env, [rutaTrabajador]))[rutaTrabajador]) {
+        const resumen = c.contrato.fields.vacante?.mapValue?.fields || {};
+        const obra = {
+          id_contrato: idContrato,
+          titulo: tituloObra,
+          contratista: texto(c.contrato.fields.contratista) || texto(resumen.contratista),
+          ubicacion: texto(resumen.ubicacion),
+          pago: texto(resumen.pago),
+          foto_trabajo: texto(resumen.foto_trabajo) || (c.vacante ? texto(c.vacante.fields.foto_trabajo) : ''),
+          fecha_inicio: texto(c.contrato.fields.fecha_inicio),
+          fecha_fin: fechaFin,
+        };
+        writes.push({ transform: { document: `${nombreBase}/${rutaTrabajador}`, fieldTransforms: [{ fieldPath: 'obras_realizadas', appendMissingElements: { values: [aValorFirestore(obra)] } }] } });
+      }
+      return guardar(writes, ESTADOS.FINALIZADA);
     }
     case 'rechazar_fin': {
       if (!c.soyTrabajador) return prohibido('Solo el trabajador puede decir que la obra aún no termina.');
@@ -654,48 +708,89 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
       if (c.estado !== ESTADOS.ACTIVA && c.estado !== ESTADOS.POR_CONFIRMAR_FIN) return noSePuede();
       if (!textoValido(c.motivo, 1000)) return responder(400, { error: 'Explica por qué cancelas la obra.' });
 
-      const perfiles = await leerDocumentos(env, [`Usuarios/${c.idTrabajador}`, `Contratistas/${c.idContratista}`]);
-      const nombreDe = (ruta: string) => {
-        const perfil = perfiles[ruta];
-        return perfil ? `${texto(perfil.fields.nombre)} ${texto(perfil.fields.apellidos)}`.trim() : 'Usuario';
-      };
-      const nombreTrabajador = nombreDe(`Usuarios/${c.idTrabajador}`);
-      const nombreContratista = nombreDe(`Contratistas/${c.idContratista}`);
+      const nombres = await nombresDePartes(env, c.idTrabajador, c.idContratista);
       const idQueja = crypto.randomUUID().replace(/-/g, '');
+      const quienCancela = c.soyTrabajador ? nombres.trabajador : nombres.contratista;
 
       return guardar([
         cambioContrato({ estado: ESTADOS.SUSPENDIDA, cancelado_por: c.uid, motivo_cancelacion: c.motivo.trim(), id_queja: idQueja, timestamp_cancelacion: ahora.getTime() }),
-        {
-          update: {
-            name: `${nombreBase}/Quejas_Soporte/${idQueja}`,
-            fields: aCamposFirestore({
-              id_reportante: c.uid,
-              nombre_reportante: c.soyTrabajador ? nombreTrabajador : nombreContratista,
-              rol_reportante: c.soyTrabajador ? 'Trabajador' : 'Contratista',
-              id_acusado: c.soyTrabajador ? c.idContratista : c.idTrabajador,
-              acusado: c.soyTrabajador ? nombreContratista : nombreTrabajador,
-              rol_acusado: c.soyTrabajador ? 'Contratista' : 'Trabajador',
-              motivo: 'Cancelación de obra',
-              descripcion: c.motivo.trim(),
-              id_contrato: c.rutaContrato.split('/')[1],
-              titulo_obra: texto(c.contrato.fields.titulo_vacante),
-              estado: 'En Revisión Administrativa',
-              fecha_reporte: ahora.toISOString(),
-            }),
-          },
-          currentDocument: { exists: false },
-        },
+        nuevoReporte(idQueja, nombres, { tipo: 'cancelacion', motivo: 'Cancelación de obra', descripcion: c.motivo.trim() }),
+        nuevaNotificacion(env, otraParte, 'Obra suspendida', `${quienCancela} canceló la obra "${tituloObra}". Queda suspendida mientras el administrador revisa el caso. Te avisaremos su decisión.`),
       ], ESTADOS.SUSPENDIDA);
     }
 
-    // ---- EL ADMIN DECIDE QUÉ PASA CON UNA OBRA SUSPENDIDA (Y SE CIERRA SU REPORTE) ----
+    // ---- EL CONTRATISTA REVISA UN DÍA DE LA BITÁCORA: CONFIRMA QUE EL TRABAJADOR SÍ LO HIZO, O LO RECHAZA ----
+    // SI LO RECHAZA SE LEVANTA UN REPORTE: EL ADMIN DECIDE SI EL DÍA CUENTA O SE DESCUENTA.
+    case 'revisar_bitacora': {
+      if (!c.soyContratista) return prohibido('Solo el contratista revisa la bitácora del trabajador.');
+      if (![ESTADOS.ACTIVA, ESTADOS.POR_CONFIRMAR_FIN, ESTADOS.SUSPENDIDA, ESTADOS.FINALIZADA].includes(c.estado)) return noSePuede();
+      const idEntrada = c.datos.id_entrada;
+      if (!textoValido(idEntrada, 128) || !/^[\w-]+$/.test(idEntrada)) return responder(400, { error: 'Falta el día de la bitácora.' });
+
+      const rutaEntrada = `${c.rutaContrato}/Bitacora/${idEntrada}`;
+      const entrada = (await leerDocumentos(env, [rutaEntrada]))[rutaEntrada];
+      if (!entrada) return responder(404, { error: 'No se encontró ese día en la bitácora.' });
+      const revision = texto(entrada.fields.revision);
+      if (revision && revision !== REVISION.PENDIENTE) return responder(409, { error: 'Ese día ya fue revisado.' });
+
+      const cambioEntrada = (campos: Record<string, unknown>) => ({
+        update: { name: `${nombreBase}/${rutaEntrada}`, fields: aCamposFirestore(campos) },
+        updateMask: { fieldPaths: Object.keys(campos) },
+        currentDocument: { updateTime: entrada.updateTime },
+      });
+
+      if (c.datos.veredicto === 'confirmar') {
+        return guardar([cambioEntrada({ revision: REVISION.CONFIRMADA, fecha_revision: ahora.toISOString() })], c.estado);
+      }
+      if (c.datos.veredicto !== 'rechazar') return responder(400, { error: 'Veredicto inválido.' });
+      if (!textoValido(c.motivo, 1000)) return responder(400, { error: 'Explica qué no es cierto de lo que escribió el trabajador.' });
+
+      const nombres = await nombresDePartes(env, c.idTrabajador, c.idContratista);
+      const idQueja = crypto.randomUUID().replace(/-/g, '');
+      const fechaDia = texto(entrada.fields.fecha);
+      return guardar([
+        cambioEntrada({ revision: REVISION.EN_DISPUTA, motivo_rechazo: c.motivo.trim(), id_queja: idQueja, fecha_revision: ahora.toISOString() }),
+        nuevoReporte(idQueja, nombres, {
+          tipo: 'bitacora',
+          motivo: 'Bitácora rechazada',
+          descripcion: `Día ${fechaDia}. El contratista dice: ${c.motivo.trim()}\n\nEl trabajador había escrito: "${texto(entrada.fields.nota)}"`,
+          foto_evidencia: texto(entrada.fields.evidencia),
+          id_entrada: idEntrada,
+          fecha_dia: fechaDia,
+        }),
+        nuevaNotificacion(env, c.idTrabajador, 'Bitácora rechazada', `${nombres.contratista} rechazó tu bitácora del ${fechaDia} en "${tituloObra}": "${c.motivo.trim()}". El administrador decidirá si ese día cuenta o se descuenta.`),
+      ], c.estado);
+    }
+
+    // ---- CUALQUIERA DE LOS DOS REPORTA UN INCUMPLIMIENTO SIN CANCELAR LA OBRA (P. EJ. NO LLEGÓ EL MATERIAL) ----
+    case 'reportar_problema': {
+      if (!c.soyTrabajador && !c.soyContratista) return prohibido('Este contrato no es tuyo.');
+      if (c.estado !== ESTADOS.ACTIVA && c.estado !== ESTADOS.POR_CONFIRMAR_FIN) return noSePuede();
+      if (!textoValido(c.motivo, 1000)) return responder(400, { error: 'Explica qué pasó.' });
+      const categoria = textoValido(c.datos.categoria, 60) ? c.datos.categoria.trim() : 'Incumplimiento';
+
+      const nombres = await nombresDePartes(env, c.idTrabajador, c.idContratista);
+      const quienReporta = c.soyTrabajador ? nombres.trabajador : nombres.contratista;
+      return guardar([
+        nuevoReporte(crypto.randomUUID().replace(/-/g, ''), nombres, { tipo: 'incumplimiento', motivo: categoria, descripcion: c.motivo.trim() }),
+        nuevaNotificacion(env, otraParte, 'Reporte sobre tu obra', `${quienReporta} levantó un reporte en "${tituloObra}" (${categoria}): "${c.motivo.trim()}". El administrador lo revisará y te avisaremos.`),
+      ], c.estado);
+    }
+
+    // ---- EL ADMIN DECIDE QUÉ PASA CON UNA OBRA SUSPENDIDA (SE CIERRA SU REPORTE Y SE LES AVISA A LOS DOS) ----
     case 'admin_reactivar':
     case 'admin_cancelar': {
       if (!c.esAdmin) return prohibido('Solo un administrador puede decidir sobre una obra suspendida.');
       if (c.estado !== ESTADOS.SUSPENDIDA) return noSePuede();
 
       const cancelar = c.accion === 'admin_cancelar';
-      const writes: Record<string, unknown>[] = [cambioContrato({ estado: cancelar ? ESTADOS.CANCELADA : ESTADOS.ACTIVA, decidido_por_admin: c.uid })];
+      const nota = textoValido(c.datos.nota, 1000) ? c.datos.nota.trim() : '';
+      const aviso = `${cancelar ? `La obra "${tituloObra}" quedó cancelada definitivamente. Ya pueden calificarse.` : `La obra "${tituloObra}" fue reactivada: sigue en curso y ya se puede llenar la bitácora.`}${nota ? `\n\nNota del administrador: ${nota}` : ''}`;
+      const writes: Record<string, unknown>[] = [
+        cambioContrato({ estado: cancelar ? ESTADOS.CANCELADA : ESTADOS.ACTIVA, decidido_por_admin: c.uid }),
+        nuevaNotificacion(env, c.idTrabajador, 'Decisión del administrador', aviso),
+        nuevaNotificacion(env, c.idContratista, 'Decisión del administrador', aviso),
+      ];
       // AL CANCELAR DEFINITIVAMENTE, SE LIBERA EL LUGAR QUE OCUPABA EN LA VACANTE
       if (cancelar && c.vacante) {
         writes.push({
@@ -707,8 +802,8 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
       const idQueja = texto(c.contrato.fields.id_queja);
       if (idQueja) {
         writes.push({
-          update: { name: `${nombreBase}/Quejas_Soporte/${idQueja}`, fields: aCamposFirestore({ estado: 'Resuelta', fecha_resolucion: ahora.toISOString(), resolucion: cancelar ? 'Obra cancelada definitivamente' : 'Obra reactivada' }) },
-          updateMask: { fieldPaths: ['estado', 'fecha_resolucion', 'resolucion'] },
+          update: { name: `${nombreBase}/Quejas_Soporte/${idQueja}`, fields: aCamposFirestore({ estado: 'Resuelta', fecha_resolucion: ahora.toISOString(), resolucion: cancelar ? 'Obra cancelada definitivamente' : 'Obra reactivada', nota_admin: nota }) },
+          updateMask: { fieldPaths: ['estado', 'fecha_resolucion', 'resolucion', 'nota_admin'] },
         });
       }
       return guardar(writes, cancelar ? ESTADOS.CANCELADA : ESTADOS.ACTIVA);
@@ -716,6 +811,117 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
 
     default:
       return responder(400, { error: 'Acción desconocida.' });
+  }
+};
+
+// REVISIÓN DE CADA DÍA DE LA BITÁCORA (CAMPO "revision" DE Postulaciones/{id}/Bitacora/{día})
+const REVISION = {
+  PENDIENTE: 'Pendiente',     // EL CONTRATISTA AÚN NO LA REVISA
+  CONFIRMADA: 'Confirmada',   // EL CONTRATISTA (O EL ADMIN) CONFIRMÓ QUE SÍ SE TRABAJÓ
+  EN_DISPUTA: 'En disputa',   // EL CONTRATISTA LA RECHAZÓ: EL ADMIN DECIDE
+  DESCONTADA: 'Descontada',   // EL ADMIN LE DIO LA RAZÓN AL CONTRATISTA: ESE DÍA NO CUENTA
+};
+
+type NombresPartes = { trabajador: string; contratista: string };
+
+const nombresDePartes = async (env: Env, idTrabajador: string, idContratista: string): Promise<NombresPartes> => {
+  const perfiles = await leerDocumentos(env, [`Usuarios/${idTrabajador}`, `Contratistas/${idContratista}`]);
+  const nombreDe = (ruta: string) => {
+    const perfil = perfiles[ruta];
+    return perfil ? `${texto(perfil.fields.nombre)} ${texto(perfil.fields.apellidos)}`.trim() : 'Usuario';
+  };
+  return { trabajador: nombreDe(`Usuarios/${idTrabajador}`), contratista: nombreDe(`Contratistas/${idContratista}`) };
+};
+
+// AVISO PARA UN USUARIO (COLECCIÓN Notificaciones). LA APP LOS MUESTRA AL ENTRAR Y LOS MARCA COMO LEÍDOS.
+const nuevaNotificacion = (env: Env, idUsuario: string, titulo: string, mensaje: string) => ({
+  update: {
+    name: `projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents/Notificaciones/${crypto.randomUUID().replace(/-/g, '')}`,
+    fields: aCamposFirestore({ id_usuario: idUsuario, titulo, mensaje, leida: false, fecha: new Date().toISOString(), timestamp: Date.now() }),
+  },
+  currentDocument: { exists: false },
+});
+
+// =========================================================================
+// RUTA 7: EL ADMIN RESUELVE UN REPORTE Y SE LES AVISA A QUIEN REPORTÓ Y A QUIEN FUE REPORTADO
+// (LAS CANCELACIONES DE OBRA NO VAN AQUÍ: SE RESUELVEN CON admin_reactivar / admin_cancelar EN /contratos)
+//   tipo 'bitacora':  decision 'a_favor_trabajador' (el día cuenta) | 'a_favor_contratista' (el día se descuenta)
+//   cualquier otro:   decision 'procede' (tiene razón quien reportó) | 'no_procede'
+// =========================================================================
+const resolverReporte = async (request: Request, env: Env) => {
+  const sesion = await verificarSesion(request, env);
+  if (!sesion) return responder(401, { error: 'Sesión inválida o expirada' });
+
+  let datos: { id_queja?: unknown; decision?: unknown; nota?: unknown };
+  try {
+    datos = await request.json();
+  } catch {
+    return responder(400, { error: 'Cuerpo de la petición inválido' });
+  }
+  if (!textoValido(datos.id_queja, 128)) return responder(400, { error: 'Falta el reporte.' });
+  if (!textoValido(datos.nota, 1000)) return responder(400, { error: 'Escribe tu decisión para que las dos partes la lean.' });
+  const nota = datos.nota.trim();
+
+  try {
+    const rutaQueja = `Quejas_Soporte/${datos.id_queja}`;
+    const docs = await leerDocumentos(env, [`Administradores/${sesion.uid}`, rutaQueja, 'Sistema/AdminProfile']);
+    if (!docs[`Administradores/${sesion.uid}`]) return responder(403, { error: 'Solo un administrador puede resolver reportes.' });
+    const queja = docs[rutaQueja];
+    if (!queja) return responder(404, { error: 'No se encontró ese reporte.' });
+    if (texto(queja.fields.estado) === 'Resuelta') return responder(409, { error: 'Ese reporte ya fue resuelto.' });
+
+    const tipo = texto(queja.fields.tipo);
+    const idContrato = texto(queja.fields.id_contrato);
+    if (tipo === 'cancelacion' || (!tipo && idContrato && texto(queja.fields.motivo) === 'Cancelación de obra')) {
+      return responder(400, { error: 'Una cancelación se resuelve reactivando o cancelando la obra.' });
+    }
+
+    const nombreBase = `projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents`;
+    const writes: Record<string, unknown>[] = [];
+    let resolucion: string;
+    if (tipo === 'bitacora') {
+      if (datos.decision !== 'a_favor_trabajador' && datos.decision !== 'a_favor_contratista') return responder(400, { error: 'Decisión inválida.' });
+      const aFavorTrabajador = datos.decision === 'a_favor_trabajador';
+      resolucion = aFavorTrabajador
+        ? `El día ${texto(queja.fields.fecha_dia)} SÍ cuenta como trabajado.`
+        : `El día ${texto(queja.fields.fecha_dia)} NO cuenta: se descuenta.`;
+      writes.push({
+        update: {
+          name: `${nombreBase}/Postulaciones/${idContrato}/Bitacora/${texto(queja.fields.id_entrada)}`,
+          fields: aCamposFirestore({ revision: aFavorTrabajador ? REVISION.CONFIRMADA : REVISION.DESCONTADA, nota_admin: nota }),
+        },
+        updateMask: { fieldPaths: ['revision', 'nota_admin'] },
+        currentDocument: { exists: true },
+      });
+    } else {
+      if (datos.decision !== 'procede' && datos.decision !== 'no_procede') return responder(400, { error: 'Decisión inválida.' });
+      resolucion = datos.decision === 'procede' ? 'El administrador le dio la razón a quien reportó.' : 'El administrador determinó que el reporte no procede.';
+    }
+
+    const admin = docs['Sistema/AdminProfile'];
+    writes.push({
+      update: {
+        name: `${nombreBase}/${rutaQueja}`,
+        fields: aCamposFirestore({ estado: 'Resuelta', resolucion, nota_admin: nota, fecha_resolucion: new Date().toISOString(), atendida_por: (admin && texto(admin.fields.nombre)) || 'Administrador' }),
+      },
+      updateMask: { fieldPaths: ['estado', 'resolucion', 'nota_admin', 'fecha_resolucion', 'atendida_por'] },
+      currentDocument: { updateTime: queja.updateTime },
+    });
+
+    // AVISO A LAS DOS PARTES (LOS REPORTES VIEJOS DEL CHAT PUEDEN TRAER 'Desconocido' EN LUGAR DE UN USUARIO)
+    const motivo = texto(queja.fields.motivo);
+    const obra = texto(queja.fields.titulo_obra) ? ` en "${texto(queja.fields.titulo_obra)}"` : '';
+    const esUsuario = (id: string) => /^[A-Za-z0-9]{10,128}$/.test(id);
+    const idReportante = texto(queja.fields.id_reportante);
+    const idAcusado = texto(queja.fields.id_acusado);
+    if (esUsuario(idReportante)) writes.push(nuevaNotificacion(env, idReportante, 'Tu reporte fue resuelto', `Reporte "${motivo}"${obra}: ${resolucion}\n\nNota del administrador: ${nota}`));
+    if (esUsuario(idAcusado)) writes.push(nuevaNotificacion(env, idAcusado, 'Se resolvió un reporte sobre ti', `Reporte "${motivo}"${obra}, levantado por ${texto(queja.fields.nombre_reportante) || 'otro usuario'}: ${resolucion}\n\nNota del administrador: ${nota}`));
+
+    if (!(await confirmarEscrituras(env, writes))) return responder(409, { error: 'El reporte cambió mientras lo resolvías. Recarga e intenta de nuevo.' });
+    return responder(200, { resuelta: true });
+  } catch (error) {
+    console.log('Error resolviendo reporte', error);
+    return responder(502, { error: 'No se pudo resolver el reporte. Intenta más tarde.' });
   }
 };
 
