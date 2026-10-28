@@ -29,6 +29,7 @@ import { collection, deleteDoc, doc, getDoc, getDocs, setDoc, updateDoc } from '
 import { auth, db } from '../../firebaseConfig';
 import { subirFotoACloudinary } from '@/lib/cloudinary';
 import { eliminarCuentaEnServidor } from '@/lib/cuenta';
+import { accionContrato } from '@/lib/contratos';
 
 const { width } = Dimensions.get('window');
 
@@ -247,6 +248,25 @@ export default function AdminDashboard() {
     ]);
   };
 
+  // OBRA SUSPENDIDA POR UNA CANCELACIÓN: REACTIVARLA O CANCELARLA DEFINITIVAMENTE (LIBERA SU LUGAR EN LA VACANTE).
+  // LO HACE EL SERVIDOR, QUE TAMBIÉN ARCHIVA EL REPORTE COMO RESUELTO.
+  const decidirObraSuspendida = (queja: any, accion: 'admin_reactivar' | 'admin_cancelar') => {
+    const reactivar = accion === 'admin_reactivar';
+    Alert.alert(reactivar ? "Reactivar obra" : "Cancelar obra definitivamente",
+      reactivar ? "La obra vuelve a estar activa y el trabajador podrá seguir llenando su bitácora." : "La obra queda cancelada para siempre y se libera su lugar en la vacante. Las dos partes podrán calificarse.", [
+      { text: "Volver", style: "cancel" },
+      { text: "Sí", style: reactivar ? 'default' : 'destructive', onPress: async () => {
+          setProcesando(true);
+          try {
+            await accionContrato(accion, { id_contrato: queja.id_contrato });
+            await cargarDatosAdmin();
+          } catch (error: any) { Alert.alert("No se pudo", error?.message || "Intenta de nuevo."); }
+          setProcesando(false);
+        }
+      }
+    ]);
+  };
+
   const resolverQueja = async (id: string) => {
     Alert.alert("Atender Reporte", "¿Marcar esta queja como atendida/resuelta? Se guardará en el historial legal.", [
       { text: "Cancelar", style: "cancel" },
@@ -404,7 +424,20 @@ export default function AdminDashboard() {
                     </TouchableOpacity>
                   )}
 
-                  {queja.estado !== 'Resuelta' ? (
+                  {queja.estado !== 'Resuelta' && queja.id_contrato ? (
+                    // REPORTE AUTOMÁTICO DE UNA OBRA CANCELADA: LA OBRA ESTÁ SUSPENDIDA Y EL ADMIN DECIDE QUÉ PASA
+                    <View style={{marginTop: 15}}>
+                      <Text style={{fontSize: 12, color: '#B45309', fontWeight: 'bold', marginBottom: 8}}>Obra suspendida: "{queja.titulo_obra}". ¿Qué decides?</Text>
+                      <View style={[styles.actionButtonsRow, {marginTop: 0, borderTopWidth: 0, paddingTop: 0}]}>
+                        <TouchableOpacity style={[styles.btnWarning, {flex: 1, backgroundColor: '#00D06C'}]} disabled={procesando} onPress={() => decidirObraSuspendida(queja, 'admin_reactivar')}>
+                          <Text style={styles.btnTextWhite}>Reactivar obra</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={[styles.btnDanger, {flex: 1}]} disabled={procesando} onPress={() => decidirObraSuspendida(queja, 'admin_cancelar')}>
+                          <Text style={styles.btnTextWhite}>Cancelar definitivamente</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  ) : queja.estado !== 'Resuelta' ? (
                     <View style={[styles.actionButtonsRow, {marginTop: 15}]}>
                       <TouchableOpacity style={[styles.btnWarning, {flex: 1, backgroundColor: '#00D06C'}]} onPress={() => resolverQueja(queja.id)}>
                         <Text style={styles.btnTextWhite}>Atender y Archivar al Historial</Text>
