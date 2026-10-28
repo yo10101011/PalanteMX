@@ -95,22 +95,29 @@ service cloud.firestore {
       allow delete: if esAdmin() || esYo(resource.data.id_contratista);
     }
 
-    function duenoDeVacante(vacanteId) {
-      return get(/databases/$(database)/documents/Vacantes/$(vacanteId)).data.id_contratista == request.auth.uid;
-    }
+    // CONTRATOS (LA COLECCIÓN SE SIGUE LLAMANDO "Postulaciones" PARA NO PERDER LOS DATOS QUE YA EXISTEN).
+    // TODOS LOS CAMBIOS (PROPONER, POSTULARSE, ACEPTAR, TERMINAR, CANCELAR) LOS HACE EL WORKER (RUTA /contratos),
+    // QUE REVISA QUIÉN PUEDE HACER CADA PASO. DESDE LA APP SOLO SE LEEN, Y SOLO SUS DOS PARTES O EL ADMIN.
+    match /Postulaciones/{contratoId} {
+      allow read: if esAdmin()
+        || (conSesion() && (request.auth.uid == resource.data.id_trabajador
+                            || request.auth.uid == resource.data.get('id_contratista', '')));
+      allow write: if false;
 
-    match /Postulaciones/{postulacionId} {
-      allow read: if conSesion();
-      allow create: if cuentaActiva() && (
-        // EL TRABAJADOR SE POSTULA ÉL MISMO, SIEMPRE COMO 'Pendiente'
-        (request.resource.data.id_trabajador == request.auth.uid && request.resource.data.estado == 'Pendiente')
-        // O EL CONTRATISTA CONTRATA DIRECTO, SOLO EN SUS PROPIAS VACANTES
-        || (request.resource.data.id_contratista == request.auth.uid && duenoDeVacante(request.resource.data.id_vacante))
-      );
-      // SOLO EL DUEÑO DE LA VACANTE ACEPTA O RECHAZA, Y SOLO CAMBIA EL ESTADO
-      allow update: if esAdmin()
-        || (cuentaActiva() && duenoDeVacante(resource.data.id_vacante) && camposCambiados().hasOnly(['estado']));
-      allow delete: if esAdmin();
+      function contrato() {
+        return get(/databases/$(database)/documents/Postulaciones/$(contratoId)).data;
+      }
+
+      // BITÁCORA DIARIA DE LA OBRA: LA VEN LAS DOS PARTES; LA ESCRIBE SOLO EL TRABAJADOR, Y SOLO CON LA OBRA ACTIVA
+      match /Bitacora/{entradaId} {
+        allow read: if esAdmin()
+          || (conSesion() && (request.auth.uid == contrato().id_trabajador
+                              || request.auth.uid == contrato().get('id_contratista', '')));
+        allow create: if cuentaActiva()
+          && request.auth.uid == contrato().id_trabajador
+          && contrato().estado == 'Aceptada (En Proceso)'
+          && request.resource.data.autor_id == request.auth.uid;
+      }
     }
 
     // ---------------------------------------------------------------- CHAT
