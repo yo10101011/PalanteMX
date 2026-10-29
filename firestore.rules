@@ -122,7 +122,7 @@ service cloud.firestore {
           && contrato().estado == 'Aceptada (En Proceso)'
           && request.resource.data.autor_id == request.auth.uid
           && request.resource.data.keys().hasOnly(['asistio', 'nota', 'evidencia', 'autor_id', 'fecha', 'timestamp',
-                                                   'ubicacion_registro', 'distancia_obra_km']);
+                                                   'ubicacion_registro', 'distancia_obra_km', 'lugar_registro']);
       }
     }
 

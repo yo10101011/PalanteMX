@@ -5,7 +5,8 @@ import { useState } from 'react';
 import { Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { VisorFoto } from '@/components/visor-foto';
-import { estiloEstado, tieneReporteAbierto, totalDescuentos } from '@/lib/contratos';
+import { VistaCondiciones } from '@/components/condiciones-obra';
+import { ajustesDePago, estiloEstado, pagosPorConfirmar, tieneReporteAbierto } from '@/lib/contratos';
 
 export type BotonContrato = {
   texto: string;
@@ -58,9 +59,11 @@ export function TarjetaContrato({ contrato, otraParte, aviso, botones, deshabili
           {vacante.pago ? <View style={styles.fila}><Ionicons name="cash-outline" size={14} color="#00D06C" /><Text style={[styles.detalleTexto, { color: '#00D06C', fontWeight: 'bold' }]}>{vacante.pago}</Text></View> : null}
           {vacante.horario ? <View style={styles.fila}><Ionicons name="time-outline" size={14} color="#B45309" /><Text style={styles.detalleTexto}>{vacante.horario}</Text></View> : null}
           {contrato.fecha_inicio ? <View style={styles.fila}><Ionicons name="calendar-outline" size={14} color="#6B7280" /><Text style={styles.detalleTexto}>Inició: {contrato.fecha_inicio}{contrato.fecha_fin ? ` • Terminó: ${contrato.fecha_fin}` : ''}</Text></View> : null}
+          {vacante.lugar_texto ? <View style={styles.fila}><Ionicons name="pin-outline" size={14} color="#DC2626" /><Text style={styles.detalleTexto}>Lugar de la obra: {vacante.lugar_texto}</Text></View> : null}
           {vacante.descripcion ? <Text style={styles.descripcion}>{vacante.descripcion}</Text> : null}
         </View>
       ) : null}
+      <VistaCondiciones condiciones={vacante.condiciones} titulo="Lo que prometió el contratista al publicar" />
 
       {aviso ? <Text style={[styles.aviso, { color: estado.color }]}>{aviso}</Text> : null}
 
@@ -71,12 +74,17 @@ export function TarjetaContrato({ contrato, otraParte, aviso, botones, deshabili
           <Text style={[styles.franjaTexto, { color: '#92400E' }]}>Hay un reporte en revisión por el administrador. La obra no se puede terminar hasta que lo resuelva; les avisaremos a los dos.</Text>
         </View>
       ) : null}
-      {totalDescuentos(contrato) > 0 ? (
-        <View style={[styles.franja, { backgroundColor: '#FEE2E2', borderColor: '#FCA5A5' }]}>
-          <Ionicons name="remove-circle-outline" size={16} color="#B91C1C" />
-          <Text style={[styles.franjaTexto, { color: '#991B1B' }]}>
-            Descuentos del administrador: {(contrato.descuentos || []).map((d: any) => `$${(d.monto || 0).toLocaleString('es-MX')} a ${d.a_cargo_de} (${d.motivo})`).join('; ')}
-          </Text>
+      {/* AJUSTES DE DINERO QUE ORDENÓ EL ADMIN Y PAGOS QUE FALTA CONFIRMAR */}
+      {ajustesDePago(contrato).map((a: any, i: number) => (
+        <View key={i} style={[styles.franja, a.tipo === 'extra' ? { backgroundColor: '#ECFDF5', borderColor: '#A7F3D0' } : { backgroundColor: '#FEE2E2', borderColor: '#FCA5A5' }]}>
+          <Ionicons name={a.tipo === 'extra' ? 'add-circle-outline' : 'remove-circle-outline'} size={16} color={a.tipo === 'extra' ? '#047857' : '#B91C1C'} />
+          <Text style={[styles.franjaTexto, { color: a.tipo === 'extra' ? '#065F46' : '#991B1B' }]}>Admin: {a.texto}</Text>
+        </View>
+      ))}
+      {pagosPorConfirmar(contrato).length > 0 ? (
+        <View style={[styles.franja, { backgroundColor: '#FFFBEB', borderColor: '#FDE68A' }]}>
+          <Ionicons name="cash-outline" size={16} color="#B45309" />
+          <Text style={[styles.franjaTexto, { color: '#92400E' }]}>{pagosPorConfirmar(contrato).length} pago(s) esperando que el trabajador confirme que los recibió.</Text>
         </View>
       ) : null}
 

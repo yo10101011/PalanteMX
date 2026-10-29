@@ -12,9 +12,10 @@ type Props = {
   trabajador: any;
   distancia?: string;                         // P. EJ. "a 12 km" (DESDE QUIEN LO VE)
   onEliminarObra?: (idObra: string) => void;  // SOLO EL ADMIN PUEDE BORRAR OBRAS DEL PORTAFOLIO
+  obrasEnCurso?: any[];                       // CONTRATOS QUE AÚN NO TERMINA (SOLO EL ADMIN PUEDE VERLOS)
 };
 
-export function PerfilTrabajador({ trabajador: t, distancia, onEliminarObra }: Props) {
+export function PerfilTrabajador({ trabajador: t, distancia, onEliminarObra, obrasEnCurso }: Props) {
   const [fotoGrande, setFotoGrande] = useState<string | null>(null);
   const obrasPalante: any[] = [...(t?.obras_realizadas || [])].reverse();
   const portafolio: any[] = (t?.portafolio || []).filter((o: any) => o && typeof o === 'object');
@@ -52,8 +53,21 @@ export function PerfilTrabajador({ trabajador: t, distancia, onEliminarObra }: P
         </View>
       </View>
 
+      {obrasEnCurso && (
+        <>
+          <Text style={styles.seccion}>🏗️ Obras en proceso ({obrasEnCurso.length})</Text>
+          {obrasEnCurso.length === 0 ? <Text style={styles.vacio}>No tiene obras en proceso ahorita.</Text> : obrasEnCurso.map(c => (
+            <View key={c.id} style={[styles.tarjeta, { borderLeftWidth: 5, borderLeftColor: '#F59E0B' }]}>
+              <Text style={styles.obraTitulo}>{c.titulo_vacante}</Text>
+              <Text style={styles.obraDato}>Para: {c.contratista || c.vacante?.contratista} · {c.estado === 'Suspendida' ? 'SUSPENDIDA (en revisión)' : c.estado === 'Por confirmar fin' ? 'Esperando confirmar que terminó' : 'EN PROCESO, aún no termina'}</Text>
+              {c.fecha_inicio ? <Text style={styles.obraDato}>Empezó: {c.fecha_inicio}</Text> : null}
+            </View>
+          ))}
+        </>
+      )}
+
       {/* OBRAS TERMINADAS DENTRO DE PALANTEMX (LAS AGREGA EL SERVIDOR AL FINALIZAR CADA CONTRATO) */}
-      <Text style={styles.seccion}>🤝 Obras realizadas en PalanteMX ({obrasPalante.length})</Text>
+      <Text style={styles.seccion}>🤝 Obras terminadas en PalanteMX ({obrasPalante.length})</Text>
       {obrasPalante.length === 0 ? <Text style={styles.vacio}>Todavía no termina obras dentro de PalanteMX.</Text> : obrasPalante.map((obra, i) => (
         <View key={i} style={[styles.tarjeta, { padding: 0, overflow: 'hidden' }]}>
           {obra.foto_trabajo ? <TouchableOpacity onPress={() => setFotoGrande(obra.foto_trabajo)}><Image source={{ uri: obra.foto_trabajo }} style={styles.fotoObra} /></TouchableOpacity> : null}

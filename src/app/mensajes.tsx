@@ -43,6 +43,7 @@ import { auth, db } from '../../firebaseConfig';
 import { subirACloudinary, subirFotoACloudinary } from '@/lib/cloudinary';
 import { accionContrato, ESTADOS, RESPUESTAS_RAPIDAS } from '@/lib/contratos';
 import { useTecladoVisible } from '@/lib/teclado';
+import { SelectorFotos, subirFotos } from '@/components/selector-fotos';
 
 export default function Mensajes() {
   const params = useLocalSearchParams();
@@ -71,6 +72,7 @@ export default function Mensajes() {
   const [modalReporte, setModalReporte] = useState(false);
   const [reporteMotivo, setReporteMotivo] = useState('Spam / Fraude');
   const [reporteDesc, setReporteDesc] = useState('');
+  const [fotosReporte, setFotosReporte] = useState<string[]>([]);
 
   // ESTADOS PARA BUSCADOR INTELIGENTE DE NUEVO CHAT
   const [modalNuevoChat, setModalNuevoChat] = useState(false);
@@ -103,14 +105,16 @@ export default function Mensajes() {
   const responderTrato = (trato: any, accion: 'aceptar' | 'rechazar') => {
     const aceptar = accion === 'aceptar';
     Alert.alert(aceptar ? "Aceptar el trato" : "No aceptar", aceptar
-      ? `¿Ya se pusieron de acuerdo en todo? Al aceptar, "${trato.titulo_vacante}" empieza como obra activa.`
+      ? `¿Ya se pusieron de acuerdo en todo? "${trato.titulo_vacante}" empieza cuando los dos acepten.`
       : `¿Seguro que no quieres seguir con "${trato.titulo_vacante}"?`, [
       { text: "Volver", style: "cancel" },
       { text: aceptar ? "Sí, aceptar" : "Sí", style: aceptar ? 'default' : 'destructive', onPress: async () => {
           setProcesando(true);
           try {
-            await accionContrato(accion, { id_contrato: trato.id });
-            Alert.alert(aceptar ? "¡Trato cerrado!" : "Listo", aceptar ? "La obra ya está activa en la pestaña Obras." : "Se le avisó a la otra persona.");
+            const resultado = await accionContrato(accion, { id_contrato: trato.id });
+            if (!aceptar) Alert.alert("Listo", "Se le avisó a la otra persona.");
+            else if (resultado.estado === ESTADOS.ACTIVA) Alert.alert("¡Trato cerrado!", "Los dos aceptaron. La obra ya está activa en la pestaña Obras.");
+            else Alert.alert("Aceptaste el trato", "Le avisamos a la otra persona. La obra empieza cuando también acepte desde este chat.");
             await cargarTratos(trato.id_trabajador === miPerfil?.id ? trato.id_contratista : trato.id_trabajador);
           } catch (error: any) { Alert.alert("No se pudo", error?.message || "Intenta de nuevo."); }
           setProcesando(false);
@@ -213,7 +217,7 @@ export default function Mensajes() {
           listaChats.sort((a: any, b: any) => (b.timestamp || 0) - (a.timestamp || 0));
           setChats(listaChats);
           setCargando(false);
-        });
+        }, () => setCargando(false)); // AL CERRAR SESIÓN SE PIERDE EL PERMISO ANTES DE CERRAR LA ESCUCHA: NO ES UN ERROR REAL
       }
     } catch (error) { console.log("Error cargando perfil", error); setCargando(false); }
   };
@@ -226,22 +230,25 @@ export default function Mensajes() {
     setChatActivo(chat);
     setTratos([]);
     cargarTratos(chat.usuarios_ids?.find((id: string) => id !== miPerfil.id));
-    // MENSAJE LISTO PARA EMPEZAR LA PLÁTICA (P. EJ. "HOLA, VI TU PERFIL..."), SOLO SI VIENE DE OTRA PANTALLA CON UNO
+    // MENSAJE LISTO PARA EMPEZAR LA PLÁTICA (P. EJ. "HOLA, VI TU PERFIL..."), SOLO SI VIENE DE OTRA PANTALLA CON UNO.
+    // SE PONE HASTA SABER LOS MENSAJES DEL CHAT: SI YO YA ESCRIBÍ AQUÍ ANTES, YA NO SE PONE (PARA NO TENER QUE BORRARLO)
     const listo = String(params.autoOpenMensaje || '');
-    if (listo && mensajeAplicadoRef.current !== listo && chat.usuarios_ids?.includes(String(params.autoOpenId))) {
-      mensajeAplicadoRef.current = listo;
-      setNuevoMensaje(listo);
-    }
+    let mensajePendiente = listo && mensajeAplicadoRef.current !== listo && chat.usuarios_ids?.includes(String(params.autoOpenId)) ? listo : '';
+    if (mensajePendiente) mensajeAplicadoRef.current = listo;
     if (chat.ultimo_emisor_id !== miPerfil.id && chat.leido === false) {
       await updateDoc(doc(db, 'Chats', chat.id), { leido: true });
     }
     const qMensajes = query(collection(db, 'Chats', chat.id, 'Mensajes'));
     escuchaMensajesRef.current = onSnapshot(qMensajes, (snapshot) => {
-      const listaMensajes = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      const listaMensajes: any[] = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
       listaMensajes.sort((a: any, b: any) => (a.timestamp || 0) - (b.timestamp || 0));
       setMensajes(listaMensajes);
+      if (mensajePendiente) {
+        if (!listaMensajes.some(m => m.emisor_id === miPerfil.id)) setNuevoMensaje(texto => texto || mensajePendiente);
+        mensajePendiente = '';
+      }
       setTimeout(() => { if (flatListRef.current) flatListRef.current.scrollToEnd({ animated: true }); }, 200);
-    });
+    }, () => {});
   };
 
   const seleccionarImagen = async () => {
@@ -334,12 +341,14 @@ export default function Mensajes() {
       const otroUsuarioId = chatActivo.usuarios_ids?.find((id: string) => id !== miPerfil.id);
       const otroUsuarioData = otroUsuarioId ? chatActivo.datos_usuarios?.[otroUsuarioId] : { nombre: 'Usuario Desconocido' };
       
+      const urls = await subirFotos(fotosReporte);
       await addDoc(collection(db, "Quejas_Soporte"), {
         id_reportante: miPerfil.id, nombre_reportante: `${miPerfil.nombre} ${miPerfil.apellidos}`, rol_reportante: miPerfil.rol,
-        id_acusado: otroUsuarioId || 'Desconocido', acusado: otroUsuarioData.nombre,
-        motivo: reporteMotivo, descripcion: reporteDesc,
+        id_acusado: otroUsuarioId || 'Desconocido', acusado: otroUsuarioData.nombre, rol_acusado: otroUsuarioData.rol === 'Contratista' ? 'Contratista' : 'Trabajador',
+        motivo: reporteMotivo, descripcion: reporteDesc, foto_evidencia: urls[0] || '', fotos_evidencia: urls,
         chat_origen_id: chatActivo.id, fecha_reporte: new Date().toISOString(), estado: "En Revisión"
       });
+      setFotosReporte([]);
       
       Alert.alert("Reporte Enviado", "El administrador revisará el caso inmediatamente.");
       setModalReporte(false);
@@ -458,8 +467,12 @@ export default function Mensajes() {
               <Text style={styles.privacyText}>Por tu seguridad, mantén el respeto. La plataforma sancionará fraudes o vocabulario inapropiado.</Text>
             </View>
           ) : tratos.map(trato => {
-            // EL TRATO SE ACEPTA AQUÍ, Y SOLO CUANDO LOS DOS YA ESCRIBIERON (PLATICARON) EN ESTE CHAT
-            const meToca = (trato.estado === ESTADOS.PROPUESTA && miPerfil.rol === 'Trabajador') || (trato.estado === ESTADOS.PENDIENTE && miPerfil.rol === 'Contratista');
+            // EL TRATO LO ACEPTAN LOS DOS AQUÍ (CADA UNO CON SU BOTÓN), Y SOLO CUANDO LOS DOS YA ESCRIBIERON EN ESTE CHAT.
+            // LA OBRA EMPIEZA HASTA QUE ACEPTÓ EL ÚLTIMO.
+            const aceptados: string[] = trato.aceptado_por || [];
+            const yoAcepte = aceptados.includes(miPerfil.id);
+            const elAcepto = !!otroUsuarioId && aceptados.includes(otroUsuarioId);
+            const meToca = !yoAcepte;
             const yaPlaticaron = mensajes.some(m => m.emisor_id === miPerfil.id) && mensajes.some(m => m.emisor_id === otroUsuarioId);
             return (
               <View key={trato.id} style={styles.tratoBanner}>
@@ -468,9 +481,13 @@ export default function Mensajes() {
                   <Text style={styles.tratoTitulo} numberOfLines={1}>{trato.estado === ESTADOS.PROPUESTA ? 'Propuesta' : 'Solicitud'}: {trato.titulo_vacante}</Text>
                 </View>
                 {trato.vacante?.pago ? <Text style={styles.tratoDato}>{trato.vacante.pago}{trato.vacante.ubicacion ? ` • ${trato.vacante.ubicacion}` : ''}</Text> : null}
+                <View style={{flexDirection: 'row', marginTop: 6}}>
+                  <Text style={[styles.tratoEstado, yoAcepte && styles.tratoEstadoSi]}>{yoAcepte ? '✅ Tú aceptaste' : '⏳ Tú: falta aceptar'}</Text>
+                  <Text style={[styles.tratoEstado, elAcepto && styles.tratoEstadoSi]} numberOfLines={1}>{elAcepto ? `✅ ${otroUsuarioData.nombre?.split(' ')[0]} aceptó` : `⏳ ${otroUsuarioData.nombre?.split(' ')[0]}: falta`}</Text>
+                </View>
                 {meToca ? (
                   <>
-                    <Text style={styles.tratoAyuda}>{yaPlaticaron ? 'Si ya se pusieron de acuerdo, acepta el trato:' : 'Primero platiquen los detalles aquí (los dos deben escribir). Después podrás aceptar el trato.'}</Text>
+                    <Text style={styles.tratoAyuda}>{yaPlaticaron ? 'Si ya se pusieron de acuerdo en todo, acepta el trato. La obra empieza cuando los dos acepten.' : 'Primero platiquen los detalles aquí (los dos deben escribir). Después podrán aceptar el trato.'}</Text>
                     <View style={{flexDirection: 'row', marginTop: 8}}>
                       <TouchableOpacity style={[styles.tratoBoton, {backgroundColor: yaPlaticaron ? '#00D06C' : '#D1D5DB', flex: 2}]} disabled={!yaPlaticaron || procesando} onPress={() => responderTrato(trato, 'aceptar')}>
                         <Ionicons name="checkmark-circle" size={16} color="#FFF" /><Text style={styles.tratoBotonTexto}>Aceptar trato</Text>
@@ -481,7 +498,7 @@ export default function Mensajes() {
                     </View>
                   </>
                 ) : (
-                  <Text style={styles.tratoAyuda}>Platiquen los detalles. Cuando estén de acuerdo, {otroUsuarioData.nombre} acepta el trato desde este chat.</Text>
+                  <Text style={styles.tratoAyuda}>Ya aceptaste. Falta que {otroUsuarioData.nombre} acepte desde este chat; entonces empieza la obra.</Text>
                 )}
               </View>
             );
@@ -616,6 +633,7 @@ export default function Mensajes() {
                 </View>
                 <Text style={styles.modalLabel}>Describe la situación (Para el Administrador)</Text>
                 <TextInput style={[styles.modalInput, {height: 100, textAlignVertical: 'top'}]} placeholder="El usuario me insultó cuando le pedí..." multiline value={reporteDesc} onChangeText={setReporteDesc} />
+                <SelectorFotos fotos={fotosReporte} onCambio={setFotosReporte} texto="Fotos o capturas de evidencia (opcional)" />
                 <View style={styles.modalBtnRow}>
                   <TouchableOpacity style={styles.modalBtnCancel} onPress={() => setModalReporte(false)}><Text style={styles.modalBtnTextC}>Cancelar</Text></TouchableOpacity>
                   <TouchableOpacity style={[styles.modalBtnSave, {backgroundColor: '#F59E0B'}]} onPress={enviarReporteChat} disabled={procesando}>{procesando ? <ActivityIndicator color="#FFF" /> : <Text style={styles.modalBtnTextS}>Enviar Reporte</Text>}</TouchableOpacity>
@@ -800,6 +818,8 @@ const styles = StyleSheet.create({
   tratoTitulo: { fontSize: 14, fontWeight: 'bold', color: '#1E3A8A', marginLeft: 6, flex: 1 },
   tratoDato: { fontSize: 12, color: '#00A355', fontWeight: 'bold', marginTop: 2 },
   tratoAyuda: { fontSize: 12, color: '#1E40AF', marginTop: 4 },
+  tratoEstado: { flex: 1, fontSize: 11, fontWeight: 'bold', color: '#B45309', backgroundColor: '#FEF3C7', borderRadius: 8, paddingHorizontal: 6, paddingVertical: 3, marginRight: 6, overflow: 'hidden' },
+  tratoEstadoSi: { color: '#047857', backgroundColor: '#D1FAE5' },
   tratoBoton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', borderRadius: 10, paddingVertical: 9 },
   tratoBotonTexto: { color: '#FFF', fontWeight: 'bold', fontSize: 13, marginLeft: 4 },
   rapidasFila: { flexGrow: 0, backgroundColor: '#FFF', borderTopWidth: 1, borderColor: '#F3F4F6', paddingVertical: 8 },

@@ -5,29 +5,30 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Picker } from '@react-native-picker/picker';
 import * as ImagePicker from 'expo-image-picker';
-import * as Location from 'expo-location';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Image, KeyboardAvoidingView, Linking, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { CalendarioBitacora } from '@/components/calendario-bitacora';
+import { SelectorFotos, subirFotos } from '@/components/selector-fotos';
 import { VisorFoto } from '@/components/visor-foto';
 import { subirFotoACloudinary } from '@/lib/cloudinary';
 import { accionContrato, agregarABitacora, claveDia, ESTADOS, estiloDia, leerBitacora, REVISION } from '@/lib/contratos';
-import { distanciaKm, textoDistancia } from '@/lib/ubicacion';
+import { distanciaKm, evaluarUbicacion, mensajeUbicacion, NivelUbicacion, nombreDeLugar, ubicacionPrecisa } from '@/lib/ubicacion';
 
-// MÁS LEJOS QUE ESTO DE LA OBRA, EL REGISTRO SE MARCA COMO "LEJOS" (EL GPS DEL TELÉFONO PUEDE FALLAR UNOS METROS)
-const DISTANCIA_MAXIMA_KM = 0.5;
+const ICONO_NIVEL: Record<NivelUbicacion, keyof typeof Ionicons.glyphMap> = {
+  en_obra: 'checkmark-circle', imprecisa: 'cellular-outline', cerca: 'warning', lejos: 'close-circle', falsa: 'alert-circle', sin_obra: 'location',
+};
 
-// TEXTO Y COLOR DEL CHECK DE UBICACIÓN DE UN DÍA
-const checkUbicacion = (dia: any, obraConMapa: boolean) => {
+// CHECK DE UBICACIÓN DE UN DÍA, CON EL MENSAJE PARA QUIEN LO ESTÁ VIENDO (EL ALGORITMO VIVE EN lib/ubicacion)
+const checkUbicacion = (dia: any, contrato: any, para: 'trabajador' | 'contratista') => {
   if (!dia.asistio) return null;
-  if (!dia.ubicacion_registro) return { texto: 'Sin ubicación registrada (registro anterior al check GPS)', color: '#9CA3AF', icono: 'location-outline' as const };
-  if (dia.ubicacion_registro.simulada) return { texto: 'Ubicación FALSA detectada (app de GPS falso)', color: '#DC2626', icono: 'warning' as const };
-  if (dia.distancia_obra_km === null || dia.distancia_obra_km === undefined || !obraConMapa) return { texto: 'Ubicación registrada (la obra no tiene lugar marcado en el mapa)', color: '#3B82F6', icono: 'location' as const };
-  return dia.distancia_obra_km <= DISTANCIA_MAXIMA_KM
-    ? { texto: `En la obra (${textoDistancia(dia.distancia_obra_km)})`, color: '#059669', icono: 'checkmark-circle' as const }
-    : { texto: `Lejos de la obra: ${textoDistancia(dia.distancia_obra_km)}`, color: '#EA580C', icono: 'warning' as const };
+  if (!dia.ubicacion_registro) return { texto: 'Sin ubicación registrada (día anterior al check GPS)', color: '#9CA3AF', icono: 'location-outline' as const };
+  const distancia = contrato?.vacante?.coordenadas ? dia.distancia_obra_km : null;
+  const nivel = evaluarUbicacion(distancia, dia.ubicacion_registro.precision, dia.ubicacion_registro.simulada);
+  const { texto, color } = mensajeUbicacion(nivel, distancia, dia.ubicacion_registro.precision, para);
+  const aviso = nivel !== 'sin_obra' && contrato?.vacante?.lugar_exacto === false ? ' (La obra no tiene su lugar exacto marcado: la distancia es aproximada.)' : '';
+  return { texto: texto + aviso, color, icono: ICONO_NIVEL[nivel] };
 };
 
 type Props = {
@@ -48,6 +49,7 @@ export function ModalBitacora({ contrato, rol, onClose }: Props) {
   // DÍA QUE EL CONTRATISTA ESTÁ RECHAZANDO (SE ABRE UNA CAJA PARA ESCRIBIR POR QUÉ)
   const [rechazandoId, setRechazandoId] = useState<string | null>(null);
   const [motivoRechazo, setMotivoRechazo] = useState('');
+  const [fotosRechazo, setFotosRechazo] = useState<string[]>([]);
 
   const cargar = async () => {
     if (!contrato) return;
@@ -75,63 +77,46 @@ export function ModalBitacora({ contrato, rol, onClose }: Props) {
     } catch (error) { Alert.alert("Error", "No se pudo abrir la cámara o la galería."); }
   };
 
-  // CHECK DE UBICACIÓN: DÓNDE ESTÁ EL TELÉFONO AHORA MISMO. SIN ESTO NO SE PUEDE REGISTRAR ASISTENCIA,
-  // PORQUE UNA FOTO SE PUEDE TOMAR EN CUALQUIER LADO.
-  const ubicacionActual = async () => {
-    const permiso = await Location.requestForegroundPermissionsAsync();
-    if (!permiso.granted) throw new Error("Para registrar tu asistencia necesitamos tu ubicación: así el contratista comprueba que sí estuviste en la obra. Activa el permiso de ubicación.");
-    const posicion = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-    return {
-      latitud: posicion.coords.latitude,
-      longitud: posicion.coords.longitude,
-      precision: posicion.coords.accuracy ?? null,
-      simulada: posicion.mocked === true, // ANDROID AVISA SI ES UNA UBICACIÓN FALSA (APPS DE "FAKE GPS")
-    };
-  };
-
-  const enviar = async (ubicacion: Awaited<ReturnType<typeof ubicacionActual>> | null, distancia: number | null) => {
-    setGuardando(true);
-    try {
-      const urlEvidencia = evidencia ? await subirFotoACloudinary(evidencia) : null;
-      await agregarABitacora(contrato.id, {
-        asistio, nota: nota.trim(), evidencia: urlEvidencia,
-        ubicacion_registro: ubicacion, distancia_obra_km: distancia === null ? null : Math.round(distancia * 100) / 100,
-      });
-      setNota(''); setEvidencia(null); setAsistio(true);
-      await cargar();
-      Alert.alert("Bitácora actualizada", "Tu avance y tu ubicación de hoy quedaron registrados. El contratista los revisará.");
-    } catch (error: any) { Alert.alert("No se pudo guardar", error?.message || "Intenta de nuevo."); }
-    setGuardando(false);
-  };
-
+  // GUARDAR EL AVANCE DE HOY. SI ASISTIÓ, PRIMERO SE TOMA SU UBICACIÓN (HASTA 3 LECTURAS, LA MÁS PRECISA) Y SE
+  // COMPARA CON EL LUGAR DE LA OBRA: SIN UBICACIÓN NO SE PUEDE REGISTRAR ASISTENCIA (UNA FOTO SE TOMA EN CUALQUIER LADO).
+  // SE REGISTRA AUNQUE ESTÉ LEJOS, PERO SE LE DICE CLARO Y EL CONTRATISTA LO VE.
   const guardar = async () => {
     if (!nota.trim()) { Alert.alert("Aviso", "Describe brevemente qué hiciste o por qué faltaste hoy."); return; }
     if (asistio && !evidencia) { Alert.alert("Evidencia requerida", "Para comprobar tu asistencia, toma una foto de tu avance de hoy."); return; }
-    if (!asistio) { enviar(null, null); return; }
-
     setGuardando(true);
-    let ubicacion;
-    try { ubicacion = await ubicacionActual(); }
-    catch (error: any) { setGuardando(false); Alert.alert("Ubicación necesaria", error?.message || "No se pudo obtener tu ubicación. Intenta de nuevo."); return; }
+    try {
+      let ubicacion = null;
+      let distancia: number | null = null;
+      let lugar = '';
+      if (asistio) {
+        try { ubicacion = await ubicacionPrecisa(); }
+        catch (error: any) { throw new Error(`Para registrar tu asistencia necesitamos tu ubicación: así el contratista comprueba que sí estuviste en la obra. ${error?.message || ''}`); }
+        distancia = distanciaKm(ubicacion, contrato?.vacante?.coordenadas);
+        lugar = await nombreDeLugar(ubicacion);
+      }
+      const urlEvidencia = evidencia ? await subirFotoACloudinary(evidencia) : null;
+      await agregarABitacora(contrato.id, {
+        asistio, nota: nota.trim(), evidencia: urlEvidencia,
+        ubicacion_registro: ubicacion, distancia_obra_km: distancia === null ? null : Math.round(distancia * 1000) / 1000, lugar_registro: lugar,
+      });
+      setNota(''); setEvidencia(null); setAsistio(true);
+      await cargar();
+      if (!ubicacion) { Alert.alert("Bitácora actualizada", "Tu falta de hoy quedó registrada."); }
+      else {
+        const nivel = evaluarUbicacion(distancia, ubicacion.precision, ubicacion.simulada);
+        Alert.alert(nivel === 'en_obra' ? "✅ Bitácora actualizada" : "Bitácora actualizada", `${mensajeUbicacion(nivel, distancia, ubicacion.precision, 'trabajador').texto}${lugar ? `\n\n📍 ${lugar}` : ''}`);
+      }
+    } catch (error: any) { Alert.alert("No se pudo guardar", error?.message || "Intenta de nuevo."); }
     setGuardando(false);
-
-    const distancia = distanciaKm(ubicacion, contrato?.vacante?.coordenadas);
-    if (distancia !== null && distancia > DISTANCIA_MAXIMA_KM) {
-      Alert.alert("Estás lejos de la obra", `Tu ubicación está ${textoDistancia(distancia)} de la obra. El contratista verá esa distancia. ¿Registrar de todos modos?`, [
-        { text: "Volver", style: "cancel" },
-        { text: "Registrar", onPress: () => enviar(ubicacion, distancia) },
-      ]);
-      return;
-    }
-    enviar(ubicacion, distancia);
   };
 
   const revisar = async (dia: any, veredicto: 'confirmar' | 'rechazar') => {
     if (veredicto === 'rechazar' && !motivoRechazo.trim()) { Alert.alert("Aviso", "Explica qué no es cierto de lo que escribió el trabajador. El administrador lo va a revisar."); return; }
     setGuardando(true);
     try {
-      await accionContrato('revisar_bitacora', { id_contrato: contrato.id, id_entrada: dia.id, veredicto, motivo: veredicto === 'rechazar' ? motivoRechazo.trim() : undefined });
-      setRechazandoId(null); setMotivoRechazo('');
+      const fotos = veredicto === 'rechazar' ? await subirFotos(fotosRechazo) : [];
+      await accionContrato('revisar_bitacora', { id_contrato: contrato.id, id_entrada: dia.id, veredicto, motivo: veredicto === 'rechazar' ? motivoRechazo.trim() : undefined, fotos });
+      setRechazandoId(null); setMotivoRechazo(''); setFotosRechazo([]);
       await cargar();
       if (veredicto === 'rechazar') Alert.alert("Reporte enviado", "El administrador revisará este día y decidirá si cuenta o se descuenta. Les avisaremos a los dos.");
     } catch (error: any) { Alert.alert("No se pudo", error?.message || "Intenta de nuevo."); }
@@ -146,7 +131,9 @@ export function ModalBitacora({ contrato, rol, onClose }: Props) {
   const esTrabajador = rol === 'trabajador';
   const yaRegistroHoy = entradas.some(e => e.dia === claveDia(new Date()));
   const escribirPermitido = esTrabajador && contrato?.estado === ESTADOS.ACTIVA;
-  const puedeRevisar = !esTrabajador && [ESTADOS.ACTIVA, ESTADOS.POR_CONFIRMAR_FIN, ESTADOS.SUSPENDIDA, ESTADOS.FINALIZADA].includes(contrato?.estado);
+  // EL CONTRATISTA SOLO REVISA MIENTRAS LA OBRA SIGUE ABIERTA; TERMINADA, SUSPENDIDA O CANCELADA YA NO SE MODIFICA
+  const puedeRevisar = !esTrabajador && [ESTADOS.ACTIVA, ESTADOS.POR_CONFIRMAR_FIN].includes(contrato?.estado);
+  const cerrada = [ESTADOS.FINALIZADA, ESTADOS.CANCELADA].includes(contrato?.estado);
 
   // RESUMEN: LOS DÍAS DESCONTADOS Y LAS FALTAS NO CUENTAN COMO TRABAJADOS
   const trabajados = entradas.filter(e => e.asistio);
@@ -217,16 +204,19 @@ export function ModalBitacora({ contrato, rol, onClose }: Props) {
                           </TouchableOpacity>
                         ) : null}
                         {(() => {
-                          const check = checkUbicacion(dia, !!contrato?.vacante?.coordenadas);
+                          const check = checkUbicacion(dia, contrato, esTrabajador ? 'trabajador' : 'contratista');
                           if (!check) return null;
                           const { latitud, longitud } = dia.ubicacion_registro || {};
                           return (
-                            <View style={styles.check}>
-                              <Ionicons name={check.icono} size={15} color={check.color} />
-                              <Text style={[styles.checkTexto, { color: check.color }]}>{check.texto}</Text>
+                            <View style={[styles.check, { borderColor: check.color }]}>
+                              <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
+                                <Ionicons name={check.icono} size={16} color={check.color} />
+                                <Text style={[styles.checkTexto, { color: check.color }]}>{check.texto}</Text>
+                              </View>
+                              {dia.lugar_registro ? <Text style={styles.checkLugar}>📍 Estaba en: {dia.lugar_registro}</Text> : null}
                               {latitud ? (
                                 <TouchableOpacity onPress={() => Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${latitud},${longitud}`)}>
-                                  <Text style={styles.verMapa}>Ver en mapa</Text>
+                                  <Text style={styles.verMapa}>Ver en el mapa ›</Text>
                                 </TouchableOpacity>
                               ) : null}
                             </View>
@@ -249,6 +239,7 @@ export function ModalBitacora({ contrato, rol, onClose }: Props) {
                           <View style={{ marginTop: 10 }}>
                             <Text style={styles.etiquetaForm}>¿Qué no es cierto? (se enviará al administrador)</Text>
                             <TextInput style={[styles.input, { height: 70, textAlignVertical: 'top' }]} multiline value={motivoRechazo} onChangeText={setMotivoRechazo} placeholder="Ej. Ese día no se presentó a la obra..." />
+                            <SelectorFotos fotos={fotosRechazo} onCambio={setFotosRechazo} texto="Fotos de prueba (opcional)" />
                             <View style={styles.botonesRevision}>
                               <TouchableOpacity style={[styles.botonRevision, { borderColor: '#6B7280' }]} disabled={guardando} onPress={() => setRechazandoId(null)}>
                                 <Text style={[styles.botonRevisionTexto, { color: '#6B7280' }]}>Volver</Text>
@@ -294,8 +285,11 @@ export function ModalBitacora({ contrato, rol, onClose }: Props) {
                       </TouchableOpacity>
                     </View>
                   )}
-                  {esTrabajador && contrato?.estado === ESTADOS.SUSPENDIDA && (
-                    <Text style={styles.avisoSuspendida}>La obra está suspendida mientras el administrador revisa la cancelación. No se pueden agregar avances.</Text>
+                  {contrato?.estado === ESTADOS.SUSPENDIDA && (
+                    <Text style={styles.avisoSuspendida}>La obra está suspendida mientras el administrador revisa la cancelación. La bitácora no se puede modificar.</Text>
+                  )}
+                  {cerrada && (
+                    <Text style={[styles.avisoSuspendida, { color: '#6B7280' }]}>🔒 Esta obra ya está {contrato?.estado === ESTADOS.FINALIZADA ? 'terminada' : 'cancelada'}: la bitácora queda guardada como registro y ya no se puede modificar.</Text>
                   )}
                 </>
               )}
@@ -332,9 +326,10 @@ const styles = StyleSheet.create({
   nota: { fontSize: 13, color: '#4B5563', marginTop: 3 },
   evidencia: { width: 110, height: 110, borderRadius: 8, marginTop: 8, borderWidth: 1, borderColor: '#E5E7EB' },
   rechazo: { fontSize: 12, color: '#EA580C', marginTop: 6, fontStyle: 'italic' },
-  check: { flexDirection: 'row', alignItems: 'center', marginTop: 8, backgroundColor: '#F9FAFB', borderRadius: 8, padding: 6 },
-  checkTexto: { fontSize: 12, fontWeight: 'bold', marginLeft: 5, flex: 1 },
-  verMapa: { fontSize: 12, color: '#2563EB', fontWeight: 'bold', marginLeft: 6 },
+  check: { marginTop: 8, backgroundColor: '#F9FAFB', borderRadius: 8, padding: 8, borderWidth: 1 },
+  checkTexto: { fontSize: 12, fontWeight: 'bold', marginLeft: 6, flex: 1 },
+  checkLugar: { fontSize: 12, color: '#374151', marginTop: 4 },
+  verMapa: { fontSize: 12, color: '#2563EB', fontWeight: 'bold', marginTop: 4 },
   avisoGps: { fontSize: 12, color: '#2563EB', marginBottom: 10 },
   notaAdmin: { fontSize: 12, color: '#0D2340', marginTop: 4, fontStyle: 'italic', fontWeight: '600' },
   botonesRevision: { flexDirection: 'row', marginTop: 10, marginHorizontal: -4 },

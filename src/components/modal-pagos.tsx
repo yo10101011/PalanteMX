@@ -1,0 +1,177 @@
+// PAGOS DE UNA OBRA. EL DINERO SE PAGA POR FUERA (EFECTIVO O TRANSFERENCIA) Y AQUÍ QUEDA LA EVIDENCIA:
+// - EL CONTRATISTA REGISTRA CADA PAGO CON LA FOTO DEL COMPROBANTE (TICKET, CAPTURA DE TRANSFERENCIA, RECIBO FIRMADO).
+// - EL TRABAJADOR CONFIRMA "SÍ LO RECIBÍ" O "NO ME LLEGÓ" (ESTO LEVANTA UN REPORTE AUTOMÁTICO AL ADMIN).
+// - ARRIBA SE VEN LOS AJUSTES QUE ORDENÓ EL ADMIN (DINERO EXTRA PARA EL TRABAJADOR, O DESCUENTOS).
+import { Ionicons } from '@expo/vector-icons';
+import { Picker } from '@react-native-picker/picker';
+import { useEffect, useState } from 'react';
+import { ActivityIndicator, Alert, Image, KeyboardAvoidingView, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+
+import { SelectorFotos, subirFotos } from '@/components/selector-fotos';
+import { VisorFoto } from '@/components/visor-foto';
+import { accionContrato, ajustesDePago, COLOR_PAGO, CONCEPTOS_PAGO, ESTADO_PAGO, ESTADOS, totalRecibido } from '@/lib/contratos';
+
+type Props = {
+  contrato: any | null; // null = CERRADO
+  rol: 'trabajador' | 'contratista';
+  onClose: () => void;
+  onCambio: () => void; // PARA QUE LA PANTALLA RECARGUE EL CONTRATO
+};
+
+const pesos = (n: number) => `$${(n || 0).toLocaleString('es-MX')}`;
+
+export function ModalPagos({ contrato, rol, onClose, onCambio }: Props) {
+  const [pagos, setPagos] = useState<any[]>([]);
+  const [monto, setMonto] = useState('');
+  const [concepto, setConcepto] = useState(CONCEPTOS_PAGO[0]);
+  const [comprobante, setComprobante] = useState<string[]>([]);
+  const [enviando, setEnviando] = useState(false);
+  const [fotoGrande, setFotoGrande] = useState<string | null>(null);
+  const [rechazandoId, setRechazandoId] = useState<string | null>(null);
+  const [motivo, setMotivo] = useState('');
+
+  useEffect(() => { setPagos(contrato?.pagos || []); setMonto(''); setComprobante([]); setRechazandoId(null); }, [contrato?.id, contrato?.pagos?.length]);
+
+  const ajustes = ajustesDePago(contrato);
+  const extras = ajustes.filter(a => a.tipo === 'extra').reduce((s, a) => s + a.monto, 0);
+  const descuentos = ajustes.filter(a => a.tipo === 'descuento').reduce((s, a) => s + a.monto, 0);
+  const puedeRegistrar = rol === 'contratista' && [ESTADOS.ACTIVA, ESTADOS.POR_CONFIRMAR_FIN, ESTADOS.FINALIZADA, ESTADOS.SUSPENDIDA, ESTADOS.CANCELADA].includes(contrato?.estado);
+
+  const registrar = async () => {
+    const cantidad = parseInt(monto);
+    if (!cantidad) { Alert.alert("Aviso", "Escribe cuánto pagaste."); return; }
+    if (comprobante.length === 0) { Alert.alert("Comprobante necesario", "Toma o sube la foto del comprobante: ticket, captura de la transferencia o un recibo firmado por el trabajador."); return; }
+    setEnviando(true);
+    try {
+      const [url] = await subirFotos(comprobante);
+      await accionContrato('registrar_pago', { id_contrato: contrato.id, monto: cantidad, concepto, comprobante: url });
+      setMonto(''); setComprobante([]);
+      Alert.alert("Pago registrado", "El trabajador recibirá un aviso para confirmar que le llegó.");
+      onCambio();
+    } catch (error: any) { Alert.alert("No se pudo registrar", error?.message || "Intenta de nuevo."); }
+    setEnviando(false);
+  };
+
+  const confirmar = async (pago: any, recibido: boolean) => {
+    if (!recibido && !motivo.trim()) { Alert.alert("Aviso", "Explica qué pasó con el pago."); return; }
+    setEnviando(true);
+    try {
+      await accionContrato('confirmar_pago', { id_contrato: contrato.id, id_pago: pago.id, recibido, motivo: recibido ? undefined : motivo.trim() });
+      setRechazandoId(null); setMotivo('');
+      Alert.alert(recibido ? "¡Listo!" : "Reporte enviado", recibido ? "Confirmaste que recibiste el pago." : "El administrador revisará el comprobante y les avisará a los dos.");
+      onCambio();
+    } catch (error: any) { Alert.alert("No se pudo", error?.message || "Intenta de nuevo."); }
+    setEnviando(false);
+  };
+
+  return (
+    <Modal visible={!!contrato} animationType="slide" transparent onRequestClose={onClose}>
+      <View style={styles.fondo}>
+        <SafeAreaView style={styles.panel}>
+          <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
+            <View style={styles.encabezado}>
+              <Text style={styles.titulo} numberOfLines={1}>💵 Pagos: {contrato?.titulo_vacante}</Text>
+              <TouchableOpacity onPress={onClose}><Ionicons name="close-circle" size={28} color="#FFF" /></TouchableOpacity>
+            </View>
+            <ScrollView contentContainerStyle={{ padding: 16 }} keyboardShouldPersistTaps="handled">
+              <View style={styles.resumen}>
+                <View style={styles.resumenCaja}><Text style={styles.resumenTexto}>Pago acordado</Text><Text style={styles.resumenNumero}>{contrato?.vacante?.pago || 'A convenir'}</Text></View>
+                <View style={styles.resumenCaja}><Text style={styles.resumenTexto}>Recibido (confirmado)</Text><Text style={[styles.resumenNumero, { color: '#059669' }]}>{pesos(totalRecibido(contrato))}</Text></View>
+              </View>
+
+              {ajustes.length > 0 && (
+                <View style={styles.ajustes}>
+                  <Text style={styles.seccion}>⚖️ Ajustes ordenados por el administrador</Text>
+                  {ajustes.map((a, i) => (
+                    <Text key={i} style={[styles.ajuste, { color: a.tipo === 'extra' ? '#047857' : '#B91C1C' }]}>{a.tipo === 'extra' ? '➕' : '➖'} {a.texto} ({a.motivo}, {a.fecha})</Text>
+                  ))}
+                  {extras > 0 && <Text style={styles.ajusteTotal}>El contratista debe pagar {pesos(extras)} extra.</Text>}
+                  {descuentos > 0 && <Text style={styles.ajusteTotal}>Se descuentan {pesos(descuentos)} del pago al trabajador.</Text>}
+                </View>
+              )}
+
+              <Text style={styles.seccion}>Pagos registrados ({pagos.length})</Text>
+              {pagos.length === 0 ? <Text style={styles.vacio}>{rol === 'contratista' ? 'Cuando pagues, regístralo aquí con la foto del comprobante.' : 'Cuando el contratista registre un pago, te llegará un aviso para confirmarlo.'}</Text>
+                : [...pagos].reverse().map(p => (
+                  <View key={p.id} style={[styles.pago, { borderLeftColor: COLOR_PAGO[p.estado] || '#9CA3AF' }]}>
+                    <View style={styles.filaEntre}>
+                      <Text style={styles.pagoMonto}>{pesos(p.monto)}</Text>
+                      <View style={[styles.etiqueta, { backgroundColor: COLOR_PAGO[p.estado] || '#9CA3AF' }]}><Text style={styles.etiquetaTexto}>{p.estado.toUpperCase()}</Text></View>
+                    </View>
+                    <Text style={styles.pagoDato}>{p.concepto} · {p.fecha}</Text>
+                    {p.motivo ? <Text style={[styles.pagoDato, { color: '#B91C1C' }]}>Trabajador: "{p.motivo}"</Text> : null}
+                    <TouchableOpacity onPress={() => setFotoGrande(p.comprobante)}><Image source={{ uri: p.comprobante }} style={styles.comprobante} /></TouchableOpacity>
+
+                    {rol === 'trabajador' && p.estado === ESTADO_PAGO.POR_CONFIRMAR && rechazandoId !== p.id && (
+                      <View style={{ flexDirection: 'row', marginTop: 8 }}>
+                        <TouchableOpacity style={[styles.boton, { backgroundColor: '#059669', flex: 1, marginRight: 6 }]} disabled={enviando} onPress={() => confirmar(p, true)}><Text style={styles.botonTexto}>Sí lo recibí</Text></TouchableOpacity>
+                        <TouchableOpacity style={[styles.boton, { backgroundColor: '#FFF', borderWidth: 1, borderColor: '#DC2626', flex: 1, marginLeft: 6 }]} disabled={enviando} onPress={() => { setRechazandoId(p.id); setMotivo(''); }}><Text style={[styles.botonTexto, { color: '#DC2626' }]}>No me llegó</Text></TouchableOpacity>
+                      </View>
+                    )}
+                    {rechazandoId === p.id && (
+                      <View style={{ marginTop: 8 }}>
+                        <TextInput style={styles.input} multiline placeholder="¿Qué pasó? Ej. Me dio $1,500, no $2,000..." value={motivo} onChangeText={setMotivo} />
+                        <View style={{ flexDirection: 'row' }}>
+                          <TouchableOpacity style={[styles.boton, { backgroundColor: '#E5E7EB', flex: 1, marginRight: 6 }]} onPress={() => setRechazandoId(null)}><Text style={[styles.botonTexto, { color: '#374151' }]}>Volver</Text></TouchableOpacity>
+                          <TouchableOpacity style={[styles.boton, { backgroundColor: '#DC2626', flex: 1, marginLeft: 6 }]} disabled={enviando} onPress={() => confirmar(p, false)}>{enviando ? <ActivityIndicator color="#FFF" /> : <Text style={styles.botonTexto}>Reportar</Text>}</TouchableOpacity>
+                        </View>
+                      </View>
+                    )}
+                  </View>
+                ))}
+
+              {puedeRegistrar && (
+                <View style={styles.formulario}>
+                  <Text style={styles.seccion}>Registrar un pago</Text>
+                  <Text style={styles.etiquetaForm}>¿Cuánto pagaste? (pesos)</Text>
+                  <TextInput style={styles.input} keyboardType="numeric" placeholder="Ej. 3000" value={monto} onChangeText={t => setMonto(t.replace(/[^0-9]/g, ''))} />
+                  <Text style={styles.etiquetaForm}>¿De qué es el pago?</Text>
+                  <View style={styles.pickerCaja}>
+                    <Picker selectedValue={concepto} onValueChange={setConcepto}>
+                      {CONCEPTOS_PAGO.map(c => <Picker.Item key={c} label={c} value={c} />)}
+                    </Picker>
+                  </View>
+                  <SelectorFotos fotos={comprobante} onCambio={setComprobante} maximo={1} texto="Foto del comprobante (obligatoria)" />
+                  <TouchableOpacity style={[styles.boton, { backgroundColor: '#0D2340' }]} disabled={enviando} onPress={registrar}>
+                    {enviando ? <ActivityIndicator color="#FFF" /> : <Text style={styles.botonTexto}>Registrar pago</Text>}
+                  </TouchableOpacity>
+                </View>
+              )}
+            </ScrollView>
+          </KeyboardAvoidingView>
+        </SafeAreaView>
+      </View>
+      <VisorFoto uri={fotoGrande} onClose={() => setFotoGrande(null)} />
+    </Modal>
+  );
+}
+
+const styles = StyleSheet.create({
+  fondo: { flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', paddingTop: 30 },
+  panel: { flex: 1, backgroundColor: '#F3F4F6', borderTopLeftRadius: 20, borderTopRightRadius: 20, overflow: 'hidden' },
+  encabezado: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#065F46', padding: 15 },
+  titulo: { color: '#FFF', fontWeight: 'bold', fontSize: 16, flex: 1, marginRight: 10 },
+  resumen: { flexDirection: 'row', marginBottom: 12 },
+  resumenCaja: { flex: 1, backgroundColor: '#FFF', borderRadius: 12, padding: 12, marginHorizontal: 4, borderWidth: 1, borderColor: '#E5E7EB' },
+  resumenTexto: { fontSize: 11, color: '#6B7280', fontWeight: 'bold' },
+  resumenNumero: { fontSize: 15, color: '#0D2340', fontWeight: 'bold', marginTop: 4 },
+  ajustes: { backgroundColor: '#FFFBEB', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: '#FDE68A', marginBottom: 12 },
+  ajuste: { fontSize: 12, marginTop: 4, fontWeight: '600' },
+  ajusteTotal: { fontSize: 13, fontWeight: 'bold', color: '#92400E', marginTop: 8 },
+  seccion: { fontSize: 15, fontWeight: 'bold', color: '#0D2340', marginBottom: 8 },
+  vacio: { color: '#6B7280', textAlign: 'center', marginBottom: 12 },
+  pago: { backgroundColor: '#FFF', borderRadius: 12, padding: 12, marginBottom: 10, borderLeftWidth: 5 },
+  filaEntre: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  pagoMonto: { fontSize: 18, fontWeight: 'bold', color: '#0D2340' },
+  pagoDato: { fontSize: 12, color: '#6B7280', marginTop: 2 },
+  etiqueta: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
+  etiquetaTexto: { color: '#FFF', fontSize: 10, fontWeight: 'bold' },
+  comprobante: { width: 110, height: 110, borderRadius: 8, marginTop: 8, backgroundColor: '#E5E7EB' },
+  boton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', borderRadius: 10, paddingVertical: 11 },
+  botonTexto: { color: '#FFF', fontWeight: 'bold' },
+  formulario: { backgroundColor: '#FFF', borderRadius: 14, padding: 14, marginTop: 6, borderWidth: 1, borderColor: '#E5E7EB' },
+  etiquetaForm: { fontSize: 12, fontWeight: 'bold', color: '#6B7280', marginBottom: 5 },
+  input: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, padding: 12, marginBottom: 10, fontSize: 14, color: '#1F2937' },
+  pickerCaja: { borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, backgroundColor: '#F9FAFB', marginBottom: 10, overflow: 'hidden' },
+});

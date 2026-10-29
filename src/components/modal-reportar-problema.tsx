@@ -5,10 +5,11 @@ import { Picker } from '@react-native-picker/picker';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
+import { SelectorFotos, subirFotos } from '@/components/selector-fotos';
 import { accionContrato } from '@/lib/contratos';
 
 const CATEGORIAS = {
-  trabajador: ['No llegó el material prometido', 'Falta de pago', 'Cambió lo acordado', 'Condiciones inseguras', 'Malos tratos', 'Otro'],
+  trabajador: ['No llegó el material prometido', 'No cumplió lo acordado (herramienta, comida, pasaje...)', 'Falta de pago', 'Cambió lo acordado', 'Condiciones inseguras', 'Malos tratos', 'Otro'],
   contratista: ['No se presentó', 'Trabajo mal hecho', 'Daño o pérdida de material', 'Impuntualidad', 'Mal comportamiento', 'Otro'],
 };
 
@@ -21,15 +22,17 @@ type Props = {
 export function ModalReportarProblema({ contrato, rol, onClose }: Props) {
   const [categoria, setCategoria] = useState(CATEGORIAS[rol][0]);
   const [motivo, setMotivo] = useState('');
+  const [fotos, setFotos] = useState<string[]>([]);
   const [enviando, setEnviando] = useState(false);
 
-  useEffect(() => { setMotivo(''); setCategoria(CATEGORIAS[rol][0]); }, [contrato?.id]);
+  useEffect(() => { setMotivo(''); setFotos([]); setCategoria(CATEGORIAS[rol][0]); }, [contrato?.id]);
 
   const enviar = async () => {
     if (!motivo.trim()) { Alert.alert("Aviso", "Explica qué pasó. El administrador lo va a revisar."); return; }
     setEnviando(true);
     try {
-      await accionContrato('reportar_problema', { id_contrato: contrato.id, categoria, motivo: motivo.trim() });
+      const urls = await subirFotos(fotos);
+      await accionContrato('reportar_problema', { id_contrato: contrato.id, categoria, motivo: motivo.trim(), fotos: urls });
       Alert.alert("Reporte enviado", "El administrador lo revisará y les avisará a los dos su decisión. La obra sigue activa.");
       onClose();
     } catch (error: any) { Alert.alert("No se pudo enviar", error?.message || "Intenta de nuevo."); }
@@ -55,6 +58,8 @@ export function ModalReportarProblema({ contrato, rol, onClose }: Props) {
           </View>
           <Text style={styles.etiqueta}>Explícalo (obligatorio)</Text>
           <TextInput style={styles.input} multiline value={motivo} onChangeText={setMotivo} placeholder={rol === 'trabajador' ? 'Ej. Quedó de llevar el cemento el lunes y no llegó...' : 'Ej. Dejó la barda sin terminar y se fue...'} />
+          <View style={{ height: 10 }} />
+          <SelectorFotos fotos={fotos} onCambio={setFotos} />
           <View style={styles.botones}>
             <TouchableOpacity style={styles.botonNo} onPress={onClose} disabled={enviando}><Text style={styles.botonNoTexto}>Volver</Text></TouchableOpacity>
             <TouchableOpacity style={styles.botonSi} onPress={enviar} disabled={enviando}>

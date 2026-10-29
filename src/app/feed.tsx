@@ -10,6 +10,9 @@ import { collection, doc, getDoc, getDocs, query, where } from 'firebase/firesto
 import { auth, db } from '../../firebaseConfig';
 import { abrirChatCon, accionContrato, ESTADOS, estiloEstado, MENSAJES_INICIALES } from '@/lib/contratos';
 import { coincide } from '@/lib/busqueda';
+import { useMensajesSinLeer } from '@/lib/mensajes';
+import { OFICIOS } from '@/lib/oficios';
+import { VistaCondiciones } from '@/components/condiciones-obra';
 import { distanciaKm, ESTADOS_MEXICO, textoDistancia } from '@/lib/ubicacion';
 import { BuscadorConSugerencias } from '@/components/buscador-sugerencias';
 import { CampanaNotificaciones } from '@/components/campana-notificaciones';
@@ -44,7 +47,10 @@ export default function FeedTrabajador() {
   const [contratistas, setContratistas] = useState<Record<string, any>>({}); // PARA LA CALIFICACIÓN DE CADA CONTRATISTA
   const [fotoGrande, setFotoGrande] = useState<string | null>(null);
 
-  const categorias = ['Todos', 'Albañilería', 'Plomería', 'Electricidad', 'Carpintería', 'Pintura', 'Limpieza', 'Varios'];
+  // LOS MISMOS OFICIOS DE TODA LA APP. LAS VACANTES VIEJAS DICEN "ALBAÑILERÍA", "PLOMERÍA"...: LA BÚSQUEDA TOLERANTE
+  // HACE QUE "ALBAÑIL" TAMBIÉN LAS ENCUENTRE
+  const categorias = ['Todos', ...OFICIOS];
+  const mensajesSinLeer = useMensajesSinLeer();
 
   const cargarDatos = async () => {
     try {
@@ -152,7 +158,7 @@ export default function FeedTrabajador() {
   const calificacionDe = (v: any) => parseFloat(contratistas[v.id_contratista]?.calificacion) || 0;
   const vacantesFiltradas = vacantes
     .map(v => ({ ...v, distancia: distanciaKm(miPerfil?.ubicacion, v.coordenadas || contratistas[v.id_contratista]?.ubicacion) }))
-    .filter(v => filtroActivo === 'Todos' || v.categoria === filtroActivo)
+    .filter(v => filtroActivo === 'Todos' || v.categoria === filtroActivo || coincide(v.categoria || '', filtroActivo))
     .filter(v => coincide(`${v.titulo} ${v.categoria || ''} ${v.descripcion || ''} ${v.ubicacion || ''} ${v.estado_republica || ''} ${v.contratista || ''} ${v.empresa || ''}`, busqueda))
     .filter(v => filtroEstado === TODOS_LOS_ESTADOS || v.estado_republica === filtroEstado
       || (!v.estado_republica && String(v.ubicacion || '').toLowerCase().includes(filtroEstado.toLowerCase())))
@@ -216,7 +222,7 @@ export default function FeedTrabajador() {
                   onCambio={setBusqueda}
                   placeholder="Buscar oficios, obras, ciudades..."
                   vocabulario={[
-                    ...categorias.slice(1), 'Albañil', 'Plomero', 'Electricista', 'Carpintero', 'Pintor', 'Limpieza',
+                    ...OFICIOS,
                     ...vacantes.flatMap(v => [v.titulo, v.ubicacion, v.contratista, v.empresa]),
                     ...ESTADOS_MEXICO,
                   ]}
@@ -288,6 +294,9 @@ export default function FeedTrabajador() {
                       </View>
 
                       <Text style={styles.jobDesc}>{item.descripcion}</Text>
+                      {item.lugar_obra_texto ? <Text style={[styles.jobDetailText, {marginLeft: 0, marginBottom: 8}]}>📌 Lugar de la obra: {item.lugar_obra_texto}</Text> : null}
+                      <VistaCondiciones condiciones={item.condiciones} titulo="Lo que ofrece el contratista" />
+                      <View style={{height: 10}} />
 
                       {/* ETIQUETAS */}
                       {item.etiquetas && (
@@ -403,7 +412,10 @@ export default function FeedTrabajador() {
         </TouchableOpacity>
 
         <TouchableOpacity style={styles.navItem} onPress={() => router.replace('/mensajes' as any)}>
-          <Ionicons name="chatbubbles-outline" size={26} color="#6B7280" />
+          <View>
+            <Ionicons name="chatbubbles-outline" size={26} color="#6B7280" />
+            {mensajesSinLeer > 0 && <View style={styles.puntoRojo}><Text style={styles.puntoRojoTexto}>{mensajesSinLeer > 9 ? '+9' : mensajesSinLeer}</Text></View>}
+          </View>
           <Text style={styles.navText}>Mensajes</Text>
         </TouchableOpacity>
 
@@ -452,6 +464,8 @@ const styles = StyleSheet.create({
   contractorAvatar: { width: 50, height: 50, borderRadius: 25, backgroundColor: '#E5E7EB', marginRight: 15, borderWidth: 1, borderColor: '#D1D5DB' },
   jobTitle: { fontSize: 16, fontWeight: 'bold', color: '#0D2340', marginBottom: 4 },
   jobCompany: { fontSize: 13, color: '#6B7280', fontWeight: '500' },
+  puntoRojo: { position: 'absolute', top: -4, right: -8, backgroundColor: '#D32F2F', borderRadius: 10, minWidth: 18, height: 18, justifyContent: 'center', alignItems: 'center', borderWidth: 1.5, borderColor: '#FFF' },
+  puntoRojoTexto: { color: '#FFF', fontSize: 9, fontWeight: 'bold' },
   jobRating: { fontSize: 12, color: '#B45309', fontWeight: 'bold', marginTop: 2 },
   
   jobImageContainer: { position: 'relative', marginBottom: 15 },

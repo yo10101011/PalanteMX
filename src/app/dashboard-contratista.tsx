@@ -19,11 +19,18 @@ import { subirFotoACloudinary } from '@/lib/cloudinary';
 import { eliminarCuentaEnServidor } from '@/lib/cuenta';
 import { abrirChatCon, accionContrato, AccionContrato, ESTADOS, MENSAJES_INICIALES, sePuedeCalificar, tieneReporteAbierto } from '@/lib/contratos';
 import { coincide } from '@/lib/busqueda';
-import { distanciaKm, ESTADOS_MEXICO, PERIODOS_PAGO, textoDias, textoDistancia, textoPrecio, ubicacionDesdeGPS } from '@/lib/ubicacion';
+import { useMensajesSinLeer } from '@/lib/mensajes';
+import { distanciaKm, ESTADOS_MEXICO, nombreDeLugar, PERIODOS_PAGO, textoDias, textoDistancia, textoPrecio, ubicacionDesdeGPS, ubicacionPrecisa } from '@/lib/ubicacion';
 import { BuscadorConSugerencias } from '@/components/buscador-sugerencias';
 import { CampanaNotificaciones } from '@/components/campana-notificaciones';
 import { FiltrosBusqueda, TODOS_LOS_ESTADOS } from '@/components/filtros-busqueda';
 import { PerfilTrabajador } from '@/components/perfil-trabajador';
+import { FormCondiciones } from '@/components/condiciones-obra';
+import { ModalPagos } from '@/components/modal-pagos';
+import { SelectorMapa } from '@/components/selector-mapa';
+import { SelectorOficio } from '@/components/selector-oficio';
+import { SelectorUbicacion } from '@/components/selector-ubicacion';
+import { OFICIOS } from '@/lib/oficios';
 import { ModalBitacora } from '@/components/modal-bitacora';
 import { ModalCancelarContrato } from '@/components/modal-cancelar-contrato';
 import { ModalReportarProblema } from '@/components/modal-reportar-problema';
@@ -62,7 +69,7 @@ export default function DashboardContratista() {
   const [diasFiltro, setDiasFiltro] = useState<string[]>([]);
   const [busquedaExplorar, setBusquedaExplorar] = useState('');
   const [refrescando, setRefrescando] = useState(false);
-  const [mensajesSinLeer, setMensajesSinLeer] = useState(0);
+  const mensajesSinLeer = useMensajesSinLeer(); // PUNTO ROJO DEL BOTÓN "MENSAJES", EN TIEMPO REAL
   const [fotoGrande, setFotoGrande] = useState<string | null>(null);
 
   const [directorio, setDirectorio] = useState<any[]>([]); 
@@ -86,7 +93,13 @@ export default function DashboardContratista() {
   const [vacanteEstado, setVacanteEstado] = useState('');
   // LUGAR EXACTO DE LA OBRA (GPS). CON ÉL SE COMPRUEBA QUE EL TRABAJADOR SÍ ESTÁ AHÍ CUANDO LLENA SU BITÁCORA
   const [vacanteLugar, setVacanteLugar] = useState<{ latitud: number; longitud: number } | null>(null);
+  const [vacanteLugarTexto, setVacanteLugarTexto] = useState(''); // NOMBRE DEL LUGAR ("Palmillas, San Felipe del Progreso")
   const [buscandoLugar, setBuscandoLugar] = useState(false);
+  const [mapaVisible, setMapaVisible] = useState(false);
+  const [vacanteCondiciones, setVacanteCondiciones] = useState<Record<string, string>>({});
+  const [seccionPerfil, setSeccionPerfil] = useState<'Reseñas' | 'Ajustes'>('Reseñas');
+  // SE GUARDA EL ID (NO EL CONTRATO) PARA QUE LA VENTANA DE PAGOS MUESTRE LOS DATOS RECIÉN RECARGADOS
+  const [idContratoPagos, setIdContratoPagos] = useState<string | null>(null);
   const [vacanteHorario, setVacanteHorario] = useState('');
   const [vacanteDesc, setVacanteDesc] = useState('');
   const [vacanteCupo, setVacanteCupo] = useState('1'); 
@@ -191,17 +204,6 @@ export default function DashboardContratista() {
     if (params.tab) { setPestañaActiva(params.tab as string); }
   }, [params.tab]);
 
-  // CONTADOR DE MENSAJES SIN LEER EN TIEMPO REAL. SE ABRE UNA SOLA VEZ Y SE CIERRA AL SALIR DE LA PANTALLA
-  // (ANTES SE ABRÍA UNA ESCUCHA NUEVA CADA VEZ QUE SE RECARGABA EL PERFIL, Y NINGUNA SE CERRABA)
-  useEffect(() => {
-    const usuarioActual = auth.currentUser;
-    if (!usuarioActual) return;
-    const qChats = query(collection(db, 'Chats'), where('usuarios_ids', 'array-contains', usuarioActual.uid));
-    return onSnapshot(qChats, (snap) => {
-      const sinLeer = snap.docs.filter(d => d.data().ultimo_emisor_id !== usuarioActual.uid && d.data().leido === false).length;
-      setMensajesSinLeer(sinLeer);
-    });
-  }, []);
 
   const seleccionarFoto = async (destino: 'perfil' | 'vacante' | 'queja') => {
     // SIN allowsEditing: ASÍ NO APARECE LA PANTALLA DE RECORTE ("CORTAR") Y LA FOTO SE ELIGE DIRECTO
@@ -238,8 +240,8 @@ export default function DashboardContratista() {
   };
 
   const abrirModalNuevaVacante = () => {
-    setVacanteLugar(null);
-    setVacanteEditandoId(null); setVacanteTitulo(''); setVacanteUbicacion(''); setVacantePago(''); setVacantePeriodo('por semana'); setVacanteEstado(userData?.ubicacion_estado || ''); setVacanteHorario(''); setVacanteDesc(''); setVacanteCupo('1'); setVacanteFoto(null); setVacanteCategoria('Albañilería');
+    setVacanteLugar(null); setVacanteLugarTexto(''); setVacanteCondiciones({});
+    setVacanteEditandoId(null); setVacanteTitulo(''); setVacanteUbicacion(userData?.ubicacion_texto || ''); setVacantePago(''); setVacantePeriodo('por semana'); setVacanteEstado(userData?.ubicacion_estado || ''); setVacanteHorario(''); setVacanteDesc(''); setVacanteCupo('1'); setVacanteFoto(null); setVacanteCategoria('');
     setModalVacante(true);
   };
 
@@ -253,6 +255,8 @@ export default function DashboardContratista() {
     setVacantePeriodo(vacante.pago_periodo || 'por semana');
     setVacanteEstado(vacante.estado_republica || userData?.ubicacion_estado || '');
     setVacanteLugar(vacante.coordenadas_obra || null);
+    setVacanteLugarTexto(vacante.lugar_obra_texto || '');
+    setVacanteCondiciones(vacante.condiciones || {});
     setVacanteHorario(vacante.horario);
     setVacanteDesc(vacante.descripcion);
     setVacanteCupo(vacante.cupo_total ? vacante.cupo_total.toString() : '1');
@@ -262,8 +266,11 @@ export default function DashboardContratista() {
   };
 
   const publicarOEditarVacante = async () => {
-    if (!vacanteTitulo || !vacanteUbicacion || !vacanteDesc || !vacanteHorario || !vacanteEstado) {
-      Alert.alert("Aviso", "Faltan campos obligatorios para publicar la vacante (título, estado, ubicación, horario y descripción)."); return;
+    if (!vacanteTitulo || !vacanteCategoria || !vacanteUbicacion || !vacanteDesc || !vacanteHorario || !vacanteEstado) {
+      Alert.alert("Aviso", "Faltan campos obligatorios: título, oficio, estado, municipio, horario y descripción."); return;
+    }
+    if (!vacanteCondiciones.material || !vacanteCondiciones.cuando_pago) {
+      Alert.alert("Aviso", "Contesta al menos quién pone el material y cuándo se paga: así el trabajador sabe qué esperar y queda como evidencia."); return;
     }
     setProcesando(true);
     try {
@@ -279,6 +286,8 @@ export default function DashboardContratista() {
         horario: vacanteHorario, descripcion: vacanteDesc, categoria: vacanteCategoria, cupo_total: parseInt(vacanteCupo) || 1, foto_trabajo: urlFotoTrabajo,
         coordenadas: vacanteLugar || userData.ubicacion || null, // PARA ORDENAR "MÁS CERCA DE MÍ" EN LA BOLSA DE TRABAJO
         coordenadas_obra: vacanteLugar,                          // LUGAR EXACTO PARA EL CHECK GPS DE LA BITÁCORA
+        lugar_obra_texto: vacanteLugarTexto,                     // SU NOMBRE NORMAL, PARA MOSTRARLO EN LUGAR DE NÚMEROS
+        condiciones: vacanteCondiciones,                         // MATERIAL, HERRAMIENTA, COMIDA... (SE COPIAN AL CONTRATO)
       };
 
       if (vacanteEditandoId) {
@@ -298,15 +307,15 @@ export default function DashboardContratista() {
     setProcesando(false);
   };
 
-  // EL CONTRATISTA PARADO EN LA OBRA TOCA EL BOTÓN Y SE GUARDA ESE PUNTO COMO EL LUGAR DE LA OBRA
+  // EL CONTRATISTA PARADO EN LA OBRA TOCA EL BOTÓN Y SE GUARDA ESE PUNTO (Y SU NOMBRE) COMO EL LUGAR DE LA OBRA.
+  // SI NO ESTÁ EN LA OBRA, USA "ELEGIR EN EL MAPA".
   const marcarLugarDeObra = async () => {
     setBuscandoLugar(true);
     try {
-      const permiso = await Location.requestForegroundPermissionsAsync();
-      if (!permiso.granted) { Alert.alert("Sin permiso", "Activa el permiso de ubicación para marcar dónde está la obra."); setBuscandoLugar(false); return; }
-      const posicion = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-      setVacanteLugar({ latitud: posicion.coords.latitude, longitud: posicion.coords.longitude });
-    } catch (error) { Alert.alert("Error", "No se pudo obtener tu ubicación. Intenta de nuevo."); }
+      const punto = await ubicacionPrecisa();
+      setVacanteLugar({ latitud: punto.latitud, longitud: punto.longitud });
+      setVacanteLugarTexto(await nombreDeLugar(punto));
+    } catch (error: any) { Alert.alert("Ubicación", error?.message || "No se pudo obtener tu ubicación. Intenta de nuevo."); }
     setBuscandoLugar(false);
   };
 
@@ -512,22 +521,28 @@ export default function DashboardContratista() {
       onPress: () => { setUsuarioSeleccionadoParaEvaluar({ id: contrato.id_trabajador, nombre: contrato.trabajador?.nombre, apellidos: contrato.trabajador?.apellidos, foto_rostro_url: contrato.trabajador?.foto_rostro_url, rol: 'Trabajador' }); setModalEvaluar(true); },
     };
 
+    const pagos: BotonContrato = { texto: 'Pagos', icono: 'cash-outline', color: '#059669', onPress: () => setIdContratoPagos(contrato.id) };
+
     switch (contrato.estado) {
+      // LA PROPUESTA TAMBIÉN LA ACEPTA EL CONTRATISTA EN EL CHAT (LOS DOS TIENEN QUE ACEPTAR)
       case ESTADOS.PROPUESTA: return [
-        chatear,
+        { texto: 'Ir al chat y aceptar', icono: 'chatbubbles', color: '#00D06C', relleno: true, onPress: () => chatearCon(contrato) },
         { texto: 'Retirar propuesta', icono: 'close-circle-outline', color: '#DC2626', onPress: () => confirmarAccion('rechazar', contrato, "Retirar propuesta", "¿Ya no quieres proponerle esta obra?", "Retiraste la propuesta.") },
       ];
       case ESTADOS.ACTIVA: return [
         { ...bitacora, texto: 'Ver bitácora', relleno: true },
         chatear,
+        pagos,
         { texto: 'Marcar terminada', icono: 'flag-outline', color: tieneReporteAbierto(contrato) ? '#9CA3AF' : '#00D06C', onPress: () => tieneReporteAbierto(contrato) ? Alert.alert("Todavía no", "Hay un reporte de esta obra que el administrador está revisando. Podrás terminarla cuando lo resuelva; te avisaremos.") : confirmarAccion('solicitar_fin', contrato, "Marcar obra como terminada", `¿La obra de ${contrato.trabajador?.nombre} ya terminó? Él tendrá que confirmarlo.`, "Listo. Falta que el trabajador confirme que terminó.") },
         reportar,
         { texto: 'Cancelar obra', icono: 'warning-outline', color: '#DC2626', onPress: () => setContratoCancelar(contrato) },
       ];
-      case ESTADOS.POR_CONFIRMAR_FIN: return [bitacora, chatear, reportar, { texto: 'Cancelar obra', icono: 'warning-outline', color: '#DC2626', onPress: () => setContratoCancelar(contrato) }];
+      // YA SE MARCÓ COMO TERMINADA: YA NO SE PUEDE CANCELAR (SI HAY UN PROBLEMA, SE REPORTA)
+      case ESTADOS.POR_CONFIRMAR_FIN: return [bitacora, chatear, pagos, reportar];
+      // TERMINADA, SUSPENDIDA O CANCELADA: SOLO VER, PAGAR Y CALIFICAR
       case ESTADOS.SUSPENDIDA:
       case ESTADOS.FINALIZADA:
-      case ESTADOS.CANCELADA: return [bitacora, perfil, calificar];
+      case ESTADOS.CANCELADA: return [bitacora, { ...pagos, relleno: contrato.estado === ESTADOS.FINALIZADA && !(contrato.pagos || []).length }, perfil, calificar];
       default: return [];
     }
   };
@@ -553,13 +568,13 @@ export default function DashboardContratista() {
     );
   };
 
-  const categoriasFiltro = ['Todos', 'Albañil', 'Carpintero', 'Electricista', 'Plomero', 'Pintor', 'Cerrajero', 'Bolero', 'Otro'];
+  const categoriasFiltro = ['Todos', ...OFICIOS];
   // TRABAJADORES DE EXPLORAR: FILTRADOS POR OFICIO, ESTADO Y PRECIO, Y ORDENADOS (POR DEFECTO, MEJOR CALIFICADOS PRIMERO).
   // LOS QUE NO TIENEN PRECIO ("A CONVENIR") NO SE QUITAN AL FILTRAR POR PRECIO, Y QUEDAN AL FINAL AL ORDENAR POR PRECIO.
   const calificacionDe = (t: any) => parseFloat(t.calificacion) || 0;
   const directorioFiltrado = directorio
     .map(t => ({ ...t, distancia: distanciaKm(userData?.ubicacion, t.ubicacion) }))
-    .filter(t => categoriaExplorar === 'Todos' || t.oficio_principal === categoriaExplorar)
+    .filter(t => categoriaExplorar === 'Todos' || t.oficio_principal === categoriaExplorar || coincide(t.oficio_principal || '', categoriaExplorar))
     .filter(t => filtroEstado === TODOS_LOS_ESTADOS || t.ubicacion_estado === filtroEstado)
     .filter(t => !precioMaximo || !t.tarifa_monto || t.tarifa_monto <= parseInt(precioMaximo))
     // DÍAS: QUE ESTÉ DISPONIBLE EN TODOS LOS DÍAS ELEGIDOS (LOS QUE NO MARCARON DÍAS SE QUEDAN: "A CONVENIR")
@@ -817,8 +832,17 @@ export default function DashboardContratista() {
           {/* --- PESTAÑA PERFIL: MIS RESEÑAS Y TODOS LOS AJUSTES DE LA CUENTA --- */}
           {pestañaActiva === 'Perfil' && (
             <View>
-              <Text style={styles.sectionTitle}>Lo que dicen de ti ({userData?.resenas?.length || 0})</Text>
-              {userData?.resenas?.length > 0 ? (
+              {/* DOS SECCIONES, COMO EN EL PERFIL DEL TRABAJADOR, PARA QUE NO SE AMONTONE */}
+              <View style={styles.tabsContainer}>
+                {(['Reseñas', 'Ajustes'] as const).map(s => (
+                  <TouchableOpacity key={s} style={[styles.tabButton, seccionPerfil === s && styles.tabButtonActive]} onPress={() => setSeccionPerfil(s)}>
+                    <Text style={[styles.tabText, seccionPerfil === s && styles.tabTextActive]}>{s === 'Reseñas' ? `Reseñas (${userData?.resenas?.length || 0})` : 'Ajustes'}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              <View style={{height: 16}} />
+
+              {seccionPerfil === 'Reseñas' && (userData?.resenas?.length > 0 ? (
                 [...userData.resenas].reverse().map((resena: any, idx: number) => (
                   <View key={idx} style={styles.reviewCard}>
                     <View style={styles.reviewHeader}>
@@ -836,14 +860,18 @@ export default function DashboardContratista() {
                 ))
               ) : (
                 <Text style={{color: '#9CA3AF', textAlign: 'center', marginBottom: 20}}>Todavía no tienes reseñas. Aparecen cuando un trabajador te califica al terminar una obra.</Text>
-              )}
+              ))}
 
-              <Text style={[styles.sectionTitle, {marginTop: 10}]}>Ajustes de la cuenta</Text>
+              {seccionPerfil === 'Ajustes' && (
+              <View>
+              <CampanaNotificaciones variante="fila" onNuevos={cargarPerfil} />
               <TouchableOpacity style={styles.settingsOption} onPress={() => setModalEditar(true)}><View style={styles.settingsRow}><Ionicons name="person-circle-outline" size={24} color="#0D2340" /><Text style={styles.settingsText}>Editar datos de la empresa</Text></View><Ionicons name="chevron-forward" size={20} color="#9CA3AF" /></TouchableOpacity>
               <TouchableOpacity style={styles.settingsOption} onPress={abrirModalEvaluar}><View style={styles.settingsRow}><Ionicons name="star-outline" size={24} color="#F59E0B" /><Text style={styles.settingsText}>Evaluar a un Trabajador contratado</Text></View><Ionicons name="chevron-forward" size={20} color="#9CA3AF" /></TouchableOpacity>
               <TouchableOpacity style={styles.settingsOption} onPress={abrirModalQueja}><View style={styles.settingsRow}><Ionicons name="shield-half-outline" size={24} color="#D32F2F" /><Text style={[styles.settingsText, {color: '#D32F2F'}]}>Levantar Reporte a Trabajador</Text></View><Ionicons name="chevron-forward" size={20} color="#9CA3AF" /></TouchableOpacity>
               <TouchableOpacity style={[styles.settingsOption, { marginTop: 20 }]} onPress={cerrarSesion}><View style={styles.settingsRow}><Ionicons name="log-out-outline" size={24} color="#0D2340" /><Text style={[styles.settingsText, { fontWeight: 'bold' }]}>Cerrar Sesión</Text></View></TouchableOpacity>
               <TouchableOpacity style={[styles.settingsOption, { borderBottomWidth: 0, marginTop: 10 }]} onPress={eliminarCuenta}><View style={styles.settingsRow}><Ionicons name="trash-outline" size={24} color="#D32F2F" /><Text style={[styles.settingsText, { color: '#D32F2F', fontWeight: 'bold' }]}>Eliminar cuenta de contratista</Text></View></TouchableOpacity>
+              </View>
+              )}
             </View>
           )}
         </View>
@@ -938,14 +966,7 @@ export default function DashboardContratista() {
               <Text style={styles.modalLabel}>Nombre del Representante (verificado con INE)</Text><TextInput style={[styles.modalInput, {backgroundColor: '#E5E7EB', color: '#6B7280'}]} value={editNombre} editable={false}/>
               <Text style={styles.modalLabel}>Apellidos (verificados con INE)</Text><TextInput style={[styles.modalInput, {backgroundColor: '#E5E7EB', color: '#6B7280'}]} value={editApellidos} editable={false}/>
               <Text style={styles.modalLabel}>Nombre de la Empresa</Text><TextInput style={styles.modalInput} placeholder="Ej. Constructora Palante" value={editEmpresa} onChangeText={setEditEmpresa} />
-              <Text style={styles.modalLabel}>Estado</Text>
-              <View style={styles.pickerBox}>
-                <Picker selectedValue={editEstado} onValueChange={setEditEstado}>
-                  <Picker.Item label="Elige tu estado..." value="" />
-                  {ESTADOS_MEXICO.map(e => <Picker.Item key={e} label={e} value={e} />)}
-                </Picker>
-              </View>
-              <Text style={styles.modalLabel}>Ciudad / Sede principal</Text><TextInput style={styles.modalInput} placeholder="Ej. Toluca" value={editUbicacion} onChangeText={setEditUbicacion} />
+              <SelectorUbicacion estado={editEstado} municipio={editUbicacion} onEstado={setEditEstado} onMunicipio={setEditUbicacion} />
               <View style={styles.modalBtnRow}>
                 <TouchableOpacity style={styles.modalBtnCancel} onPress={() => setModalEditar(false)}><Text style={styles.modalBtnTextC}>Cancelar</Text></TouchableOpacity>
                 <TouchableOpacity style={[styles.modalBtnSave, {backgroundColor: '#0D2340'}]} onPress={guardarEdicionPerfil} disabled={procesando}>{procesando ? <ActivityIndicator color="#FFF" /> : <Text style={styles.modalBtnTextS}>Guardar</Text>}</TouchableOpacity>
@@ -961,31 +982,28 @@ export default function DashboardContratista() {
             <View style={{flexDirection: 'row', alignItems: 'center', marginBottom: 15}}><Ionicons name="megaphone" size={24} color="#0D2340" style={{marginRight: 10}}/><Text style={[styles.modalTitle, {marginBottom: 0}]}>{vacanteEditandoId ? 'Editar Vacante' : 'Publicar Vacante'}</Text></View>
             <ScrollView showsVerticalScrollIndicator={false}>
               <Text style={styles.modalLabel}>Título del Anuncio</Text><TextInput style={styles.modalInput} placeholder="Ej. Se busca oficial plomero..." value={vacanteTitulo} onChangeText={setVacanteTitulo} />
-              <View style={{flexDirection: 'row', justifyContent: 'space-between'}}>
-                <View style={{flex: 1, marginRight: 5}}>
-                  <Text style={styles.modalLabel}>Oficio (Categoría)</Text>
-                  <View style={styles.pickerBox}>
-                    <Picker selectedValue={vacanteCategoria} onValueChange={(v) => setVacanteCategoria(v)}>
-                      <Picker.Item label="Albañilería" value="Albañilería" /><Picker.Item label="Plomería" value="Plomería" /><Picker.Item label="Electricidad" value="Electricidad" /><Picker.Item label="Carpintería" value="Carpintería" /><Picker.Item label="Limpieza" value="Limpieza" /><Picker.Item label="Pintura" value="Pintura" /><Picker.Item label="Varios" value="Varios" />
-                    </Picker>
-                  </View>
+              <Text style={styles.modalLabel}>¿Qué oficio necesitas?</Text>
+              <SelectorOficio valor={vacanteCategoria} onCambio={setVacanteCategoria} />
+              <Text style={styles.modalLabel}>¿Cuántos trabajadores necesitas?</Text><TextInput style={styles.modalInput} placeholder="Ej. 1" value={vacanteCupo} onChangeText={setVacanteCupo} keyboardType="numeric" />
+              <SelectorUbicacion estado={vacanteEstado} municipio={vacanteUbicacion} onEstado={setVacanteEstado} onMunicipio={setVacanteUbicacion} />
+
+              {/* LUGAR EXACTO DE LA OBRA: CON ÉL SE COMPRUEBA QUE EL TRABAJADOR SÍ ESTÁ AHÍ CUANDO LLENA SU BITÁCORA */}
+              <Text style={styles.modalLabel}>Lugar exacto de la obra (muy recomendado)</Text>
+              {vacanteLugar ? (
+                <View style={styles.lugarMarcado}>
+                  <Ionicons name="checkmark-circle" size={20} color="#00A355" />
+                  <Text style={styles.lugarMarcadoTexto}>{vacanteLugarTexto || 'Lugar marcado en el mapa'}</Text>
                 </View>
-                <View style={{flex: 1, marginLeft: 5}}><Text style={styles.modalLabel}>¿Cuántos necesitas?</Text><TextInput style={styles.modalInput} placeholder="Ej. 1" value={vacanteCupo} onChangeText={setVacanteCupo} keyboardType="numeric" /></View>
+              ) : null}
+              <View style={{flexDirection: 'row', marginBottom: 6}}>
+                <TouchableOpacity style={[styles.botonLugar, {marginRight: 5}]} onPress={() => setMapaVisible(true)}>
+                  <Ionicons name="map" size={18} color="#0D2340" /><Text style={styles.botonLugarTexto}>{vacanteLugar ? 'Cambiar en el mapa' : 'Elegir en el mapa'}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.botonLugar, {marginLeft: 5}]} onPress={marcarLugarDeObra} disabled={buscandoLugar}>
+                  {buscandoLugar ? <ActivityIndicator color="#0D2340" /> : <><Ionicons name="locate" size={18} color="#0D2340" /><Text style={styles.botonLugarTexto}>Estoy en la obra</Text></>}
+                </TouchableOpacity>
               </View>
-              <Text style={styles.modalLabel}>Estado</Text>
-              <View style={styles.pickerBox}>
-                <Picker selectedValue={vacanteEstado} onValueChange={setVacanteEstado}>
-                  <Picker.Item label="Elige el estado..." value="" />
-                  {ESTADOS_MEXICO.map(e => <Picker.Item key={e} label={e} value={e} />)}
-                </Picker>
-              </View>
-              <Text style={styles.modalLabel}>Ciudad / colonia</Text><TextInput style={styles.modalInput} placeholder="Ej. Toluca" value={vacanteUbicacion} onChangeText={setVacanteUbicacion} />
-              <Text style={styles.modalLabel}>Lugar exacto de la obra (recomendado)</Text>
-              <TouchableOpacity style={[styles.uploadArea, {padding: 12, flexDirection: 'row', justifyContent: 'center'}, vacanteLugar && {borderColor: '#00D06C', backgroundColor: '#F0FDF4'}]} onPress={marcarLugarDeObra} disabled={buscandoLugar}>
-                {buscandoLugar ? <ActivityIndicator color="#0D2340" /> : <Ionicons name={vacanteLugar ? 'checkmark-circle' : 'locate'} size={20} color={vacanteLugar ? '#00A355' : '#0D2340'} />}
-                <Text style={{marginLeft: 8, fontWeight: 'bold', color: vacanteLugar ? '#00A355' : '#0D2340', flexShrink: 1}}>{vacanteLugar ? 'Lugar marcado. Toca para volver a marcarlo' : 'Estoy en la obra: usar mi ubicación actual'}</Text>
-              </TouchableOpacity>
-              <Text style={{fontSize: 11, color: '#6B7280', marginTop: -8, marginBottom: 10}}>Con este punto comprobamos que el trabajador sí está en la obra cuando llena su bitácora.</Text>
+              <Text style={{fontSize: 11, color: '#6B7280', marginBottom: 10}}>Si no estás en la obra, elígela en el mapa. Con este punto comprobamos que el trabajador sí está ahí cuando llena su bitácora.</Text>
               <View style={{flexDirection: 'row', justifyContent: 'space-between'}}>
                 <View style={{flex: 1, marginRight: 5}}><Text style={styles.modalLabel}>Pago ($, solo número)</Text><TextInput style={styles.modalInput} placeholder="Vacío = a convenir" keyboardType="numeric" value={vacantePago} onChangeText={t => setVacantePago(t.replace(/[^0-9]/g, ''))} /></View>
                 <View style={{flex: 1, marginLeft: 5}}>
@@ -999,6 +1017,10 @@ export default function DashboardContratista() {
               </View>
               <Text style={styles.modalLabel}>Horario / Días de Trabajo</Text><TextInput style={styles.modalInput} placeholder="Ej. Lunes a Sábado de 8 a 5" value={vacanteHorario} onChangeText={setVacanteHorario} />
               <Text style={styles.modalLabel}>Descripción del Trabajo (Sé específico)</Text><TextInput style={[styles.modalInput, {height: 80, textAlignVertical: 'top'}]} placeholder="Se requiere levantar muros..." multiline value={vacanteDesc} onChangeText={setVacanteDesc} />
+              {/* CONDICIONES: QUEDAN COMO EVIDENCIA EN EL CONTRATO DE LO QUE PROMETISTE (MATERIAL, HERRAMIENTA...) */}
+              <Text style={[styles.modalLabel, {marginTop: 10, color: '#0D2340', fontSize: 14}]}>Condiciones de la obra</Text>
+              <Text style={{fontSize: 11, color: '#6B7280', marginBottom: 6}}>El trabajador las verá antes de aceptar y quedan guardadas en el contrato como lo que prometiste.</Text>
+              <FormCondiciones valores={vacanteCondiciones} onCambio={setVacanteCondiciones} />
               <Text style={styles.modalLabel}>Foto de la Obra (Opcional pero Recomendado)</Text>
               <TouchableOpacity style={styles.uploadArea} onPress={() => seleccionarFoto('vacante')}>
                 {vacanteFoto ? <Image source={{uri: vacanteFoto}} style={styles.uploadedImagePreview} /> : <><Ionicons name="camera-outline" size={30} color="#9CA3AF"/><Text style={styles.uploadText}>Subir Foto para que el trabajador vea qué hará</Text></>}
@@ -1119,6 +1141,13 @@ export default function DashboardContratista() {
       <ModalBitacora contrato={contratoBitacora} rol="contratista" onClose={() => setContratoBitacora(null)} />
       <ModalCancelarContrato contrato={contratoCancelar} onClose={() => setContratoCancelar(null)} onCancelado={() => { setContratoCancelar(null); cargarPerfil(); }} />
       <ModalReportarProblema contrato={contratoReportar} rol="contratista" onClose={() => setContratoReportar(null)} />
+      <ModalPagos contrato={candidatos.find(c => c.id === idContratoPagos) || null} rol="contratista" onClose={() => setIdContratoPagos(null)} onCambio={cargarPerfil} />
+      <SelectorMapa
+        visible={mapaVisible}
+        inicial={vacanteLugar}
+        onCerrar={() => setMapaVisible(false)}
+        onElegir={(punto, nombre) => { setVacanteLugar(punto); setVacanteLugarTexto(nombre); setMapaVisible(false); }}
+      />
       <VisorFoto uri={fotoGrande} onClose={() => setFotoGrande(null)} />
 
       <Modal visible={modalEvaluar} animationType="slide" transparent>
@@ -1183,6 +1212,10 @@ const styles = StyleSheet.create({
   loadingCenter: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F3F4F6' },
   loadingText: { marginTop: 10, color: '#0D2340', fontWeight: 'bold' },
   headerCover: { height: 130, backgroundColor: '#0D2340', borderBottomLeftRadius: 25, borderBottomRightRadius: 25 },
+  lugarMarcado: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F0FDF4', borderWidth: 1, borderColor: '#BBF7D0', borderRadius: 10, padding: 10, marginBottom: 8 },
+  lugarMarcadoTexto: { marginLeft: 8, color: '#166534', fontWeight: 'bold', flex: 1 },
+  botonLugar: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#0D2340', borderRadius: 10, paddingVertical: 11 },
+  botonLugarTexto: { marginLeft: 6, color: '#0D2340', fontWeight: 'bold', fontSize: 13 },
   headerCorto: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#0D2340', paddingHorizontal: 20, paddingTop: 18, paddingBottom: 22, borderBottomLeftRadius: 25, borderBottomRightRadius: 25 },
   headerCortoTitulo: { color: '#FFF', fontSize: 22, fontWeight: 'bold' },
   headerCortoSub: { color: '#9CA3AF', fontSize: 12, marginTop: 2 },

@@ -14,9 +14,13 @@ import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, query, updateDoc, 
 import { auth, db } from '../../firebaseConfig';
 import { subirFotoACloudinary } from '@/lib/cloudinary';
 import { eliminarCuentaEnServidor } from '@/lib/cuenta';
-import { abrirChatCon, accionContrato, AccionContrato, ESTADOS, MENSAJES_INICIALES, sePuedeCalificar, tieneReporteAbierto } from '@/lib/contratos';
-import { DIAS_SEMANA, ESTADOS_MEXICO, PERIODOS_PAGO, textoDias, textoPrecio, ubicacionDesdeGPS } from '@/lib/ubicacion';
+import { abrirChatCon, accionContrato, AccionContrato, ESTADOS, MENSAJES_INICIALES, pagosPorConfirmar, sePuedeCalificar, tieneReporteAbierto } from '@/lib/contratos';
+import { useMensajesSinLeer } from '@/lib/mensajes';
+import { DIAS_SEMANA, PERIODOS_PAGO, textoDias, textoPrecio, ubicacionDesdeGPS } from '@/lib/ubicacion';
 import { CampanaNotificaciones } from '@/components/campana-notificaciones';
+import { ModalPagos } from '@/components/modal-pagos';
+import { SelectorOficio } from '@/components/selector-oficio';
+import { SelectorUbicacion } from '@/components/selector-ubicacion';
 import { ModalBitacora } from '@/components/modal-bitacora';
 import { ModalCancelarContrato } from '@/components/modal-cancelar-contrato';
 import { ModalReportarProblema } from '@/components/modal-reportar-problema';
@@ -82,6 +86,9 @@ export default function DashboardTrabajador() {
   const [contratoBitacora, setContratoBitacora] = useState<any>(null);
   const [contratoCancelar, setContratoCancelar] = useState<any>(null);
   const [contratoReportar, setContratoReportar] = useState<any>(null);
+  // SE GUARDA EL ID (NO EL CONTRATO) PARA QUE LA VENTANA DE PAGOS MUESTRE LOS DATOS RECIÉN RECARGADOS
+  const [idContratoPagos, setIdContratoPagos] = useState<string | null>(null);
+  const mensajesSinLeer = useMensajesSinLeer(); // PUNTO ROJO DEL BOTÓN "MENSAJES", EN TIEMPO REAL
 
   // MAGIA: SI VENIMOS DE OTRA PANTALLA, ABRIR LA PESTAÑA CORRECTA
   useEffect(() => {
@@ -339,6 +346,8 @@ export default function DashboardTrabajador() {
     const bitacora: BotonContrato = { texto: 'Bitácora', icono: 'reader-outline', color: '#0D2340', onPress: () => setContratoBitacora(contrato) };
     const calificar: BotonContrato = { texto: 'Calificar', icono: 'star-outline', color: '#F59E0B', onPress: () => calificarContratista(contrato) };
     const reportar: BotonContrato = { texto: 'Reportar problema', icono: 'flag-outline', color: '#EA580C', onPress: () => setContratoReportar(contrato) };
+    const porConfirmar = pagosPorConfirmar(contrato).length;
+    const pagos: BotonContrato = { texto: porConfirmar ? `Pagos (${porConfirmar} por confirmar)` : 'Pagos', icono: 'cash-outline', color: '#059669', relleno: porConfirmar > 0, onPress: () => setIdContratoPagos(contrato.id) };
 
     switch (contrato.estado) {
       // LA PROPUESTA NO SE ACEPTA AQUÍ: PRIMERO SE PLATICA EN EL CHAT, Y AHÍ MISMO SE ACEPTA EL TRATO
@@ -349,6 +358,7 @@ export default function DashboardTrabajador() {
       case ESTADOS.ACTIVA: return [
         { ...bitacora, texto: 'Llenar bitácora', relleno: true },
         chatear,
+        pagos,
         reportar,
         { texto: 'Cancelar obra', icono: 'warning-outline', color: '#DC2626', onPress: () => setContratoCancelar(contrato) },
       ];
@@ -357,11 +367,13 @@ export default function DashboardTrabajador() {
         { texto: 'Aún no', icono: 'arrow-undo-outline', color: '#F59E0B', onPress: () => confirmarAccion('rechazar_fin', contrato, "La obra no ha terminado", "La obra regresará a activa. Platica con el contratista lo que falta.", "La obra sigue activa.") },
         bitacora,
         chatear,
+        pagos,
         reportar,
       ];
-      case ESTADOS.SUSPENDIDA: return [bitacora, calificar];
-      case ESTADOS.FINALIZADA: return [bitacora, calificar];
-      case ESTADOS.CANCELADA: return [bitacora, calificar];
+      // TERMINADA, SUSPENDIDA O CANCELADA: SOLO VER (BITÁCORA, PAGOS) Y CALIFICAR; YA NO SE PUEDE CANCELAR NI LLENAR NADA
+      case ESTADOS.SUSPENDIDA: return [bitacora, pagos, calificar];
+      case ESTADOS.FINALIZADA: return [bitacora, pagos, calificar];
+      case ESTADOS.CANCELADA: return [bitacora, pagos, calificar];
       default: return [];
     }
   };
@@ -575,7 +587,8 @@ export default function DashboardTrabajador() {
               {pestañaActiva === 'Ajustes' && (
                 <View>
                   <Text style={styles.sectionTitle}>Configuración y Soporte</Text>
-                  
+                  <CampanaNotificaciones variante="fila" onNuevos={cargarPerfil} />
+
                   <TouchableOpacity style={styles.settingsOption} onPress={onRefresh}>
                     <View style={styles.settingsRow}><Ionicons name="refresh-outline" size={24} color="#00D06C" /><Text style={[styles.settingsText, {color: '#00D06C'}]}>Refrescar Base de Datos</Text></View>
                     <Ionicons name="chevron-forward" size={20} color="#9CA3AF" />
@@ -637,7 +650,10 @@ export default function DashboardTrabajador() {
         </TouchableOpacity>
         
         <TouchableOpacity style={styles.navItem} onPress={() => router.replace('/mensajes' as any)}>
-          <Ionicons name="chatbubbles-outline" size={26} color="#6B7280" />
+          <View>
+            <Ionicons name="chatbubbles-outline" size={26} color="#6B7280" />
+            {mensajesSinLeer > 0 && <View style={styles.puntoRojo}><Text style={styles.puntoRojoTexto}>{mensajesSinLeer > 9 ? '+9' : mensajesSinLeer}</Text></View>}
+          </View>
           <Text style={styles.navText}>Mensajes</Text>
         </TouchableOpacity>
 
@@ -712,14 +728,7 @@ export default function DashboardTrabajador() {
               {/* NOMBRE Y APELLIDOS QUEDARON VERIFICADOS CONTRA LA INE: LAS REGLAS DE FIRESTORE NO PERMITEN CAMBIARLOS */}
               <Text style={styles.modalLabel}>Nombres Oficiales (verificados con tu INE)</Text><TextInput style={[styles.modalInput, {backgroundColor: '#E5E7EB', color: '#6B7280'}]} value={editNombre} editable={false}/>
               <Text style={styles.modalLabel}>Apellidos (verificados con tu INE)</Text><TextInput style={[styles.modalInput, {backgroundColor: '#E5E7EB', color: '#6B7280'}]} value={editApellidos} editable={false}/>
-              <Text style={styles.modalLabel}>Estado</Text>
-              <View style={styles.pickerBox}>
-                <Picker selectedValue={editEstado} onValueChange={setEditEstado}>
-                  <Picker.Item label="Elige tu estado..." value="" />
-                  {ESTADOS_MEXICO.map(e => <Picker.Item key={e} label={e} value={e} />)}
-                </Picker>
-              </View>
-              <Text style={styles.modalLabel}>Ciudad / municipio</Text><TextInput style={styles.modalInput} placeholder="Ej. San Felipe del Progreso" value={editUbicacion} onChangeText={setEditUbicacion} />
+              <SelectorUbicacion estado={editEstado} municipio={editUbicacion} onEstado={setEditEstado} onMunicipio={setEditUbicacion} />
               <Text style={styles.modalLabel}>Mi precio (los contratistas filtran por esto)</Text>
               <View style={{flexDirection: 'row'}}>
                 <TextInput style={[styles.modalInput, {flex: 1, marginRight: 5}]} placeholder="Vacío = a convenir" keyboardType="numeric" value={editTarifa} onChangeText={t => setEditTarifa(t.replace(/[^0-9]/g, ''))} />
@@ -741,12 +750,8 @@ export default function DashboardTrabajador() {
                   );
                 })}
               </View>
-              <Text style={styles.modalLabel}>Oficio Principal</Text>
-              <View style={styles.pickerBox}>
-                <Picker selectedValue={editOficio} onValueChange={(itemValue) => setEditOficio(itemValue)}>
-                  <Picker.Item label="Albañil" value="Albañil" /><Picker.Item label="Bolero" value="Bolero" /><Picker.Item label="Carpintero" value="Carpintero" /><Picker.Item label="Cerrajero" value="Cerrajero" /><Picker.Item label="Electricista" value="Electricista" /><Picker.Item label="Plomero" value="Plomero" /><Picker.Item label="Pintor" value="Pintor" /><Picker.Item label="Otro" value="Otro" />
-                </Picker>
-              </View>
+              <Text style={styles.modalLabel}>Oficio principal</Text>
+              <SelectorOficio valor={editOficio} onCambio={setEditOficio} />
               <View style={styles.modalBtnRow}>
                 <TouchableOpacity style={styles.modalBtnCancel} onPress={() => setModalEditar(false)}><Text style={styles.modalBtnTextC}>Cancelar</Text></TouchableOpacity>
                 <TouchableOpacity style={styles.modalBtnSave} onPress={guardarEdicionPerfil} disabled={procesando}>{procesando ? <ActivityIndicator color="#FFF" /> : <Text style={styles.modalBtnTextS}>Guardar</Text>}</TouchableOpacity>
@@ -803,6 +808,7 @@ export default function DashboardTrabajador() {
       <ModalBitacora contrato={contratoBitacora} rol="trabajador" onClose={() => setContratoBitacora(null)} />
       <ModalCancelarContrato contrato={contratoCancelar} onClose={() => setContratoCancelar(null)} onCancelado={() => { setContratoCancelar(null); cargarPerfil(); }} />
       <ModalReportarProblema contrato={contratoReportar} rol="trabajador" onClose={() => setContratoReportar(null)} />
+      <ModalPagos contrato={contratos.find(c => c.id === idContratoPagos) || null} rol="trabajador" onClose={() => setIdContratoPagos(null)} onCambio={cargarPerfil} />
 
       <Modal visible={modalQueja} animationType="fade" transparent>
         <View style={styles.modalBg}>
@@ -1004,6 +1010,8 @@ const styles = StyleSheet.create({
   bottomNavigation: { backgroundColor: '#FFF', flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', borderTopWidth: 1, borderColor: '#E5E7EB', elevation: 15, shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 5, paddingVertical: 12 },
   navItem: { alignItems: 'center', justifyContent: 'center', flex: 1, position: 'relative' },
   navText: { fontSize: 10, color: '#6B7280', marginTop: 4, fontWeight: '600' },
+  puntoRojo: { position: 'absolute', top: -4, right: -8, backgroundColor: '#D32F2F', borderRadius: 10, minWidth: 18, height: 18, justifyContent: 'center', alignItems: 'center', borderWidth: 1.5, borderColor: '#FFF' },
+  puntoRojoTexto: { color: '#FFF', fontSize: 9, fontWeight: 'bold' },
   
   modalBg: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', padding: 15 },
   modalBgDark: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', padding: 15 },

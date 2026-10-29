@@ -63,12 +63,41 @@ export type AccionContrato =
   | 'proponer' | 'postular' | 'aceptar' | 'rechazar'
   | 'solicitar_fin' | 'confirmar_fin' | 'rechazar_fin' | 'cancelar'
   | 'revisar_bitacora' | 'reportar_problema'
+  | 'registrar_pago' | 'confirmar_pago'
   | 'admin_reactivar' | 'admin_cancelar';
 
 type DatosAccion = {
   id_contrato?: string; id_vacante?: string; id_trabajador?: string; motivo?: string;
-  id_entrada?: string; veredicto?: 'confirmar' | 'rechazar'; categoria?: string; nota?: string; descuento?: number;
+  id_entrada?: string; veredicto?: 'confirmar' | 'rechazar'; categoria?: string; nota?: string;
+  fotos?: string[];                                        // EVIDENCIA DE UN REPORTE (YA SUBIDAS A CLOUDINARY)
+  monto?: number; concepto?: string; comprobante?: string; // REGISTRAR UN PAGO
+  id_pago?: string; recibido?: boolean;                    // CONFIRMAR UN PAGO
 };
+
+// ---------------------------------------------------------------- PAGOS
+// EL DINERO SE PAGA POR FUERA (EFECTIVO O TRANSFERENCIA). EN LA APP QUEDA LA EVIDENCIA: EL CONTRATISTA SUBE EL
+// COMPROBANTE Y EL TRABAJADOR CONFIRMA. (DESPUÉS SE PUEDE CAMBIAR POR UN PAGO EN GARANTÍA CON MERCADO PAGO)
+export const ESTADO_PAGO = { POR_CONFIRMAR: 'Por confirmar', RECIBIDO: 'Recibido', NO_RECIBIDO: 'No recibido' };
+export const COLOR_PAGO: Record<string, string> = { 'Por confirmar': '#F59E0B', Recibido: '#059669', 'No recibido': '#DC2626' };
+export const CONCEPTOS_PAGO = ['Pago de la obra', 'Pago parcial / adelanto', 'Pago de la semana', 'Pago extra ordenado por el administrador', 'Material'];
+
+export const pagosPorConfirmar = (contrato: any) => (contrato?.pagos || []).filter((p: any) => p.estado === ESTADO_PAGO.POR_CONFIRMAR);
+export const totalRecibido = (contrato: any) => (contrato?.pagos || []).filter((p: any) => p.estado === ESTADO_PAGO.RECIBIDO).reduce((s: number, p: any) => s + (p.monto || 0), 0);
+
+// AJUSTES DE DINERO QUE ORDENÓ EL ADMIN: 'extra' (EL CONTRATISTA DEBE PAGAR DE MÁS) O 'descuento' (SE LE QUITA AL TRABAJADOR)
+export const ajustesDePago = (contrato: any): any[] => contrato?.ajustes_pago || [];
+
+// ---------------------------------------------------------------- CONDICIONES DE LA OBRA
+// LO QUE EL CONTRATISTA PROMETE AL PUBLICAR LA VACANTE. SE COPIA AL CONTRATO COMO EVIDENCIA DE LO ACORDADO.
+export const CONDICIONES: { clave: string; pregunta: string; icono: string; opciones: string[] }[] = [
+  { clave: 'material', pregunta: '¿Quién pone el material?', icono: '🧱', opciones: ['Lo pone el contratista', 'Lo pone el trabajador', 'Se reparte entre los dos', 'No se necesita'] },
+  { clave: 'herramienta', pregunta: '¿Quién pone la herramienta?', icono: '🔨', opciones: ['La pone el contratista', 'La pone el trabajador', 'Se reparte entre los dos'] },
+  { clave: 'comida', pregunta: '¿Se da comida?', icono: '🍽️', opciones: ['Sí, se da comida', 'No'] },
+  { clave: 'transporte', pregunta: '¿Se paga el pasaje o transporte?', icono: '🚌', opciones: ['Sí, se paga el pasaje', 'No'] },
+  { clave: 'seguridad', pregunta: '¿Se da equipo de seguridad (casco, guantes...)?', icono: '🦺', opciones: ['Sí', 'No', 'No se necesita'] },
+  { clave: 'forma_pago', pregunta: '¿Cómo se paga?', icono: '💵', opciones: ['Efectivo', 'Transferencia', 'Efectivo o transferencia'] },
+  { clave: 'cuando_pago', pregunta: '¿Cuándo se paga?', icono: '📅', opciones: ['Cada día', 'Cada semana', 'Al terminar la obra', 'Mitad al inicio y mitad al final'] },
+];
 
 // LLAMA A UNA RUTA DEL SERVIDOR CON LA SESIÓN. SI NO SE PUEDE, LANZA UN ERROR CON EL MOTIVO (LISTO PARA UN Alert)
 const llamarServidor = async (ruta: string, cuerpo: Record<string, unknown>, errorPorDefecto: string) => {
@@ -94,15 +123,13 @@ export const accionContrato = async (accion: AccionContrato, datos: DatosAccion 
 
 // EL ADMIN RESUELVE UN REPORTE (QUE NO SEA UNA CANCELACIÓN DE OBRA). EL SERVIDOR LES AVISA A LAS DOS PARTES.
 //   bitácora: 'a_favor_trabajador' | 'a_favor_contratista'      otros: 'procede' | 'no_procede'
-//   descuento: PESOS QUE SE LE DESCUENTAN A QUIEN NO TUVO LA RAZÓN (0 = SIN DESCUENTO)
-export const resolverReporte = (idQueja: string, decision: string, nota: string, descuento = 0) =>
-  llamarServidor('/reportes', { id_queja: idQueja, decision, nota, descuento }, "No se pudo resolver el reporte.");
+//   ajuste: PESOS A FAVOR DE QUIEN TUVO LA RAZÓN (EXTRA PARA EL TRABAJADOR, O DESCUENTO AL TRABAJADOR). 0 = NADA
+//   bloquear: BLOQUEAR LA CUENTA DE QUIEN NO TUVO LA RAZÓN
+export const resolverReporte = (idQueja: string, decision: string, nota: string, ajuste = 0, bloquear = false) =>
+  llamarServidor('/reportes', { id_queja: idQueja, decision, nota, descuento: ajuste, bloquear }, "No se pudo resolver el reporte.");
 
 // ¿HAY REPORTES DE ESTA OBRA QUE EL ADMIN AÚN NO RESUELVE? MIENTRAS LOS HAYA, NO SE PUEDE TERMINAR LA OBRA
 export const tieneReporteAbierto = (contrato: any) => (contrato?.reportes_abiertos || 0) > 0;
-
-// SUMA DE LOS DESCUENTOS QUE APLICÓ EL ADMIN EN ESTA OBRA
-export const totalDescuentos = (contrato: any) => (contrato?.descuentos || []).reduce((suma: number, d: any) => suma + (d.monto || 0), 0);
 
 // ---------------------------------------------------------------- BITÁCORA
 
@@ -144,6 +171,7 @@ export const agregarABitacora = async (idContrato: string, entrada: {
   // CHECK DE UBICACIÓN: DÓNDE ESTABA EL TELÉFONO AL REGISTRAR Y A CUÁNTOS KM DE LA OBRA (null SI LA OBRA NO TIENE MAPA)
   ubicacion_registro: { latitud: number; longitud: number; precision: number | null; simulada: boolean } | null;
   distancia_obra_km: number | null;
+  lugar_registro: string; // NOMBRE DEL LUGAR DONDE ESTABA ("Palmillas, San Felipe del Progreso")
 }) => {
   const ahora = new Date();
   try {

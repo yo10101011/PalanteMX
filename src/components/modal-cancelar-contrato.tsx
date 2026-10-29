@@ -4,6 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
+import { SelectorFotos, subirFotos } from '@/components/selector-fotos';
 import { accionContrato } from '@/lib/contratos';
 
 type Props = {
@@ -14,15 +15,17 @@ type Props = {
 
 export function ModalCancelarContrato({ contrato, onClose, onCancelado }: Props) {
   const [motivo, setMotivo] = useState('');
+  const [fotos, setFotos] = useState<string[]>([]);
   const [enviando, setEnviando] = useState(false);
 
-  useEffect(() => { setMotivo(''); }, [contrato?.id]);
+  useEffect(() => { setMotivo(''); setFotos([]); }, [contrato?.id]);
 
   const confirmar = async () => {
     if (!motivo.trim()) { Alert.alert("Aviso", "Explica por qué cancelas la obra. El administrador lo va a revisar."); return; }
     setEnviando(true);
     try {
-      await accionContrato('cancelar', { id_contrato: contrato.id, motivo: motivo.trim() });
+      const urls = await subirFotos(fotos);
+      await accionContrato('cancelar', { id_contrato: contrato.id, motivo: motivo.trim(), fotos: urls });
       Alert.alert("Obra suspendida", "Se levantó un reporte al administrador. La obra queda suspendida hasta que lo revise.");
       onCancelado();
     } catch (error: any) { Alert.alert("No se pudo cancelar", error?.message || "Intenta de nuevo."); }
@@ -43,6 +46,8 @@ export function ModalCancelarContrato({ contrato, onClose, onCancelado }: Props)
           </Text>
           <Text style={styles.etiqueta}>¿Por qué la cancelas? (obligatorio)</Text>
           <TextInput style={styles.input} multiline value={motivo} onChangeText={setMotivo} placeholder="Ej. El trabajador dejó de presentarse..." />
+          <View style={{ height: 10 }} />
+          <SelectorFotos fotos={fotos} onCambio={setFotos} />
           <View style={styles.botones}>
             <TouchableOpacity style={styles.botonNo} onPress={onClose} disabled={enviando}><Text style={styles.botonNoTexto}>Volver</Text></TouchableOpacity>
             <TouchableOpacity style={styles.botonSi} onPress={confirmar} disabled={enviando}>

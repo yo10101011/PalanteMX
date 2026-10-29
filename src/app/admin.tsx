@@ -1,8 +1,14 @@
-// PANEL DEL ADMINISTRADOR. ORGANIZADO EN 5 PESTAÑAS (BARRA DE ABAJO) Y CON UN CÓDIGO DE COLORES FIJO:
-//   REPORTES:  ROJO = CANCELACIÓN DE OBRA · NARANJA = BITÁCORA RECHAZADA · MORADO = INCUMPLIMIENTO · AZUL = CHAT / OTROS
-//   ESTADO:    ÁMBAR = PENDIENTE · VERDE = RESUELTO
+// PANEL DEL ADMINISTRADOR. 5 PESTAÑAS ABAJO, CADA UNA CON UNA SOLA COSA (SIN REPETIR INFORMACIÓN):
+//   INICIO   = SOLO LO QUE HAY QUE ATENDER (REPORTES POR RESOLVER, POR TIPO)
+//   REPORTES = TODOS LOS REPORTES (POR RESOLVER / YA RESUELTOS)
+//   USUARIOS = TRABAJADORES Y CONTRATISTAS
+//   OBRAS    = CONTRATOS Y VACANTES
+//   MI CUENTA= MI PERFIL Y EL EQUIPO
+// CÓDIGO DE COLORES FIJO:
+//   REPORTES:  ROJO = CANCELACIÓN · NARANJA = BITÁCORA · MORADO = INCUMPLIMIENTO · VERDE AZULADO = PAGOS · AZUL = CHAT / OTROS
+//   ESTADO:    ÁMBAR = POR RESOLVER · VERDE = RESUELTO
 //   USUARIOS:  VERDE = TRABAJADOR · AZUL = CONTRATISTA · ROJO = CUENTA BLOQUEADA
-//   OBRAS:     LOS MISMOS COLORES DE ESTADO QUE VEN TRABAJADORES Y CONTRATISTAS (lib/contratos)
+// LAS PERSONAS SIEMPRE SE NOMBRAN CON SU ROL ("JOCELYN (TRABAJADOR)") PARA NO CONFUNDIR NOMBRES IGUALES.
 import { Ionicons } from '@expo/vector-icons';
 import { Picker } from '@react-native-picker/picker';
 import * as ImagePicker from 'expo-image-picker';
@@ -18,6 +24,7 @@ import {
   RefreshControl,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
@@ -36,7 +43,7 @@ import { auth, db } from '../../firebaseConfig';
 import { subirFotoACloudinary } from '@/lib/cloudinary';
 import { eliminarCuentaEnServidor } from '@/lib/cuenta';
 import { coincide } from '@/lib/busqueda';
-import { accionContrato, ESTADOS, estiloEstado, resolverReporte, totalDescuentos } from '@/lib/contratos';
+import { accionContrato, ajustesDePago, ESTADOS, estiloEstado, pagosPorConfirmar, resolverReporte, totalRecibido } from '@/lib/contratos';
 import { PerfilTrabajador } from '@/components/perfil-trabajador';
 import { VisorFoto } from '@/components/visor-foto';
 
@@ -51,48 +58,62 @@ const COLOR = {
   bloqueada: '#DC2626',
 };
 
-type TipoReporte = 'cancelacion' | 'bitacora' | 'incumplimiento' | 'otro';
-const TIPOS_REPORTE: Record<TipoReporte, { texto: string; color: string; fondo: string; icono: keyof typeof Ionicons.glyphMap }> = {
-  cancelacion: { texto: 'Cancelación de obra', color: '#DC2626', fondo: '#FEE2E2', icono: 'close-circle' },
-  bitacora: { texto: 'Bitácora rechazada', color: '#EA580C', fondo: '#FFEDD5', icono: 'reader' },
-  incumplimiento: { texto: 'Incumplimiento', color: '#7C3AED', fondo: '#EDE9FE', icono: 'flag' },
-  otro: { texto: 'Chat / otros', color: '#2563EB', fondo: '#DBEAFE', icono: 'chatbubbles' },
+type TipoReporte = 'cancelacion' | 'bitacora' | 'incumplimiento' | 'pago' | 'otro';
+const TIPOS_REPORTE: Record<TipoReporte, { texto: string; explicacion: string; color: string; icono: keyof typeof Ionicons.glyphMap }> = {
+  cancelacion: { texto: 'Obras canceladas', explicacion: 'Alguien canceló una obra. Está detenida hasta que decidas si sigue o se cancela.', color: '#DC2626', icono: 'close-circle' },
+  bitacora: { texto: 'Bitácora rechazada', explicacion: 'El contratista dice que un día de la bitácora no es cierto. Decide si el día cuenta.', color: '#EA580C', icono: 'reader' },
+  incumplimiento: { texto: 'No cumplió lo acordado', explicacion: 'Una de las partes no cumplió (material, pago, horario...). Decide quién tiene razón.', color: '#7C3AED', icono: 'flag' },
+  pago: { texto: 'Pagos', explicacion: 'Un trabajador dice que no le pagaron, o una obra terminó sin pago confirmado.', color: '#0D9488', icono: 'cash' },
+  otro: { texto: 'Chat y otros', explicacion: 'Reportes del chat o del menú de ajustes (insultos, fraude, etc.).', color: '#2563EB', icono: 'chatbubbles' },
 };
 
-// QUÉ PUEDE DECIDIR EL ADMIN SEGÚN EL TIPO DE REPORTE. LAS CANCELACIONES DE OBRA SE DECIDEN CON EL CONTRATO
-// (REACTIVAR O CANCELAR); LOS DEMÁS, CON /reportes. EN TODOS SE ESCRIBE UNA NOTA QUE LES LLEGA A LAS DOS PARTES.
 const esCancelacion = (q: any) => !!q.id_contrato && (q.tipo === 'cancelacion' || (!q.tipo && q.motivo === 'Cancelación de obra'));
-const tipoDe = (q: any): TipoReporte => esCancelacion(q) ? 'cancelacion' : q.tipo === 'bitacora' ? 'bitacora' : q.tipo === 'incumplimiento' ? 'incumplimiento' : 'otro';
-const opcionesDeReporte = (q: any): { valor: string; texto: string; color: string }[] => {
+const tipoDe = (q: any): TipoReporte => esCancelacion(q) ? 'cancelacion' : (['bitacora', 'incumplimiento', 'pago'].includes(q.tipo) ? q.tipo : 'otro');
+
+// "JOCELYN (TRABAJADOR)"
+const conRol = (nombre?: string, rol?: string) => `${nombre || 'Sin nombre'} (${(rol || 'usuario').toLowerCase()})`;
+
+// QUÉ PUEDE DECIDIR EL ADMIN EN CADA TIPO DE REPORTE. favorece = QUIÉN TIENE LA RAZÓN CON ESA DECISIÓN
+type Opcion = { valor: string; texto: string; color: string; favorece: 'reportante' | 'acusado' | null };
+const opcionesDeReporte = (q: any): Opcion[] => {
+  const reporta = conRol(q.nombre_reportante, q.rol_reportante);
+  const reportado = conRol(q.acusado, q.rol_acusado);
   if (esCancelacion(q)) return [
-    { valor: 'admin_reactivar', texto: 'Reactivar la obra', color: '#059669' },
-    { valor: 'admin_cancelar', texto: 'Cancelar definitivamente', color: '#DC2626' },
+    { valor: 'admin_reactivar', texto: 'Que la obra SIGA (reactivarla)', color: '#059669', favorece: null },
+    { valor: 'admin_cancelar', texto: 'Cancelar la obra para siempre', color: '#DC2626', favorece: null },
   ];
   if (q.tipo === 'bitacora') return [
-    { valor: 'a_favor_trabajador', texto: 'El trabajador tiene razón: el día cuenta', color: '#059669' },
-    { valor: 'a_favor_contratista', texto: 'El contratista tiene razón: se descuenta el día', color: '#DC2626' },
+    { valor: 'a_favor_trabajador', texto: `Tiene razón ${reportado}: el día SÍ cuenta`, color: '#059669', favorece: 'acusado' },
+    { valor: 'a_favor_contratista', texto: `Tiene razón ${reporta}: el día NO cuenta`, color: '#DC2626', favorece: 'reportante' },
   ];
   return [
-    { valor: 'procede', texto: `${q.nombre_reportante || 'Quien reporta'} tiene razón`, color: '#059669' },
-    { valor: 'no_procede', texto: 'El reporte no procede', color: '#6B7280' },
+    { valor: 'procede', texto: `Tiene razón ${reporta}`, color: '#059669', favorece: 'reportante' },
+    { valor: 'no_procede', texto: `Tiene razón ${reportado}`, color: '#6B7280', favorece: 'acusado' },
   ];
 };
-// SOLO SE PUEDE DESCONTAR DINERO CUANDO SE LE DA LA RAZÓN A QUIEN REPORTÓ (EL DESCUENTO ES PARA EL REPORTADO)
-const permiteDescuento = (decision: string) => decision === 'procede' || decision === 'a_favor_contratista';
+
+// GRUPOS SENCILLOS PARA FILTRAR OBRAS (EN LUGAR DE LOS 8 ESTADOS TÉCNICOS)
+const GRUPOS_OBRA: { clave: string; texto: string; color: string; estados: string[] }[] = [
+  { clave: 'curso', texto: 'En curso', color: '#00D06C', estados: [ESTADOS.ACTIVA, ESTADOS.POR_CONFIRMAR_FIN] },
+  { clave: 'detenidas', texto: 'Detenidas', color: '#DC2626', estados: [ESTADOS.SUSPENDIDA] },
+  { clave: 'sin_aceptar', texto: 'Sin aceptar', color: '#3B82F6', estados: [ESTADOS.PROPUESTA, ESTADOS.PENDIENTE] },
+  { clave: 'terminadas', texto: 'Terminadas', color: COLOR.marino, estados: [ESTADOS.FINALIZADA] },
+  { clave: 'canceladas', texto: 'Canceladas', color: '#6B7280', estados: [ESTADOS.CANCELADA, ESTADOS.RECHAZADA] },
+];
 
 const PESTAÑAS = [
-  { clave: 'Resumen', icono: 'grid' },
+  { clave: 'Inicio', icono: 'home' },
   { clave: 'Reportes', icono: 'shield' },
   { clave: 'Usuarios', icono: 'people' },
   { clave: 'Obras', icono: 'construct' },
-  { clave: 'Equipo', icono: 'person-circle' },
+  { clave: 'Mi cuenta', icono: 'person-circle' },
 ] as const;
 
 export default function AdminDashboard() {
   const [cargando, setCargando] = useState(true);
   const [refrescando, setRefrescando] = useState(false);
   const [procesando, setProcesando] = useState(false);
-  const [pestañaActiva, setPestañaActiva] = useState('Resumen');
+  const [pestañaActiva, setPestañaActiva] = useState('Inicio');
 
   // FILTROS DE CADA PESTAÑA
   const [vistaReportes, setVistaReportes] = useState<'Pendientes' | 'Historial'>('Pendientes');
@@ -101,7 +122,7 @@ export default function AdminDashboard() {
   const [busquedaUsuarios, setBusquedaUsuarios] = useState('');
   const [soloBloqueadas, setSoloBloqueadas] = useState(false);
   const [vistaObras, setVistaObras] = useState<'Contratos' | 'Vacantes'>('Contratos');
-  const [filtroEstadoObra, setFiltroEstadoObra] = useState('todos');
+  const [grupoObra, setGrupoObra] = useState('curso');
 
   // DATOS DEL SISTEMA
   const [adminData, setAdminData] = useState<any>({ nombre: 'Administrador Principal', cargo: 'Super Admin', foto: '' });
@@ -116,11 +137,12 @@ export default function AdminDashboard() {
   const [vacanteExpandida, setVacanteExpandida] = useState<any>(null);
   const [fotoGrande, setFotoGrande] = useState<string | null>(null);
 
-  // VENTANA PARA RESOLVER UN REPORTE: DECISIÓN, NOTA PARA LAS DOS PARTES Y DESCUENTO OPCIONAL
+  // VENTANA PARA RESOLVER UN REPORTE: DECISIÓN, AJUSTE DE DINERO, BLOQUEO Y NOTA PARA LAS DOS PARTES
   const [quejaResolviendo, setQuejaResolviendo] = useState<any>(null);
   const [decision, setDecision] = useState('');
   const [notaAdmin, setNotaAdmin] = useState('');
-  const [descuento, setDescuento] = useState('');
+  const [ajuste, setAjuste] = useState('');
+  const [bloquear, setBloquear] = useState(false);
 
   const [modalEditarAdmin, setModalEditarAdmin] = useState(false);
   const [editAdminNombre, setEditAdminNombre] = useState('');
@@ -237,7 +259,7 @@ export default function AdminDashboard() {
   const alternarBloqueoUsuario = (usuario: any) => {
     const coleccion = usuario.rol === 'Trabajador' ? 'Usuarios' : 'Contratistas';
     const nuevoEstado = usuario.estado_cuenta === 'Bloqueada' ? 'Activa' : 'Bloqueada';
-    Alert.alert(nuevoEstado === 'Bloqueada' ? "Bloquear cuenta" : "Desbloquear cuenta", `¿Marcar la cuenta de ${usuario.nombre} como ${nuevoEstado}?`, [
+    Alert.alert(nuevoEstado === 'Bloqueada' ? "Bloquear cuenta" : "Desbloquear cuenta", `¿${nuevoEstado === 'Bloqueada' ? 'Bloquear' : 'Desbloquear'} la cuenta de ${conRol(usuario.nombre, usuario.rol)}?`, [
       { text: "Cancelar", style: "cancel" },
       { text: "Sí", style: nuevoEstado === 'Bloqueada' ? 'destructive' : 'default', onPress: async () => {
           setProcesando(true);
@@ -253,13 +275,13 @@ export default function AdminDashboard() {
   };
 
   // BORRA LA CUENTA COMPLETA DE UN USUARIO (PERFIL, DATOS PRIVADOS, FOTOS DE INE Y SU USUARIO DE FIREBASE)
-  const eliminarUsuarioCompleto = (id: string, nombre: string) => {
-    Alert.alert("ELIMINACIÓN DEFINITIVA", `¿Eliminar a ${nombre} de la plataforma permanentemente? Se borra su perfil, sus datos de verificación y su acceso.`, [
+  const eliminarUsuarioCompleto = (usuario: any) => {
+    Alert.alert("ELIMINAR CUENTA", `¿Eliminar a ${conRol(usuario.nombre, usuario.rol)} para siempre? Se borra su perfil, sus datos de verificación y su acceso.`, [
       { text: "Cancelar", style: "cancel" },
       { text: "Eliminar", style: 'destructive', onPress: async () => {
           setProcesando(true);
           try {
-            await eliminarCuentaEnServidor(id);
+            await eliminarCuentaEnServidor(usuario.id);
             setUsuarioExpandido(null);
             await cargarDatosAdmin();
           } catch (error: any) { Alert.alert("Error", error?.message || "No se pudo eliminar la cuenta."); }
@@ -310,56 +332,56 @@ export default function AdminDashboard() {
     else Alert.alert("Perfil no encontrado", "Esta cuenta ya no existe o fue eliminada.");
   };
 
-  const abrirResolucion = (queja: any) => { setQuejaResolviendo(queja); setDecision(''); setNotaAdmin(''); setDescuento(''); };
+  const abrirResolucion = (queja: any) => { setQuejaResolviendo(queja); setDecision(''); setNotaAdmin(''); setAjuste(''); setBloquear(false); };
 
-  // RESUELVE EL REPORTE EN EL SERVIDOR: CAMBIA LA OBRA O EL DÍA DE BITÁCORA SI TOCA, APLICA EL DESCUENTO,
+  // QUIÉN TIENE LA RAZÓN CON LA DECISIÓN ELEGIDA, Y QUIÉN NO
+  const opcionElegida = quejaResolviendo ? opcionesDeReporte(quejaResolviendo).find(o => o.valor === decision) : undefined;
+  const ganador = opcionElegida?.favorece === 'reportante' ? { nombre: quejaResolviendo?.nombre_reportante, rol: quejaResolviendo?.rol_reportante }
+    : opcionElegida?.favorece === 'acusado' ? { nombre: quejaResolviendo?.acusado, rol: quejaResolviendo?.rol_acusado } : null;
+  const perdedor = opcionElegida?.favorece === 'reportante' ? { nombre: quejaResolviendo?.acusado, rol: quejaResolviendo?.rol_acusado }
+    : opcionElegida?.favorece === 'acusado' ? { nombre: quejaResolviendo?.nombre_reportante, rol: quejaResolviendo?.rol_reportante } : null;
+  // EL AJUSTE DE DINERO SOLO EXISTE EN REPORTES DE UNA OBRA (HAY UN PAGO DEL CONTRATISTA AL TRABAJADOR QUE AJUSTAR)
+  const permiteAjuste = !!quejaResolviendo?.id_contrato && !esCancelacion(quejaResolviendo) && !!ganador;
+  const trabajadorDeQueja = quejaResolviendo?.rol_reportante === 'Trabajador' ? quejaResolviendo?.nombre_reportante : quejaResolviendo?.acusado;
+  const contratistaDeQueja = quejaResolviendo?.rol_reportante === 'Contratista' ? quejaResolviendo?.nombre_reportante : quejaResolviendo?.acusado;
+
+  // RESUELVE EL REPORTE EN EL SERVIDOR: CAMBIA LA OBRA O EL DÍA DE BITÁCORA SI TOCA, APLICA EL AJUSTE, BLOQUEA SI SE PIDIÓ,
   // ARCHIVA EL REPORTE Y LES MANDA UNA NOTIFICACIÓN CON LA NOTA A LAS DOS PARTES
   const confirmarResolucion = async () => {
     if (!decision) { Alert.alert("Aviso", "Elige tu decisión."); return; }
     if (!notaAdmin.trim()) { Alert.alert("Aviso", "Escribe una nota explicando tu decisión. Les llegará a las dos partes."); return; }
-    const monto = permiteDescuento(decision) ? parseInt(descuento) || 0 : 0;
     setProcesando(true);
     try {
       if (esCancelacion(quejaResolviendo)) {
         await accionContrato(decision as 'admin_reactivar' | 'admin_cancelar', { id_contrato: quejaResolviendo.id_contrato, nota: notaAdmin.trim() });
       } else {
-        await resolverReporte(quejaResolviendo.id, decision, notaAdmin.trim(), monto);
+        await resolverReporte(quejaResolviendo.id, decision, notaAdmin.trim(), permiteAjuste ? parseInt(ajuste) || 0 : 0, bloquear);
       }
       setQuejaResolviendo(null);
       await cargarDatosAdmin();
-      Alert.alert("Reporte resuelto", "Se archivó en el historial y se les notificó la decisión a las dos partes.");
+      Alert.alert("Reporte resuelto", "Se guardó en el historial y se les avisó a las dos partes.");
     } catch (error: any) { Alert.alert("No se pudo", error?.message || "Intenta de nuevo."); }
     setProcesando(false);
   };
 
   if (cargando) { return ( <View style={styles.loadingCenter}><ActivityIndicator size="large" color={COLOR.marino} /><Text style={styles.loadingText}>Cargando el panel...</Text></View> ); }
 
-  // ---------------------------------------------------------------- CÁLCULOS PARA LAS PESTAÑAS
+  // ---------------------------------------------------------------- CÁLCULOS
 
   const quejasPendientes = quejas.filter(q => q.estado !== 'Resuelta');
   const quejasResueltas = quejas.filter(q => q.estado === 'Resuelta');
   const reportesVisibles = (vistaReportes === 'Pendientes' ? quejasPendientes : quejasResueltas).filter(q => filtroTipo === 'todos' || tipoDe(q) === filtroTipo);
-  const pendientesPorTipo = (Object.keys(TIPOS_REPORTE) as TipoReporte[]).map(t => ({ tipo: t, cantidad: quejasPendientes.filter(q => tipoDe(q) === t).length }));
+  const pendientesDe = (t: TipoReporte) => quejasPendientes.filter(q => tipoDe(q) === t).length;
 
   const usuariosVisibles = (vistaUsuarios === 'Trabajadores' ? trabajadores : contratistas)
     .filter(u => !soloBloqueadas || u.estado_cuenta === 'Bloqueada')
     .filter(u => coincide(`${u.nombre} ${u.apellidos} ${u.correo || ''} ${u.nombre_usuario || ''} ${u.oficio_principal || ''} ${u.empresa || ''} ${u.ubicacion_texto || ''} ${u.ubicacion_estado || ''}`, busquedaUsuarios));
   const reportesContra = (id: string) => quejas.filter(q => q.id_acusado === id);
 
-  const estadosObra = [ESTADOS.PROPUESTA, ESTADOS.PENDIENTE, ESTADOS.ACTIVA, ESTADOS.POR_CONFIRMAR_FIN, ESTADOS.SUSPENDIDA, ESTADOS.FINALIZADA, ESTADOS.CANCELADA, ESTADOS.RECHAZADA];
-  const contratosVisibles = contratos.filter(c => filtroEstadoObra === 'todos' || c.estado === filtroEstadoObra);
-  const cuenta = (estado: string) => contratos.filter(c => c.estado === estado).length;
-
-  const tarjetasResumen = [
-    { titulo: 'Reportes pendientes', numero: quejasPendientes.length, color: COLOR.pendiente, icono: 'alert-circle' as const, ir: () => { setPestañaActiva('Reportes'); setVistaReportes('Pendientes'); setFiltroTipo('todos'); } },
-    { titulo: 'Obras suspendidas', numero: cuenta(ESTADOS.SUSPENDIDA), color: '#DC2626', icono: 'pause-circle' as const, ir: () => { setPestañaActiva('Obras'); setVistaObras('Contratos'); setFiltroEstadoObra(ESTADOS.SUSPENDIDA); } },
-    { titulo: 'Obras activas', numero: cuenta(ESTADOS.ACTIVA), color: '#00D06C', icono: 'hammer' as const, ir: () => { setPestañaActiva('Obras'); setVistaObras('Contratos'); setFiltroEstadoObra(ESTADOS.ACTIVA); } },
-    { titulo: 'Obras finalizadas', numero: cuenta(ESTADOS.FINALIZADA), color: COLOR.marino, icono: 'flag' as const, ir: () => { setPestañaActiva('Obras'); setVistaObras('Contratos'); setFiltroEstadoObra(ESTADOS.FINALIZADA); } },
-    { titulo: 'Trabajadores', numero: trabajadores.length, color: COLOR.trabajador, icono: 'construct' as const, ir: () => { setPestañaActiva('Usuarios'); setVistaUsuarios('Trabajadores'); } },
-    { titulo: 'Contratistas', numero: contratistas.length, color: COLOR.contratista, icono: 'business' as const, ir: () => { setPestañaActiva('Usuarios'); setVistaUsuarios('Contratistas'); } },
-    { titulo: 'Vacantes activas', numero: vacantes.filter(v => v.estado === 'Activa').length, color: '#7C3AED', icono: 'megaphone' as const, ir: () => { setPestañaActiva('Obras'); setVistaObras('Vacantes'); } },
-    { titulo: 'Cuentas bloqueadas', numero: [...trabajadores, ...contratistas].filter(u => u.estado_cuenta === 'Bloqueada').length, color: COLOR.bloqueada, icono: 'lock-closed' as const, ir: () => { setPestañaActiva('Usuarios'); setSoloBloqueadas(true); } },
-  ];
+  const grupo = GRUPOS_OBRA.find(g => g.clave === grupoObra) || GRUPOS_OBRA[0];
+  const contratosVisibles = contratos.filter(c => grupo.estados.includes(c.estado));
+  const enGrupo = (g: typeof GRUPOS_OBRA[number]) => contratos.filter(c => g.estados.includes(c.estado)).length;
+  const obrasEnCursoDe = (idTrabajador: string) => contratos.filter(c => c.id_trabajador === idTrabajador && [ESTADOS.ACTIVA, ESTADOS.POR_CONFIRMAR_FIN, ESTADOS.SUSPENDIDA].includes(c.estado));
 
   // ---------------------------------------------------------------- PIEZAS DE INTERFAZ
 
@@ -383,6 +405,8 @@ export default function AdminDashboard() {
     <View style={[styles.etiqueta, { backgroundColor: fondo || color }]}><Text style={[styles.etiquetaTexto, { color: fondo ? color : '#FFF' }]}>{texto}</Text></View>
   );
 
+  const fotosDe = (q: any): string[] => [...new Set([q.foto_evidencia, ...(q.fotos_evidencia || [])].filter(Boolean))];
+
   const TarjetaReporte = ({ queja }: { queja: any }) => {
     const tipo = TIPOS_REPORTE[tipoDe(queja)];
     const resuelta = queja.estado === 'Resuelta';
@@ -393,43 +417,45 @@ export default function AdminDashboard() {
             <Ionicons name={tipo.icono} size={16} color={tipo.color} />
             <Text style={[styles.tipoTexto, { color: tipo.color }]}>{tipo.texto}</Text>
           </View>
-          <Etiqueta texto={resuelta ? 'RESUELTO' : 'PENDIENTE'} color={resuelta ? COLOR.resuelto : COLOR.pendiente} />
+          <Etiqueta texto={resuelta ? 'RESUELTO' : 'POR RESOLVER'} color={resuelta ? COLOR.resuelto : COLOR.pendiente} />
         </View>
-        <Text style={styles.fecha}>{new Date(queja.fecha_reporte).toLocaleString('es-MX')}</Text>
         <Text style={styles.tituloTarjeta}>{queja.motivo}</Text>
         {queja.titulo_obra ? <Text style={styles.obraTexto}>Obra: "{queja.titulo_obra}"</Text> : null}
+        <Text style={styles.fecha}>{new Date(queja.fecha_reporte).toLocaleString('es-MX')}</Text>
 
         {/* QUIÉN REPORTA Y A QUIÉN: SE TOCA PARA VER SU PERFIL COMPLETO */}
         <View style={styles.partes}>
           <TouchableOpacity style={styles.parte} onPress={() => verPerfilDe(queja.id_reportante)}>
-            <Text style={styles.parteEtiqueta}>REPORTA</Text>
-            <Text style={styles.parteNombre} numberOfLines={1}>{queja.nombre_reportante}</Text>
+            <Text style={styles.parteEtiqueta}>QUIÉN REPORTA</Text>
+            <Text style={styles.parteNombre} numberOfLines={2}>{queja.nombre_reportante}</Text>
             <Text style={[styles.parteRol, { color: queja.rol_reportante === 'Contratista' ? COLOR.contratista : COLOR.trabajador }]}>{queja.rol_reportante || 'Usuario'} · Ver perfil ›</Text>
           </TouchableOpacity>
           <Ionicons name="arrow-forward" size={18} color="#9CA3AF" style={{ alignSelf: 'center' }} />
           <TouchableOpacity style={styles.parte} onPress={() => verPerfilDe(queja.id_acusado)}>
-            <Text style={styles.parteEtiqueta}>REPORTADO</Text>
-            <Text style={styles.parteNombre} numberOfLines={1}>{queja.acusado}</Text>
+            <Text style={styles.parteEtiqueta}>A QUIÉN REPORTA</Text>
+            <Text style={styles.parteNombre} numberOfLines={2}>{queja.acusado}</Text>
             <Text style={[styles.parteRol, { color: queja.rol_acusado === 'Contratista' ? COLOR.contratista : COLOR.trabajador }]}>{queja.rol_acusado || 'Usuario'} · Ver perfil ›</Text>
           </TouchableOpacity>
         </View>
 
         <View style={styles.descripcion}><Text style={styles.descripcionTexto}>{queja.descripcion}</Text></View>
-        {queja.foto_evidencia ? (
-          <TouchableOpacity style={styles.botonEvidencia} onPress={() => setFotoGrande(queja.foto_evidencia)}>
-            <Ionicons name="image-outline" size={16} color={COLOR.marino} /><Text style={styles.botonEvidenciaTexto}>Ver evidencia</Text>
-          </TouchableOpacity>
-        ) : null}
+        {fotosDe(queja).length > 0 && (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 8 }}>
+            {fotosDe(queja).map((f, i) => (
+              <TouchableOpacity key={i} onPress={() => setFotoGrande(f)}><Image source={{ uri: f }} style={styles.miniatura} /></TouchableOpacity>
+            ))}
+          </ScrollView>
+        )}
 
         {!resuelta ? (
           <TouchableOpacity style={[styles.botonPrincipal, { backgroundColor: tipo.color }]} disabled={procesando} onPress={() => abrirResolucion(queja)}>
-            <Ionicons name="hammer" size={16} color="#FFF" /><Text style={styles.botonPrincipalTexto}>Resolver y notificar a los dos</Text>
+            <Ionicons name="hammer" size={16} color="#FFF" /><Text style={styles.botonPrincipalTexto}>Decidir quién tiene razón</Text>
           </TouchableOpacity>
         ) : (
           <View style={styles.resolucion}>
             {queja.resolucion ? <Text style={styles.resolucionTexto}>Decisión: {queja.resolucion}</Text> : null}
             {queja.nota_admin ? <Text style={styles.resolucionNota}>Nota: "{queja.nota_admin}"</Text> : null}
-            <Text style={styles.resolucionPie}>🔒 Registro inmutable · Atendió: {queja.atendida_por || 'Admin'}</Text>
+            <Text style={styles.resolucionPie}>🔒 Guardado para siempre · Lo resolvió: {queja.atendida_por || 'Admin'}</Text>
           </View>
         )}
       </View>
@@ -440,12 +466,9 @@ export default function AdminDashboard() {
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       {/* ENCABEZADO */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => setPestañaActiva('Equipo')}>
-          <Image source={{ uri: adminData.foto || undefined }} style={styles.headerFoto} />
-        </TouchableOpacity>
-        <View style={{ flex: 1, marginLeft: 12 }}>
-          <Text style={styles.headerTitulo}>Panel de Administración</Text>
-          <Text style={styles.headerSub}>{adminData.nombre} · {adminData.cargo}</Text>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.headerTitulo}>{PESTAÑAS.find(p => p.clave === pestañaActiva)?.clave === 'Inicio' ? `Hola, ${String(adminData.nombre || '').split(' ')[0]}` : pestañaActiva}</Text>
+          <Text style={styles.headerSub}>Panel de administración de PalanteMX</Text>
         </View>
         <TouchableOpacity onPress={refrescar} style={{ marginRight: 16 }}><Ionicons name="refresh" size={24} color="#FFF" /></TouchableOpacity>
         <TouchableOpacity onPress={cerrarSesionAdmin}><Ionicons name="log-out-outline" size={26} color="#FFF" /></TouchableOpacity>
@@ -454,48 +477,41 @@ export default function AdminDashboard() {
       <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ padding: 16, paddingBottom: 30 }}
         refreshControl={<RefreshControl refreshing={refrescando} onRefresh={refrescar} colors={[COLOR.marino]} />}>
 
-        {/* ---------------------------------------------------------------- RESUMEN */}
-        {pestañaActiva === 'Resumen' && (
+        {/* ---------------------------------------------------------------- INICIO: SOLO LO QUE HAY QUE ATENDER */}
+        {pestañaActiva === 'Inicio' && (
           <View>
-            <Text style={styles.seccion}>Estado de la plataforma</Text>
-            <View style={styles.cuadricula}>
-              {tarjetasResumen.map(t => (
-                <TouchableOpacity key={t.titulo} style={[styles.cuadro, { borderTopColor: t.color }]} onPress={t.ir} activeOpacity={0.8}>
-                  <View style={[styles.cuadroIcono, { backgroundColor: `${t.color}1A` }]}><Ionicons name={t.icono} size={20} color={t.color} /></View>
-                  <Text style={[styles.cuadroNumero, { color: t.color }]}>{t.numero}</Text>
-                  <Text style={styles.cuadroTitulo}>{t.titulo}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-
-            <Text style={styles.seccion}>Reportes pendientes por tipo</Text>
-            <View style={styles.tarjeta}>
-              {pendientesPorTipo.map(({ tipo, cantidad }) => (
-                <TouchableOpacity key={tipo} style={styles.filaTipo} onPress={() => { setPestañaActiva('Reportes'); setVistaReportes('Pendientes'); setFiltroTipo(tipo); }}>
-                  <View style={[styles.puntoTipo, { backgroundColor: TIPOS_REPORTE[tipo].color }]} />
-                  <Text style={styles.filaTipoTexto}>{TIPOS_REPORTE[tipo].texto}</Text>
-                  <Text style={[styles.filaTipoNumero, { color: cantidad > 0 ? TIPOS_REPORTE[tipo].color : '#9CA3AF' }]}>{cantidad}</Text>
-                  <Ionicons name="chevron-forward" size={16} color="#9CA3AF" />
-                </TouchableOpacity>
-              ))}
-            </View>
-
-            <Text style={styles.seccion}>Código de colores</Text>
-            <View style={[styles.tarjeta, { flexDirection: 'row', flexWrap: 'wrap' }]}>
-              {[
-                ['#DC2626', 'Cancelación / bloqueada'], ['#EA580C', 'Bitácora rechazada'], ['#7C3AED', 'Incumplimiento'], ['#2563EB', 'Chat / contratista'],
-                [COLOR.pendiente, 'Pendiente'], [COLOR.resuelto, 'Resuelto'], [COLOR.trabajador, 'Trabajador'],
-              ].map(([color, texto]) => (
-                <View key={texto} style={styles.leyenda}><View style={[styles.puntoTipo, { backgroundColor: color }]} /><Text style={styles.leyendaTexto}>{texto}</Text></View>
-              ))}
-            </View>
+            {quejasPendientes.length === 0 ? (
+              <View style={[styles.tarjeta, { alignItems: 'center', paddingVertical: 30 }]}>
+                <Ionicons name="checkmark-circle" size={56} color={COLOR.resuelto} />
+                <Text style={styles.vacioTitulo}>Todo en orden</Text>
+                <Text style={styles.vacioTexto}>No hay reportes por resolver.</Text>
+              </View>
+            ) : (
+              <>
+                <Text style={styles.seccion}>Tienes {quejasPendientes.length} reporte{quejasPendientes.length > 1 ? 's' : ''} por resolver</Text>
+                {(Object.keys(TIPOS_REPORTE) as TipoReporte[]).filter(t => pendientesDe(t) > 0).map(t => (
+                  <TouchableOpacity key={t} style={[styles.tarjeta, styles.filaAtender, { borderLeftColor: TIPOS_REPORTE[t].color }]} activeOpacity={0.8}
+                    onPress={() => { setPestañaActiva('Reportes'); setVistaReportes('Pendientes'); setFiltroTipo(t); }}>
+                    <View style={[styles.iconoAtender, { backgroundColor: TIPOS_REPORTE[t].color }]}><Ionicons name={TIPOS_REPORTE[t].icono} size={20} color="#FFF" /></View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.tituloTarjeta}>{TIPOS_REPORTE[t].texto}: {pendientesDe(t)}</Text>
+                      <Text style={styles.datoChico}>{TIPOS_REPORTE[t].explicacion}</Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={20} color="#9CA3AF" />
+                  </TouchableOpacity>
+                ))}
+              </>
+            )}
+            <Text style={styles.resumenTexto}>
+              En PalanteMX hay {trabajadores.length} trabajadores, {contratistas.length} contratistas y {enGrupo(GRUPOS_OBRA[0])} obras en curso.
+            </Text>
           </View>
         )}
 
         {/* ---------------------------------------------------------------- REPORTES */}
         {pestañaActiva === 'Reportes' && (
           <View>
-            <Segmentos opciones={[{ valor: 'Pendientes', texto: `Pendientes (${quejasPendientes.length})` }, { valor: 'Historial', texto: `Historial (${quejasResueltas.length})` }]} valor={vistaReportes} onCambio={setVistaReportes} />
+            <Segmentos opciones={[{ valor: 'Pendientes', texto: `Por resolver (${quejasPendientes.length})` }, { valor: 'Historial', texto: `Ya resueltos (${quejasResueltas.length})` }]} valor={vistaReportes} onCambio={setVistaReportes} />
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
               <Chip texto="Todos" color={COLOR.marino} activo={filtroTipo === 'todos'} onPress={() => setFiltroTipo('todos')} />
               {(Object.keys(TIPOS_REPORTE) as TipoReporte[]).map(t => (
@@ -503,10 +519,7 @@ export default function AdminDashboard() {
               ))}
             </ScrollView>
             {reportesVisibles.length > 0 ? reportesVisibles.map(q => <TarjetaReporte key={q.id} queja={q} />) : (
-              <View style={styles.vacio}>
-                <Ionicons name="shield-checkmark-outline" size={50} color="#D1D5DB" />
-                <Text style={styles.vacioTitulo}>{vistaReportes === 'Pendientes' ? 'Sin reportes pendientes' : 'Historial vacío'}</Text>
-              </View>
+              <Text style={styles.vacioTexto}>{vistaReportes === 'Pendientes' ? 'No hay reportes por resolver aquí.' : 'Todavía no hay reportes resueltos aquí.'}</Text>
             )}
           </View>
         )}
@@ -531,12 +544,11 @@ export default function AdminDashboard() {
                     <Image source={{ uri: u.foto_rostro_url || undefined }} style={styles.avatar} />
                     <View style={{ flex: 1 }}>
                       <Text style={styles.tituloTarjeta}>{u.nombre} {u.apellidos}</Text>
-                      <Text style={styles.datoChico}>{u.correo}{u.numero_telefono ? ` · ${u.numero_telefono}` : ''}</Text>
                       <Text style={styles.datoChico}>{u.rol === 'Trabajador' ? (u.oficio_principal || 'Sin oficio') : (u.empresa || 'Independiente')} · {[u.ubicacion_texto, u.ubicacion_estado].filter(Boolean).join(', ') || 'Sin ubicación'}</Text>
                       <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 6 }}>
                         <Etiqueta texto={u.rol.toUpperCase()} color={colorRol} fondo={`${colorRol}1A`} />
                         <Etiqueta texto={`★ ${u.calificacion || '0.0'}`} color="#B45309" fondo="#FEF3C7" />
-                        {reportes.length > 0 && <Etiqueta texto={`${reportes.length} reporte${reportes.length > 1 ? 's' : ''}`} color="#DC2626" fondo="#FEE2E2" />}
+                        {reportes.length > 0 && <Etiqueta texto={`${reportes.length} reporte${reportes.length > 1 ? 's' : ''} en contra`} color="#DC2626" fondo="#FEE2E2" />}
                         {u.estado_cuenta === 'Bloqueada' && <Etiqueta texto="BLOQUEADA" color={COLOR.bloqueada} />}
                       </View>
                     </View>
@@ -552,16 +564,16 @@ export default function AdminDashboard() {
         {/* ---------------------------------------------------------------- OBRAS (CONTRATOS Y VACANTES) */}
         {pestañaActiva === 'Obras' && (
           <View>
-            <Segmentos opciones={[{ valor: 'Contratos', texto: `Obras / contratos (${contratos.length})` }, { valor: 'Vacantes', texto: `Vacantes (${vacantes.length})` }]} valor={vistaObras} onCambio={setVistaObras} />
+            <Segmentos opciones={[{ valor: 'Contratos', texto: `Obras (${contratos.length})` }, { valor: 'Vacantes', texto: `Vacantes (${vacantes.length})` }]} valor={vistaObras} onCambio={setVistaObras} />
 
             {vistaObras === 'Contratos' ? (
               <View>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
-                  <Chip texto={`Todas (${contratos.length})`} color={COLOR.marino} activo={filtroEstadoObra === 'todos'} onPress={() => setFiltroEstadoObra('todos')} />
-                  {estadosObra.map(e => <Chip key={e} texto={`${estiloEstado(e).texto} (${cuenta(e)})`} color={estiloEstado(e).color} activo={filtroEstadoObra === e} onPress={() => setFiltroEstadoObra(e)} />)}
+                  {GRUPOS_OBRA.map(g => <Chip key={g.clave} texto={`${g.texto} (${enGrupo(g)})`} color={g.color} activo={grupoObra === g.clave} onPress={() => setGrupoObra(g.clave)} />)}
                 </ScrollView>
                 {contratosVisibles.map(c => {
                   const estilo = estiloEstado(c.estado);
+                  const ajustes = ajustesDePago(c);
                   return (
                     <View key={c.id} style={[styles.tarjeta, { borderLeftWidth: 5, borderLeftColor: estilo.color }]}>
                       <View style={styles.filaEntre}>
@@ -570,15 +582,14 @@ export default function AdminDashboard() {
                       </View>
                       <TouchableOpacity onPress={() => verPerfilDe(c.id_trabajador)}><Text style={styles.datoChico}><Text style={{ color: COLOR.trabajador, fontWeight: 'bold' }}>Trabajador:</Text> {c.nombre_trabajador || '—'} ›</Text></TouchableOpacity>
                       <TouchableOpacity onPress={() => verPerfilDe(c.id_contratista)}><Text style={styles.datoChico}><Text style={{ color: COLOR.contratista, fontWeight: 'bold' }}>Contratista:</Text> {c.contratista || c.vacante?.contratista || '—'} ›</Text></TouchableOpacity>
-                      <Text style={styles.datoChico}>{c.vacante?.pago || ''}{c.fecha_inicio ? ` · Inició: ${c.fecha_inicio}` : ''}{c.fecha_fin ? ` · Terminó: ${c.fecha_fin}` : ''}</Text>
-                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 6 }}>
-                        {(c.reportes_abiertos || 0) > 0 && <Etiqueta texto={`${c.reportes_abiertos} reporte(s) abierto(s)`} color={COLOR.pendiente} fondo="#FEF3C7" />}
-                        {totalDescuentos(c) > 0 && <Etiqueta texto={`Descuentos: $${totalDescuentos(c).toLocaleString('es-MX')}`} color="#DC2626" fondo="#FEE2E2" />}
-                      </View>
+                      <Text style={styles.datoChico}>Pago acordado: {c.vacante?.pago || 'A convenir'}{c.fecha_inicio ? ` · Empezó: ${c.fecha_inicio}` : ''}{c.fecha_fin ? ` · Terminó: ${c.fecha_fin}` : ''}</Text>
+                      <Text style={styles.datoChico}>Pagado y confirmado: ${totalRecibido(c).toLocaleString('es-MX')}{pagosPorConfirmar(c).length ? ` · ${pagosPorConfirmar(c).length} pago(s) sin confirmar` : ''}</Text>
+                      {ajustes.map((a: any, i: number) => <Text key={i} style={[styles.datoChico, { color: a.tipo === 'extra' ? '#047857' : '#B91C1C', fontWeight: 'bold' }]}>{a.tipo === 'extra' ? '➕' : '➖'} {a.texto}</Text>)}
+                      {(c.reportes_abiertos || 0) > 0 && <View style={{ marginTop: 6 }}><Etiqueta texto={`${c.reportes_abiertos} reporte(s) por resolver`} color={COLOR.pendiente} fondo="#FEF3C7" /></View>}
                     </View>
                   );
                 })}
-                {contratosVisibles.length === 0 && <Text style={styles.vacioTexto}>No hay obras en este estado.</Text>}
+                {contratosVisibles.length === 0 && <Text style={styles.vacioTexto}>No hay obras aquí.</Text>}
               </View>
             ) : (
               <View>
@@ -586,9 +597,9 @@ export default function AdminDashboard() {
                   <TouchableOpacity key={v.id} style={[styles.tarjeta, { borderLeftWidth: 5, borderLeftColor: v.estado === 'Activa' ? '#7C3AED' : '#9CA3AF' }]} activeOpacity={0.8} onPress={() => setVacanteExpandida(v)}>
                     <View style={styles.filaEntre}>
                       <Text style={[styles.tituloTarjeta, { flex: 1 }]} numberOfLines={2}>{v.titulo}</Text>
-                      <Etiqueta texto={v.estado === 'Activa' ? 'ACTIVA' : 'CERRADA'} color={v.estado === 'Activa' ? '#7C3AED' : '#6B7280'} />
+                      <Etiqueta texto={v.estado === 'Activa' ? 'ABIERTA' : 'CERRADA'} color={v.estado === 'Activa' ? '#7C3AED' : '#6B7280'} />
                     </View>
-                    <Text style={styles.datoChico}>Publicó: {v.contratista} · {new Date(v.fecha_publicacion).toLocaleDateString('es-MX')}</Text>
+                    <Text style={styles.datoChico}>Publicó: {conRol(v.contratista, 'contratista')} · {new Date(v.fecha_publicacion).toLocaleDateString('es-MX')}</Text>
                     <Text style={styles.datoChico}>{[v.ubicacion, v.estado_republica].filter(Boolean).join(', ')} · {v.pago} · {v.cupo_actual || 0}/{v.cupo_total || 1} contratados</Text>
                   </TouchableOpacity>
                 ))}
@@ -598,8 +609,8 @@ export default function AdminDashboard() {
           </View>
         )}
 
-        {/* ---------------------------------------------------------------- EQUIPO / MI PERFIL */}
-        {pestañaActiva === 'Equipo' && (
+        {/* ---------------------------------------------------------------- MI CUENTA Y EQUIPO */}
+        {pestañaActiva === 'Mi cuenta' && (
           <View>
             <View style={[styles.tarjeta, { alignItems: 'center' }]}>
               <TouchableOpacity onPress={cambiarFotoAdmin}>
@@ -649,21 +660,23 @@ export default function AdminDashboard() {
 
       {/* ---------------------------------------------------------------- VENTANAS */}
 
-      {/* RESOLVER UN REPORTE */}
+      {/* DECIDIR QUIÉN TIENE LA RAZÓN */}
       <Modal visible={!!quejaResolviendo} animationType="fade" transparent onRequestClose={() => setQuejaResolviendo(null)}>
         <KeyboardAvoidingView style={styles.modalFondo} behavior="padding">
-          <View style={[styles.modalCaja, { maxHeight: '90%' }]}>
+          <View style={[styles.modalCaja, { maxHeight: '92%' }]}>
             <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
               {quejaResolviendo && (
                 <>
                   <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
                     <Ionicons name={TIPOS_REPORTE[tipoDe(quejaResolviendo)].icono} size={22} color={TIPOS_REPORTE[tipoDe(quejaResolviendo)].color} />
-                    <Text style={[styles.modalTitulo, { marginLeft: 8, marginBottom: 0 }]}>Resolver reporte</Text>
+                    <Text style={[styles.modalTitulo, { marginLeft: 8, marginBottom: 0 }]}>Decidir quién tiene razón</Text>
                   </View>
                   <Text style={styles.datoChico}>{quejaResolviendo.motivo}{quejaResolviendo.titulo_obra ? ` · "${quejaResolviendo.titulo_obra}"` : ''}</Text>
-                  <Text style={[styles.datoChico, { marginBottom: 12 }]}>{quejaResolviendo.nombre_reportante} → {quejaResolviendo.acusado}</Text>
+                  <Text style={[styles.datoChico, { marginBottom: 12, fontWeight: 'bold' }]}>
+                    {conRol(quejaResolviendo.nombre_reportante, quejaResolviendo.rol_reportante)} reportó a {conRol(quejaResolviendo.acusado, quejaResolviendo.rol_acusado)}
+                  </Text>
 
-                  <Text style={styles.modalEtiqueta}>Tu decisión</Text>
+                  <Text style={styles.modalEtiqueta}>1. Tu decisión</Text>
                   {opcionesDeReporte(quejaResolviendo).map(op => (
                     <TouchableOpacity key={op.valor} style={[styles.opcion, decision === op.valor && { borderColor: op.color, backgroundColor: `${op.color}14` }]} onPress={() => setDecision(op.valor)}>
                       <Ionicons name={decision === op.valor ? 'radio-button-on' : 'radio-button-off'} size={20} color={op.color} />
@@ -671,20 +684,33 @@ export default function AdminDashboard() {
                     </TouchableOpacity>
                   ))}
 
-                  {permiteDescuento(decision) && (
+                  {/* DINERO: SI TIENE LA RAZÓN EL TRABAJADOR, EL CONTRATISTA LE PAGA DE MÁS; SI LA TIENE EL CONTRATISTA, SE DESCUENTA AL TRABAJADOR */}
+                  {permiteAjuste && (
                     <>
-                      <Text style={[styles.modalEtiqueta, { marginTop: 8 }]}>Descuento a {quejaResolviendo.acusado} (opcional, en pesos)</Text>
-                      <TextInput style={styles.modalInput} keyboardType="numeric" placeholder="0 = sin descuento" value={descuento} onChangeText={t => setDescuento(t.replace(/[^0-9]/g, ''))} />
+                      <Text style={[styles.modalEtiqueta, { marginTop: 8 }]}>2. Dinero (opcional)</Text>
+                      <Text style={[styles.datoChico, { marginBottom: 6 }]}>
+                        {ganador?.rol === 'Trabajador'
+                          ? `¿Cuánto dinero EXTRA debe pagarle ${conRol(contratistaDeQueja, 'contratista')} a ${conRol(trabajadorDeQueja, 'trabajador')}?`
+                          : `¿Cuánto se le DESCUENTA del pago a ${conRol(trabajadorDeQueja, 'trabajador')}?`}
+                      </Text>
+                      <TextInput style={styles.modalInput} keyboardType="numeric" placeholder="0 = nada de dinero" value={ajuste} onChangeText={t => setAjuste(t.replace(/[^0-9]/g, ''))} />
                     </>
                   )}
 
-                  <Text style={[styles.modalEtiqueta, { marginTop: 8 }]}>Nota para las dos partes (obligatoria)</Text>
-                  <TextInput style={[styles.modalInput, { height: 100, textAlignVertical: 'top' }]} multiline value={notaAdmin} onChangeText={setNotaAdmin} placeholder="Ej. Revisamos la evidencia: el contratista no entregó el material acordado..." />
-                  <Text style={[styles.datoChico, { marginBottom: 10 }]}>Se les enviará una notificación con tu decisión{permiteDescuento(decision) ? ', el descuento' : ''} y esta nota.</Text>
+                  {perdedor && !esCancelacion(quejaResolviendo) && (
+                    <View style={styles.filaBloquear}>
+                      <Text style={[styles.opcionTexto, { marginLeft: 0 }]}>Bloquear la cuenta de {conRol(perdedor.nombre, perdedor.rol)}</Text>
+                      <Switch value={bloquear} onValueChange={setBloquear} trackColor={{ true: '#FCA5A5', false: '#E5E7EB' }} thumbColor={bloquear ? COLOR.bloqueada : '#FFF'} />
+                    </View>
+                  )}
+
+                  <Text style={[styles.modalEtiqueta, { marginTop: 8 }]}>{permiteAjuste ? '3' : '2'}. Nota para las dos partes (obligatoria)</Text>
+                  <TextInput style={[styles.modalInput, { height: 100, textAlignVertical: 'top' }]} multiline value={notaAdmin} onChangeText={setNotaAdmin} placeholder="Ej. Revisamos las fotos: el contratista no entregó el material acordado..." />
+                  <Text style={[styles.datoChico, { marginBottom: 10 }]}>A los dos les llega una notificación con tu decisión y esta nota.</Text>
 
                   <View style={styles.modalBotones}>
                     <TouchableOpacity style={styles.modalCancelar} onPress={() => setQuejaResolviendo(null)}><Text style={styles.modalCancelarTexto}>Volver</Text></TouchableOpacity>
-                    <TouchableOpacity style={[styles.modalGuardar, { backgroundColor: COLOR.marino }]} onPress={confirmarResolucion} disabled={procesando}>{procesando ? <ActivityIndicator color="#FFF" /> : <Text style={styles.modalGuardarTexto}>Resolver</Text>}</TouchableOpacity>
+                    <TouchableOpacity style={[styles.modalGuardar, { backgroundColor: COLOR.marino }]} onPress={confirmarResolucion} disabled={procesando}>{procesando ? <ActivityIndicator color="#FFF" /> : <Text style={styles.modalGuardarTexto}>Guardar decisión</Text>}</TouchableOpacity>
                   </View>
                 </>
               )}
@@ -712,11 +738,11 @@ export default function AdminDashboard() {
                   <Text style={styles.datoChico}>Correo: {usuarioExpandido.correo}</Text>
                   <Text style={styles.datoChico}>Teléfono: {usuarioExpandido.numero_telefono}</Text>
                   <Text style={styles.datoChico}>Usuario: {usuarioExpandido.nombre_usuario}</Text>
-                  <Text style={styles.datoChico}>KYC (INE + rostro): {usuarioExpandido.kyc_aprobado ? '✅ Verificado' : '❌ No verificado'}</Text>
+                  <Text style={styles.datoChico}>Identidad (INE + rostro): {usuarioExpandido.kyc_aprobado ? '✅ Verificada' : '❌ No verificada'}</Text>
                 </View>
 
                 {usuarioExpandido.rol === 'Trabajador' ? (
-                  <PerfilTrabajador trabajador={usuarioExpandido} onEliminarObra={(idObra) => eliminarObraDeUsuario(usuarioExpandido.id, idObra)} />
+                  <PerfilTrabajador trabajador={usuarioExpandido} obrasEnCurso={obrasEnCursoDe(usuarioExpandido.id)} onEliminarObra={(idObra) => eliminarObraDeUsuario(usuarioExpandido.id, idObra)} />
                 ) : (
                   <View style={[styles.tarjeta, { alignItems: 'center' }]}>
                     <TouchableOpacity onPress={() => usuarioExpandido.foto_rostro_url && setFotoGrande(usuarioExpandido.foto_rostro_url)}>
@@ -726,7 +752,9 @@ export default function AdminDashboard() {
                     <Text style={styles.datoChico}>{usuarioExpandido.empresa || 'Contratista independiente'}</Text>
                     <Text style={styles.datoChico}>{[usuarioExpandido.ubicacion_texto, usuarioExpandido.ubicacion_estado].filter(Boolean).join(', ') || 'Sin ubicación'}</Text>
                     <Text style={[styles.datoChico, { color: '#B45309', fontWeight: 'bold' }]}>★ {usuarioExpandido.calificacion || '0.0'} ({usuarioExpandido.numero_resenas || 0} reseñas)</Text>
-                    <Text style={styles.datoChico}>{vacantes.filter(v => v.id_contratista === usuarioExpandido.id).length} vacantes · {contratos.filter(c => c.id_contratista === usuarioExpandido.id && c.estado === ESTADOS.FINALIZADA).length} obras finalizadas</Text>
+                    <Text style={styles.datoChico}>
+                      {vacantes.filter(v => v.id_contratista === usuarioExpandido.id).length} vacantes · {contratos.filter(c => c.id_contratista === usuarioExpandido.id && [ESTADOS.ACTIVA, ESTADOS.POR_CONFIRMAR_FIN].includes(c.estado)).length} obras en proceso · {contratos.filter(c => c.id_contratista === usuarioExpandido.id && c.estado === ESTADOS.FINALIZADA).length} terminadas
+                    </Text>
                   </View>
                 )}
 
@@ -738,10 +766,10 @@ export default function AdminDashboard() {
                       <View key={q.id} style={[styles.tarjeta, { borderLeftWidth: 5, borderLeftColor: tipo.color }]}>
                         <View style={styles.filaEntre}>
                           <Text style={[styles.tipoTexto, { color: tipo.color, marginLeft: 0 }]}>{tipo.texto}</Text>
-                          <Etiqueta texto={q.estado === 'Resuelta' ? 'RESUELTO' : 'PENDIENTE'} color={q.estado === 'Resuelta' ? COLOR.resuelto : COLOR.pendiente} />
+                          <Etiqueta texto={q.estado === 'Resuelta' ? 'RESUELTO' : 'POR RESOLVER'} color={q.estado === 'Resuelta' ? COLOR.resuelto : COLOR.pendiente} />
                         </View>
                         <Text style={styles.tituloTarjeta}>{q.motivo}</Text>
-                        <Text style={styles.datoChico}>Reportó: {q.nombre_reportante} · {new Date(q.fecha_reporte).toLocaleDateString('es-MX')}</Text>
+                        <Text style={styles.datoChico}>Lo reportó: {conRol(q.nombre_reportante, q.rol_reportante)} · {new Date(q.fecha_reporte).toLocaleDateString('es-MX')}</Text>
                         <Text style={[styles.datoChico, { fontStyle: 'italic' }]} numberOfLines={3}>{q.descripcion}</Text>
                       </View>
                     );
@@ -752,7 +780,7 @@ export default function AdminDashboard() {
                     <Ionicons name={usuarioExpandido.estado_cuenta === 'Bloqueada' ? 'lock-open' : 'lock-closed'} size={16} color="#FFF" />
                     <Text style={styles.botonPrincipalTexto}>{usuarioExpandido.estado_cuenta === 'Bloqueada' ? 'Desbloquear' : 'Bloquear'}</Text>
                   </TouchableOpacity>
-                  <TouchableOpacity style={[styles.botonPrincipal, { flex: 1, backgroundColor: COLOR.bloqueada, marginLeft: 6 }]} disabled={procesando} onPress={() => eliminarUsuarioCompleto(usuarioExpandido.id, usuarioExpandido.nombre)}>
+                  <TouchableOpacity style={[styles.botonPrincipal, { flex: 1, backgroundColor: COLOR.bloqueada, marginLeft: 6 }]} disabled={procesando} onPress={() => eliminarUsuarioCompleto(usuarioExpandido)}>
                     <Ionicons name="trash" size={16} color="#FFF" /><Text style={styles.botonPrincipalTexto}>Eliminar cuenta</Text>
                   </TouchableOpacity>
                 </View>
@@ -773,11 +801,12 @@ export default function AdminDashboard() {
               </View>
               <ScrollView contentContainerStyle={{ padding: 18 }}>
                 <Text style={styles.nombreAdmin}>{vacanteExpandida.titulo}</Text>
-                <TouchableOpacity onPress={() => verPerfilDe(vacanteExpandida.id_contratista)}><Text style={[styles.datoChico, { color: COLOR.contratista, fontWeight: 'bold' }]}>{vacanteExpandida.contratista} · {vacanteExpandida.empresa} ›</Text></TouchableOpacity>
+                <TouchableOpacity onPress={() => verPerfilDe(vacanteExpandida.id_contratista)}><Text style={[styles.datoChico, { color: COLOR.contratista, fontWeight: 'bold' }]}>{conRol(vacanteExpandida.contratista, 'contratista')} · {vacanteExpandida.empresa} ›</Text></TouchableOpacity>
                 {vacanteExpandida.foto_trabajo ? (
                   <TouchableOpacity onPress={() => setFotoGrande(vacanteExpandida.foto_trabajo)}><Image source={{ uri: vacanteExpandida.foto_trabajo }} style={styles.fotoVacante} /></TouchableOpacity>
                 ) : null}
                 <Text style={styles.datoChico}>📍 {[vacanteExpandida.ubicacion, vacanteExpandida.estado_republica].filter(Boolean).join(', ')}</Text>
+                {vacanteExpandida.lugar_obra_texto ? <Text style={styles.datoChico}>📌 Lugar de la obra: {vacanteExpandida.lugar_obra_texto}</Text> : null}
                 <Text style={styles.datoChico}>💵 {vacanteExpandida.pago}</Text>
                 <Text style={styles.datoChico}>🕒 {vacanteExpandida.horario}</Text>
                 <Text style={[styles.descripcionTexto, { marginTop: 8 }]}>{vacanteExpandida.descripcion}</Text>
@@ -845,24 +874,15 @@ const styles = StyleSheet.create({
   loadingCenter: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F3F4F6' },
   loadingText: { marginTop: 10, color: COLOR.marino, fontWeight: 'bold' },
 
-  header: { flexDirection: 'row', alignItems: 'center', backgroundColor: COLOR.marino, paddingHorizontal: 16, paddingVertical: 14 },
-  headerFoto: { width: 42, height: 42, borderRadius: 21, backgroundColor: '#1E3A5F', borderWidth: 2, borderColor: '#FFF' },
-  headerTitulo: { color: '#FFF', fontSize: 17, fontWeight: 'bold' },
+  header: { flexDirection: 'row', alignItems: 'center', backgroundColor: COLOR.marino, paddingHorizontal: 16, paddingVertical: 16 },
+  headerTitulo: { color: '#FFF', fontSize: 20, fontWeight: 'bold' },
   headerSub: { color: '#9CA3AF', fontSize: 12 },
 
   seccion: { fontSize: 16, fontWeight: 'bold', color: COLOR.marino, marginTop: 6, marginBottom: 10 },
   seccionChica: { fontSize: 11, fontWeight: 'bold', color: '#9CA3AF', letterSpacing: 0.5 },
-  cuadricula: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', marginBottom: 8 },
-  cuadro: { width: '48.5%', backgroundColor: '#FFF', borderRadius: 14, padding: 14, marginBottom: 10, borderTopWidth: 4, elevation: 1 },
-  cuadroIcono: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
-  cuadroNumero: { fontSize: 26, fontWeight: 'bold', marginTop: 6 },
-  cuadroTitulo: { fontSize: 12, color: '#4B5563', fontWeight: '600' },
-  filaTipo: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderColor: '#F3F4F6' },
-  puntoTipo: { width: 12, height: 12, borderRadius: 6, marginRight: 8 },
-  filaTipoTexto: { flex: 1, fontSize: 14, color: '#1F2937', fontWeight: '600' },
-  filaTipoNumero: { fontSize: 16, fontWeight: 'bold', marginRight: 6 },
-  leyenda: { flexDirection: 'row', alignItems: 'center', width: '50%', marginBottom: 6 },
-  leyendaTexto: { fontSize: 12, color: '#4B5563' },
+  filaAtender: { flexDirection: 'row', alignItems: 'center', borderLeftWidth: 5 },
+  iconoAtender: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center', marginRight: 12 },
+  resumenTexto: { fontSize: 12, color: '#6B7280', textAlign: 'center', marginTop: 16 },
 
   segmentos: { flexDirection: 'row', backgroundColor: '#E5E7EB', borderRadius: 12, padding: 4, marginBottom: 12 },
   segmento: { flex: 1, paddingVertical: 9, alignItems: 'center', borderRadius: 9 },
@@ -877,7 +897,7 @@ const styles = StyleSheet.create({
   tarjeta: { backgroundColor: '#FFF', borderRadius: 14, padding: 14, marginBottom: 12, elevation: 1, shadowColor: '#000', shadowOpacity: 0.04, shadowRadius: 4 },
   filaEntre: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   tipoTexto: { fontSize: 12, fontWeight: 'bold', marginLeft: 6 },
-  fecha: { fontSize: 11, color: '#9CA3AF', marginTop: 4 },
+  fecha: { fontSize: 11, color: '#9CA3AF', marginTop: 2 },
   tituloTarjeta: { fontSize: 15, fontWeight: 'bold', color: COLOR.marino, marginTop: 2 },
   obraTexto: { fontSize: 12, color: '#B45309', fontWeight: 'bold', marginTop: 2 },
   partes: { flexDirection: 'row', marginTop: 10 },
@@ -887,16 +907,14 @@ const styles = StyleSheet.create({
   parteRol: { fontSize: 11, fontWeight: 'bold', marginTop: 2 },
   descripcion: { backgroundColor: '#F9FAFB', borderRadius: 10, padding: 10, marginTop: 10 },
   descripcionTexto: { fontSize: 13, color: '#4B5563', lineHeight: 18 },
-  botonEvidencia: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', borderWidth: 1, borderColor: '#D1D5DB', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, marginTop: 8 },
-  botonEvidenciaTexto: { fontSize: 12, fontWeight: 'bold', color: COLOR.marino, marginLeft: 5 },
+  miniatura: { width: 72, height: 72, borderRadius: 8, marginRight: 8, backgroundColor: '#E5E7EB' },
   botonPrincipal: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', borderRadius: 10, paddingVertical: 12, marginTop: 12 },
   botonPrincipalTexto: { color: '#FFF', fontWeight: 'bold', fontSize: 13, marginLeft: 6 },
   resolucion: { backgroundColor: '#ECFDF5', borderRadius: 10, padding: 10, marginTop: 10, borderWidth: 1, borderColor: '#A7F3D0' },
   resolucionTexto: { fontSize: 12, color: '#065F46', fontWeight: 'bold' },
   resolucionNota: { fontSize: 12, color: '#047857', marginTop: 3 },
   resolucionPie: { fontSize: 11, color: '#6B7280', marginTop: 6 },
-  vacio: { alignItems: 'center', marginTop: 40 },
-  vacioTitulo: { fontSize: 15, fontWeight: 'bold', color: COLOR.marino, marginTop: 10 },
+  vacioTitulo: { fontSize: 17, fontWeight: 'bold', color: COLOR.marino, marginTop: 10 },
   vacioTexto: { color: '#9CA3AF', textAlign: 'center', marginVertical: 12 },
 
   buscador: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF', borderRadius: 12, paddingHorizontal: 12, borderWidth: 1, borderColor: '#E5E7EB', marginBottom: 10 },
@@ -923,15 +941,16 @@ const styles = StyleSheet.create({
   modalFondoOscuro: { flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', paddingTop: 30 },
   modalCaja: { backgroundColor: '#FFF', borderRadius: 20, padding: 22 },
   modalTitulo: { fontSize: 19, fontWeight: 'bold', color: COLOR.marino, marginBottom: 14 },
-  modalEtiqueta: { fontSize: 12, fontWeight: 'bold', color: '#6B7280', marginBottom: 5 },
+  modalEtiqueta: { fontSize: 13, fontWeight: 'bold', color: COLOR.marino, marginBottom: 6 },
   modalInput: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 14, color: '#1F2937' },
   modalBotones: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 6 },
   modalCancelar: { padding: 12, marginRight: 8 },
   modalCancelarTexto: { color: '#6B7280', fontWeight: 'bold' },
-  modalGuardar: { borderRadius: 10, paddingVertical: 12, paddingHorizontal: 20, minWidth: 110, alignItems: 'center' },
+  modalGuardar: { borderRadius: 10, paddingVertical: 12, paddingHorizontal: 20, minWidth: 130, alignItems: 'center' },
   modalGuardarTexto: { color: '#FFF', fontWeight: 'bold' },
   opcion: { flexDirection: 'row', alignItems: 'center', borderWidth: 1.5, borderColor: '#E5E7EB', borderRadius: 12, padding: 12, marginBottom: 8 },
   opcionTexto: { marginLeft: 8, fontWeight: 'bold', color: '#1F2937', flex: 1 },
+  filaBloquear: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FEF2F2', borderRadius: 12, padding: 12, marginVertical: 8, borderWidth: 1, borderColor: '#FECACA' },
   pickerCaja: { borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, backgroundColor: '#F9FAFB', marginBottom: 12, overflow: 'hidden' },
   panelCompleto: { flex: 1, backgroundColor: '#F3F4F6', borderTopLeftRadius: 20, borderTopRightRadius: 20, overflow: 'hidden' },
   panelEncabezado: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16 },

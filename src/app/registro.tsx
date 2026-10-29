@@ -13,6 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { createUserWithEmailAndPassword, deleteUser, signOut, User } from 'firebase/auth';
 import { auth } from '../../firebaseConfig';
 import { subirACloudinary } from '@/lib/cloudinary';
+import { SelectorOficio } from '@/components/selector-oficio';
 
 export default function RegistroScreen() {
   const [rol, setRol] = useState('Trabajador');
@@ -257,45 +258,8 @@ export default function RegistroScreen() {
             {rol === 'Trabajador' && (
               <>
                 <Text style={styles.inputLabel}>Oficio Principal</Text>
-                <View style={styles.pickerContainer}>
-                  <Ionicons name="construct" size={20} color="#9CA3AF" style={styles.inputIcon} />
-                  <Picker selectedValue={oficio} onValueChange={(itemValue) => setOficio(itemValue)} style={styles.picker}>
-                    <Picker.Item label="Albañil" value="Albañil" />
-                    <Picker.Item label="Bolero" value="Bolero" />
-                    <Picker.Item label="Carpintero" value="Carpintero" />
-                    <Picker.Item label="Cerrajero" value="Cerrajero" />
-                    <Picker.Item label="Chofer" value="Chofer" />
-                    <Picker.Item label="Costurera / Sastre" value="Costurera / Sastre" />
-                    <Picker.Item label="Cuidador(a)" value="Cuidador(a)" />
-                    <Picker.Item label="Electricista" value="Electricista" />
-                    <Picker.Item label="Estilista / Peluquero" value="Estilista / Peluquero" />
-                    <Picker.Item label="Herrero" value="Herrero" />
-                    <Picker.Item label="Hojalatero" value="Hojalatero" />
-                    <Picker.Item label="Jardinero" value="Jardinero" />
-                    <Picker.Item label="Lavacoches" value="Lavacoches" />
-                    <Picker.Item label="Limpieza" value="Limpieza" />
-                    <Picker.Item label="Maquillista" value="Maquillista" />
-                    <Picker.Item label="Mecánico" value="Mecánico" />
-                    <Picker.Item label="Niñera" value="Niñera" />
-                    <Picker.Item label="Panadero" value="Panadero" />
-                    <Picker.Item label="Peón" value="Peón" />
-                    <Picker.Item label="Pintor" value="Pintor" />
-                    <Picker.Item label="Plomero" value="Plomero" />
-                    <Picker.Item label="Recolector / Chatarrero" value="Recolector / Chatarrero" />
-                    <Picker.Item label="Repartidor" value="Repartidor" />
-                    <Picker.Item label="Rotulista" value="Rotulista" />
-                    <Picker.Item label="Soldador" value="Soldador" />
-                    <Picker.Item label="Tablaroquero" value="Tablaroquero" />
-                    <Picker.Item label="Tapicero" value="Tapicero" />
-                    <Picker.Item label="Taquero" value="Taquero" />
-                    <Picker.Item label="Técnico en Refrigeración" value="Técnico en Refrigeración" />
-                    <Picker.Item label="Trabajadora del Hogar" value="Trabajadora del Hogar" />
-                    <Picker.Item label="Vendedor Ambulante" value="Vendedor Ambulante" />
-                    <Picker.Item label="Vidriero" value="Vidriero" />
-                    <Picker.Item label="Zapatero" value="Zapatero" />
-                    <Picker.Item label="Otro" value="Otro" />
-                  </Picker>
-                </View>
+                {/* MÁS DE 40 OFICIOS; SI NO ESTÁ, SE ELIGE "OTRO" Y SE ESCRIBE */}
+                <SelectorOficio valor={oficio} onCambio={setOficio} />
               </>
             )}
 

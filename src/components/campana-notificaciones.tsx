@@ -36,9 +36,10 @@ type Props = {
   onNuevos?: () => void;
   colorIcono?: string;
   style?: StyleProp<ViewStyle>;
+  variante?: 'campana' | 'fila'; // 'fila' = UNA OPCIÓN "NOTIFICACIONES" EN LA LISTA DE AJUSTES DEL PERFIL
 };
 
-export function CampanaNotificaciones({ onNuevos, colorIcono = '#FFF', style }: Props) {
+export function CampanaNotificaciones({ onNuevos, colorIcono = '#FFF', style, variante = 'campana' }: Props) {
   const [avisos, setAvisos] = useState<any[]>([]);
   const [abierto, setAbierto] = useState(false);
   const onNuevosRef = useRef(onNuevos);
@@ -56,7 +57,7 @@ export function CampanaNotificaciones({ onNuevos, colorIcono = '#FFF', style }: 
       if (nuevos.length > 0) onNuevosRef.current?.();
       if (nuevos.some(a => a.importante)) setAbierto(true);
       vistosRef.current = new Set(lista.map(a => a.id));
-    }, (error) => console.log("Error escuchando notificaciones", error));
+    }, () => { /* AL CERRAR SESIÓN LA ESCUCHA PIERDE PERMISO ANTES DE CERRARSE: NO ES UN ERROR REAL */ });
   }, []);
 
   const sinLeer = avisos.filter(a => !a.leida);
@@ -75,10 +76,19 @@ export function CampanaNotificaciones({ onNuevos, colorIcono = '#FFF', style }: 
 
   return (
     <>
-      <TouchableOpacity style={[styles.boton, style]} onPress={() => setAbierto(true)} hitSlop={10}>
-        <Ionicons name={sinLeer.length > 0 ? 'notifications' : 'notifications-outline'} size={26} color={colorIcono} />
-        {sinLeer.length > 0 && <View style={styles.globo}><Text style={styles.globoTexto}>{sinLeer.length > 9 ? '9+' : sinLeer.length}</Text></View>}
-      </TouchableOpacity>
+      {variante === 'fila' ? (
+        <TouchableOpacity style={[styles.fila, style]} onPress={() => setAbierto(true)}>
+          <Ionicons name="notifications-outline" size={24} color="#0D2340" />
+          <Text style={styles.filaTexto}>Notificaciones</Text>
+          {sinLeer.length > 0 && <View style={styles.globoFila}><Text style={styles.globoTexto}>{sinLeer.length > 9 ? '9+' : sinLeer.length}</Text></View>}
+          <Ionicons name="chevron-forward" size={20} color="#9CA3AF" />
+        </TouchableOpacity>
+      ) : (
+        <TouchableOpacity style={[styles.boton, style]} onPress={() => setAbierto(true)} hitSlop={10}>
+          <Ionicons name={sinLeer.length > 0 ? 'notifications' : 'notifications-outline'} size={26} color={colorIcono} />
+          {sinLeer.length > 0 && <View style={styles.globo}><Text style={styles.globoTexto}>{sinLeer.length > 9 ? '9+' : sinLeer.length}</Text></View>}
+        </TouchableOpacity>
+      )}
 
       <Modal visible={abierto} animationType="slide" transparent onRequestClose={cerrar}>
         <View style={styles.fondo}>
@@ -125,6 +135,9 @@ const styles = StyleSheet.create({
   boton: { padding: 4 },
   globo: { position: 'absolute', top: -2, right: -4, backgroundColor: '#DC2626', borderRadius: 10, minWidth: 19, height: 19, alignItems: 'center', justifyContent: 'center', borderWidth: 1.5, borderColor: '#FFF', paddingHorizontal: 3 },
   globoTexto: { color: '#FFF', fontSize: 10, fontWeight: 'bold' },
+  fila: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF', padding: 18, borderRadius: 12, marginBottom: 10, elevation: 1 },
+  filaTexto: { flex: 1, fontSize: 14, fontWeight: 'bold', color: '#1F2937', marginLeft: 15 },
+  globoFila: { backgroundColor: '#DC2626', borderRadius: 10, minWidth: 22, height: 22, alignItems: 'center', justifyContent: 'center', marginRight: 6, paddingHorizontal: 4 },
   fondo: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', paddingTop: 50 },
   panel: { flex: 1, backgroundColor: '#F3F4F6', borderTopLeftRadius: 20, borderTopRightRadius: 20, overflow: 'hidden' },
   encabezado: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#0D2340', padding: 16 },

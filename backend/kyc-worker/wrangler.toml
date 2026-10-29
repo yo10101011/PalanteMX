@@ -10,3 +10,8 @@ FIREBASE_PROJECT_ID = "palantemx-2a5aa"
 CLOUDINARY_CLOUD_NAME = "ylqsvel1"
 # La "apiKey" web de Firebase: es la misma que está en firebaseConfig.js dentro de la app, no es secreta.
 FIREBASE_WEB_API_KEY = "AIzaSyCnlqzM3GCDGICbgUmCrsKPMobxvCqneIc"
+
+# Tarea diaria (gratis en el plan Free de Cloudflare): revisa obras terminadas sin pago confirmado.
+# 15:00 UTC = 9:00 de la mañana en el centro de México.
+[triggers]
+crons = ["0 15 * * *"]
