@@ -411,6 +411,7 @@ const crearResena = async (request: Request, env: Env) => {
           updateTransforms: [{ fieldPath: 'resenas', appendMissingElements: { values: [aValorFirestore(resena)] } }],
           currentDocument: { updateTime: evaluado.updateTime },
         },
+        nuevaNotificacion(env, idEvaluado, 'Te calificaron', `${nombreEvaluador} te calificó con ${'★'.repeat(estrellas)}${'☆'.repeat(5 - estrellas)}: "${comentario.trim()}"`, { tipo: 'resena' }),
       ]);
       if (guardado) return responder(200, { calificacion: nuevaCalif.toFixed(1) });
     }
@@ -551,7 +552,16 @@ const crearContrato = async (env: Env, uid: string, quienInicia: 'contratista' |
   const ahora = new Date();
   const idContrato = crypto.randomUUID().replace(/-/g, '');
   const nombreBase = `projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents`;
-  await confirmarEscrituras(env, [{
+  const titulo = texto(vacante.fields.titulo);
+  const nombreTrabajador = `${texto(trabajador.fields.nombre)} ${texto(trabajador.fields.apellidos)}`.trim();
+  const nombreContratista = texto(vacante.fields.contratista);
+  // AVISO A LA PARTE QUE TIENE QUE RESPONDER; AL TOCARLO SE ABRE EL CHAT PARA PLATICAR ANTES DE ACEPTAR
+  const aviso = quienInicia === 'contratista'
+    ? nuevaNotificacion(env, idTrabajador, 'Nueva propuesta de obra', `${nombreContratista} te propone la obra "${titulo}". Toca aquí para platicar en el chat; cuando estén de acuerdo, acepta el trato ahí mismo.`, { chat_con: { id: idContratista, nombre: nombreContratista, rol: 'Contratista' } })
+    : nuevaNotificacion(env, idContratista, 'Nueva solicitud', `${nombreTrabajador} se postuló a tu obra "${titulo}". Toca aquí para platicar en el chat; cuando estén de acuerdo, acepta el trato ahí mismo.`, { chat_con: { id: idTrabajador, nombre: nombreTrabajador, rol: texto(trabajador.fields.oficio_principal) || 'Trabajador' } });
+  // LUGAR DE LA OBRA (SI EL CONTRATISTA LO MARCÓ EN EL MAPA) O, SI NO, LA UBICACIÓN DEL CONTRATISTA
+  const coordenadas = coordenadasDe(vacante.fields.coordenadas_obra) || coordenadasDe(vacante.fields.coordenadas);
+  await confirmarEscrituras(env, [aviso, {
     update: {
       name: `${nombreBase}/Postulaciones/${idContrato}`,
       fields: aCamposFirestore({
@@ -571,7 +581,11 @@ const crearContrato = async (env: Env, uid: string, quienInicia: 'contratista' |
           descripcion: texto(vacante.fields.descripcion),
           foto_trabajo: texto(vacante.fields.foto_trabajo),
           foto_contratista: texto(vacante.fields.foto_contratista),
+          coordenadas,
+          // true = EL CONTRATISTA MARCÓ EL LUGAR EXACTO; false = ES SU UBICACIÓN DE REGISTRO (MENOS PRECISA)
+          lugar_exacto: !!coordenadasDe(vacante.fields.coordenadas_obra),
         },
+        reportes_abiertos: 0,
         estado: quienInicia === 'contratista' ? ESTADOS.PROPUESTA : ESTADOS.PENDIENTE,
         origen: quienInicia,
         fecha_postulacion: ahora.toLocaleDateString('es-MX', { timeZone: 'America/Mexico_City' }),
@@ -601,12 +615,18 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
   const prohibido = (mensaje: string) => responder(403, { error: mensaje });
   const noSePuede = () => responder(409, { error: `No se puede hacer eso: el contrato está en "${c.estado}".` });
 
-  // CAMBIA CAMPOS DEL CONTRATO, SOLO SI NADIE LO MODIFICÓ DESDE QUE LO LEÍMOS
-  const cambioContrato = (campos: Record<string, unknown>) => ({
+  // CAMBIA CAMPOS DEL CONTRATO (Y OPCIONALMENTE CONTADORES), SOLO SI NADIE LO MODIFICÓ DESDE QUE LO LEÍMOS
+  const cambioContrato = (campos: Record<string, unknown>, transformaciones: Record<string, unknown>[] = []) => ({
     update: { name: `${nombreBase}/${c.rutaContrato}`, fields: aCamposFirestore(campos) },
     updateMask: { fieldPaths: Object.keys(campos) },
+    ...(transformaciones.length ? { updateTransforms: transformaciones } : {}),
     currentDocument: { updateTime: c.contrato.updateTime },
   });
+  // NO SE PUEDE TERMINAR UNA OBRA MIENTRAS EL ADMIN REVISA UN REPORTE SOBRE ELLA
+  const bloqueadaPorReporte = async () => (await reportesAbiertosDe(env, idContrato)) > 0
+    ? responder(409, { error: 'Hay un reporte de esta obra que el administrador todavía está revisando. No se puede terminar hasta que lo resuelva; les avisaremos a los dos.' })
+    : null;
+  const nombreDe = async (quien: 'trabajador' | 'contratista') => (await nombresDePartes(env, c.idTrabajador, c.idContratista))[quien];
   const guardar = async (writes: Record<string, unknown>[], nuevoEstado: string) =>
     (await confirmarEscrituras(env, writes)) ? responder(200, { estado: nuevoEstado }) : null;
   const tituloObra = texto(c.contrato.fields.titulo_vacante);
@@ -647,8 +667,10 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
         return responder(409, { error: 'La vacante ya está cerrada o ya tiene todos los trabajadores que necesita.' });
       }
       const cupoNuevo = cupoActual + 1;
+      const quienAcepta = await nombreDe(c.soyTrabajador ? 'trabajador' : 'contratista');
       return guardar([
         cambioContrato({ estado: ESTADOS.ACTIVA, id_contratista: c.idContratista, fecha_inicio: ahora.toLocaleDateString('es-MX', { timeZone: 'America/Mexico_City' }), timestamp_inicio: ahora.getTime() }),
+        nuevaNotificacion(env, otraParte, '¡Trato cerrado!', `${quienAcepta} aceptó el trato de "${tituloObra}". La obra ya está activa en tu pestaña Obras.`),
         // EL CUPO SOLO SE OCUPA CUANDO LOS DOS ACEPTARON. SI SE LLENA, LA VACANTE SE CIERRA
         {
           update: { name: `${nombreBase}/Vacantes/${c.idVacante}`, fields: aCamposFirestore({ cupo_actual: cupoNuevo, estado: cupoNuevo >= cupoTotal ? 'Cerrada' : 'Activa' }) },
@@ -662,27 +684,47 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
     case 'rechazar': {
       if (!c.soyTrabajador && !c.soyContratista) return prohibido('Este contrato no es tuyo.');
       if (c.estado !== ESTADOS.PROPUESTA && c.estado !== ESTADOS.PENDIENTE) return noSePuede();
-      return guardar([cambioContrato({ estado: ESTADOS.RECHAZADA, rechazado_por: c.uid })], ESTADOS.RECHAZADA);
+      const quienRechaza = await nombreDe(c.soyTrabajador ? 'trabajador' : 'contratista');
+      return guardar([
+        cambioContrato({ estado: ESTADOS.RECHAZADA, rechazado_por: c.uid }),
+        nuevaNotificacion(env, otraParte, 'Trato no aceptado', `${quienRechaza} ya no siguió con "${tituloObra}".`),
+      ], ESTADOS.RECHAZADA);
     }
 
     // ---- TERMINAR: EL CONTRATISTA LA MARCA COMO TERMINADA Y EL TRABAJADOR CONFIRMA ----
     case 'solicitar_fin': {
       if (!c.soyContratista) return prohibido('Solo el contratista marca la obra como terminada; después el trabajador confirma.');
       if (c.estado !== ESTADOS.ACTIVA) return noSePuede();
-      return guardar([cambioContrato({ estado: ESTADOS.POR_CONFIRMAR_FIN })], ESTADOS.POR_CONFIRMAR_FIN);
+      const bloqueo = await bloqueadaPorReporte();
+      if (bloqueo) return bloqueo;
+      return guardar([
+        cambioContrato({ estado: ESTADOS.POR_CONFIRMAR_FIN }),
+        nuevaNotificacion(env, c.idTrabajador, 'Obra marcada como terminada', `${await nombreDe('contratista')} marcó "${tituloObra}" como terminada. Entra a Obras y confirma si de verdad ya terminó.`),
+      ], ESTADOS.POR_CONFIRMAR_FIN);
     }
     case 'confirmar_fin': {
       if (!c.soyTrabajador) return prohibido('El trabajador es quien confirma que la obra terminó.');
       if (c.estado !== ESTADOS.POR_CONFIRMAR_FIN) return noSePuede();
+      const bloqueo = await bloqueadaPorReporte();
+      if (bloqueo) return bloqueo;
       const fechaFin = ahora.toLocaleDateString('es-MX', { timeZone: 'America/Mexico_City' });
-      const writes: Record<string, unknown>[] = [cambioContrato({ estado: ESTADOS.FINALIZADA, fecha_fin: fechaFin, timestamp_fin: ahora.getTime() })];
+      const writes: Record<string, unknown>[] = [
+        cambioContrato({ estado: ESTADOS.FINALIZADA, fecha_fin: fechaFin, timestamp_fin: ahora.getTime() }),
+        nuevaNotificacion(env, c.idContratista, 'Obra finalizada', `${await nombreDe('trabajador')} confirmó que "${tituloObra}" terminó. Ya pueden calificarse.`),
+      ];
 
       // LA OBRA TERMINADA SE AGREGA AL PERFIL PÚBLICO DEL TRABAJADOR (obras_realizadas), PARA QUE CUALQUIER CONTRATISTA
       // LA VEA EN SU PERFIL. LOS CONTRATOS SON PRIVADOS (SOLO LAS DOS PARTES LOS LEEN), POR ESO SE COPIA UN RESUMEN.
       const rutaTrabajador = `Usuarios/${c.idTrabajador}`;
       if ((await leerDocumentos(env, [rutaTrabajador]))[rutaTrabajador]) {
         const resumen = c.contrato.fields.vacante?.mapValue?.fields || {};
+        // FOTOS DE LA BITÁCORA (LOS DÍAS QUE NO SE DESCONTARON) Y DÍAS CONFIRMADOS: SON LA PRUEBA DEL TRABAJO EN SU PORTAFOLIO
+        const dias = await listarBitacora(env, c.rutaContrato);
+        const validos = dias.filter(d => d.fields.asistio?.booleanValue && texto(d.fields.revision) !== REVISION.DESCONTADA);
         const obra = {
+          fotos: validos.map(d => texto(d.fields.evidencia)).filter(Boolean).slice(-6),
+          dias_trabajados: validos.length,
+          dias_confirmados: validos.filter(d => texto(d.fields.revision) === REVISION.CONFIRMADA).length,
           id_contrato: idContrato,
           titulo: tituloObra,
           contratista: texto(c.contrato.fields.contratista) || texto(resumen.contratista),
@@ -699,7 +741,10 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
     case 'rechazar_fin': {
       if (!c.soyTrabajador) return prohibido('Solo el trabajador puede decir que la obra aún no termina.');
       if (c.estado !== ESTADOS.POR_CONFIRMAR_FIN) return noSePuede();
-      return guardar([cambioContrato({ estado: ESTADOS.ACTIVA })], ESTADOS.ACTIVA);
+      return guardar([
+        cambioContrato({ estado: ESTADOS.ACTIVA }),
+        nuevaNotificacion(env, c.idContratista, 'La obra aún no termina', `${await nombreDe('trabajador')} dice que "${tituloObra}" todavía no termina. La obra sigue activa; platiquen lo que falta.`),
+      ], ESTADOS.ACTIVA);
     }
 
     // ---- CANCELAR: CUALQUIERA DE LOS DOS. SE LEVANTA UN REPORTE AUTOMÁTICO Y LA OBRA QUEDA SUSPENDIDA ----
@@ -713,9 +758,9 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
       const quienCancela = c.soyTrabajador ? nombres.trabajador : nombres.contratista;
 
       return guardar([
-        cambioContrato({ estado: ESTADOS.SUSPENDIDA, cancelado_por: c.uid, motivo_cancelacion: c.motivo.trim(), id_queja: idQueja, timestamp_cancelacion: ahora.getTime() }),
+        cambioContrato({ estado: ESTADOS.SUSPENDIDA, cancelado_por: c.uid, motivo_cancelacion: c.motivo.trim(), id_queja: idQueja, timestamp_cancelacion: ahora.getTime() }, [contadorReportes(1)]),
         nuevoReporte(idQueja, nombres, { tipo: 'cancelacion', motivo: 'Cancelación de obra', descripcion: c.motivo.trim() }),
-        nuevaNotificacion(env, otraParte, 'Obra suspendida', `${quienCancela} canceló la obra "${tituloObra}". Queda suspendida mientras el administrador revisa el caso. Te avisaremos su decisión.`),
+        nuevaNotificacion(env, otraParte, 'Obra suspendida', `${quienCancela} canceló la obra "${tituloObra}". Queda suspendida mientras el administrador revisa el caso. Te avisaremos su decisión.`, { tipo: 'reporte', importante: true }),
       ], ESTADOS.SUSPENDIDA);
     }
 
@@ -740,7 +785,10 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
       });
 
       if (c.datos.veredicto === 'confirmar') {
-        return guardar([cambioEntrada({ revision: REVISION.CONFIRMADA, fecha_revision: ahora.toISOString() })], c.estado);
+        return guardar([
+          cambioEntrada({ revision: REVISION.CONFIRMADA, fecha_revision: ahora.toISOString() }),
+          nuevaNotificacion(env, c.idTrabajador, 'Bitácora confirmada', `${await nombreDe('contratista')} confirmó tu avance del ${texto(entrada.fields.fecha)} en "${tituloObra}".`, { tipo: 'bitacora' }),
+        ], c.estado);
       }
       if (c.datos.veredicto !== 'rechazar') return responder(400, { error: 'Veredicto inválido.' });
       if (!textoValido(c.motivo, 1000)) return responder(400, { error: 'Explica qué no es cierto de lo que escribió el trabajador.' });
@@ -758,7 +806,8 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
           id_entrada: idEntrada,
           fecha_dia: fechaDia,
         }),
-        nuevaNotificacion(env, c.idTrabajador, 'Bitácora rechazada', `${nombres.contratista} rechazó tu bitácora del ${fechaDia} en "${tituloObra}": "${c.motivo.trim()}". El administrador decidirá si ese día cuenta o se descuenta.`),
+        nuevaNotificacion(env, c.idTrabajador, 'Bitácora rechazada', `${nombres.contratista} rechazó tu bitácora del ${fechaDia} en "${tituloObra}": "${c.motivo.trim()}". El administrador decidirá si ese día cuenta o se descuenta.`, { tipo: 'bitacora', importante: true }),
+        cambioContrato({}, [contadorReportes(1)]),
       ], c.estado);
     }
 
@@ -773,7 +822,8 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
       const quienReporta = c.soyTrabajador ? nombres.trabajador : nombres.contratista;
       return guardar([
         nuevoReporte(crypto.randomUUID().replace(/-/g, ''), nombres, { tipo: 'incumplimiento', motivo: categoria, descripcion: c.motivo.trim() }),
-        nuevaNotificacion(env, otraParte, 'Reporte sobre tu obra', `${quienReporta} levantó un reporte en "${tituloObra}" (${categoria}): "${c.motivo.trim()}". El administrador lo revisará y te avisaremos.`),
+        nuevaNotificacion(env, otraParte, 'Te reportaron', `${quienReporta} levantó un reporte en "${tituloObra}" (${categoria}): "${c.motivo.trim()}". El administrador lo revisará y te avisaremos. Mientras tanto la obra no se puede terminar.`, { tipo: 'reporte', importante: true }),
+        cambioContrato({}, [contadorReportes(1)]),
       ], c.estado);
     }
 
@@ -787,9 +837,9 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
       const nota = textoValido(c.datos.nota, 1000) ? c.datos.nota.trim() : '';
       const aviso = `${cancelar ? `La obra "${tituloObra}" quedó cancelada definitivamente. Ya pueden calificarse.` : `La obra "${tituloObra}" fue reactivada: sigue en curso y ya se puede llenar la bitácora.`}${nota ? `\n\nNota del administrador: ${nota}` : ''}`;
       const writes: Record<string, unknown>[] = [
-        cambioContrato({ estado: cancelar ? ESTADOS.CANCELADA : ESTADOS.ACTIVA, decidido_por_admin: c.uid }),
-        nuevaNotificacion(env, c.idTrabajador, 'Decisión del administrador', aviso),
-        nuevaNotificacion(env, c.idContratista, 'Decisión del administrador', aviso),
+        cambioContrato({ estado: cancelar ? ESTADOS.CANCELADA : ESTADOS.ACTIVA, decidido_por_admin: c.uid }, [contadorReportes(-1)]),
+        nuevaNotificacion(env, c.idTrabajador, 'Decisión del administrador', aviso, { tipo: 'admin', importante: true }),
+        nuevaNotificacion(env, c.idContratista, 'Decisión del administrador', aviso, { tipo: 'admin', importante: true }),
       ];
       // AL CANCELAR DEFINITIVAMENTE, SE LIBERA EL LUGAR QUE OCUPABA EN LA VACANTE
       if (cancelar && c.vacante) {
@@ -833,14 +883,47 @@ const nombresDePartes = async (env: Env, idTrabajador: string, idContratista: st
   return { trabajador: nombreDe(`Usuarios/${idTrabajador}`), contratista: nombreDe(`Contratistas/${idContratista}`) };
 };
 
-// AVISO PARA UN USUARIO (COLECCIÓN Notificaciones). LA APP LOS MUESTRA AL ENTRAR Y LOS MARCA COMO LEÍDOS.
-const nuevaNotificacion = (env: Env, idUsuario: string, titulo: string, mensaje: string) => ({
+// AVISO PARA UN USUARIO (COLECCIÓN Notificaciones). LA APP LOS MUESTRA EN SU PANEL DE NOTIFICACIONES (LA CAMPANA).
+//   tipo: 'contrato' | 'bitacora' | 'reporte' | 'admin' | 'resena' (DEFINE EL ÍCONO Y EL COLOR)
+//   importante: SE ABRE SOLO EN CUANTO LLEGA (DECISIONES DEL ADMIN, OBRA SUSPENDIDA...)
+//   chat_con: AL TOCAR EL AVISO SE ABRE EL CHAT CON ESA PERSONA (P. EJ. UNA PROPUESTA NUEVA)
+type ExtraNotificacion = { tipo?: string; importante?: boolean; chat_con?: { id: string; nombre: string; rol: string } };
+
+const nuevaNotificacion = (env: Env, idUsuario: string, titulo: string, mensaje: string, extra: ExtraNotificacion = {}) => ({
   update: {
     name: `projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents/Notificaciones/${crypto.randomUUID().replace(/-/g, '')}`,
-    fields: aCamposFirestore({ id_usuario: idUsuario, titulo, mensaje, leida: false, fecha: new Date().toISOString(), timestamp: Date.now() }),
+    fields: aCamposFirestore({
+      id_usuario: idUsuario, titulo, mensaje, leida: false, fecha: new Date().toISOString(), timestamp: Date.now(),
+      tipo: extra.tipo || 'contrato', importante: extra.importante || false, ...(extra.chat_con ? { chat_con: extra.chat_con } : {}),
+    }),
   },
   currentDocument: { exists: false },
 });
+
+// COORDENADAS GUARDADAS EN FIRESTORE ({ latitud, longitud }) -> OBJETO, O null SI NO HAY
+const coordenadasDe = (valor: ValorFirestore | undefined) => {
+  const campos = valor?.mapValue?.fields;
+  const latitud = numero(campos?.latitud);
+  const longitud = numero(campos?.longitud);
+  return latitud && longitud ? { latitud, longitud } : null;
+};
+
+// REPORTES DE UNA OBRA QUE EL ADMIN AÚN NO RESUELVE (MIENTRAS HAYA, NO SE PUEDE TERMINAR LA OBRA)
+const reportesAbiertosDe = async (env: Env, idContrato: string) =>
+  (await consultarDocumentos(env, 'Quejas_Soporte', [['id_contrato', 'EQUAL', idContrato]]))
+    .filter(q => texto(q.fields.estado) !== 'Resuelta').length;
+
+// TODOS LOS DÍAS DE LA BITÁCORA DE UN CONTRATO (SUBCOLECCIÓN Postulaciones/{id}/Bitacora)
+const listarBitacora = async (env: Env, rutaContrato: string) => {
+  const token = await obtenerTokenGoogle(env);
+  const respuesta = await fetch(`${urlDocumentos(env)}/${rutaContrato}/Bitacora?pageSize=300`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!respuesta.ok) throw new Error(`Firestore respondió ${respuesta.status}: ${await respuesta.text()}`);
+  const { documents = [] } = (await respuesta.json()) as { documents?: { fields?: DocumentoLeido['fields']; createTime: string }[] };
+  return documents.map(d => ({ fields: d.fields || {} })).sort((a, b) => numero(a.fields.timestamp) - numero(b.fields.timestamp));
+};
+
+// CAMBIA EL CONTADOR reportes_abiertos DEL CONTRATO (LA APP LO USA PARA AVISAR Y BLOQUEAR EL BOTÓN DE TERMINAR)
+const contadorReportes = (n: number) => ({ fieldPath: 'reportes_abiertos', increment: { integerValue: String(n) } });
 
 // =========================================================================
 // RUTA 7: EL ADMIN RESUELVE UN REPORTE Y SE LES AVISA A QUIEN REPORTÓ Y A QUIEN FUE REPORTADO
@@ -852,7 +935,7 @@ const resolverReporte = async (request: Request, env: Env) => {
   const sesion = await verificarSesion(request, env);
   if (!sesion) return responder(401, { error: 'Sesión inválida o expirada' });
 
-  let datos: { id_queja?: unknown; decision?: unknown; nota?: unknown };
+  let datos: { id_queja?: unknown; decision?: unknown; nota?: unknown; descuento?: unknown };
   try {
     datos = await request.json();
   } catch {
@@ -861,6 +944,8 @@ const resolverReporte = async (request: Request, env: Env) => {
   if (!textoValido(datos.id_queja, 128)) return responder(400, { error: 'Falta el reporte.' });
   if (!textoValido(datos.nota, 1000)) return responder(400, { error: 'Escribe tu decisión para que las dos partes la lean.' });
   const nota = datos.nota.trim();
+  const descuento = typeof datos.descuento === 'number' && Number.isFinite(datos.descuento) ? Math.max(0, Math.round(datos.descuento)) : 0;
+  if (descuento > 1_000_000) return responder(400, { error: 'El descuento es demasiado grande.' });
 
   try {
     const rutaQueja = `Quejas_Soporte/${datos.id_queja}`;
@@ -898,13 +983,39 @@ const resolverReporte = async (request: Request, env: Env) => {
       resolucion = datos.decision === 'procede' ? 'El administrador le dio la razón a quien reportó.' : 'El administrador determinó que el reporte no procede.';
     }
 
+    // DESCUENTO EN DINERO: SOLO A QUIEN NO TUVO LA RAZÓN (EL REPORTADO), Y SOLO SI LA DECISIÓN FUE A FAVOR DE QUIEN REPORTÓ
+    const aFavorDeQuienReporta = datos.decision === 'procede' || datos.decision === 'a_favor_contratista';
+    if (descuento > 0 && !aFavorDeQuienReporta) return responder(400, { error: 'Solo se puede descontar cuando le das la razón a quien reportó.' });
+    const textoDescuento = descuento > 0
+      ? `Se aplica un descuento de $${descuento.toLocaleString('es-MX')} a ${texto(queja.fields.acusado)} (${texto(queja.fields.rol_acusado) || 'reportado'}).`
+      : 'Sin descuento económico.';
+    resolucion = `${resolucion} ${textoDescuento}`;
+
+    // EL CONTRATO DEJA DE CONTAR ESTE REPORTE COMO ABIERTO (YA SE PUEDE TERMINAR LA OBRA SI NO HAY OTROS)
+    // Y GUARDA EL DESCUENTO, PARA QUE LAS DOS PARTES LO VEAN EN SU TARJETA DE LA OBRA
+    if (idContrato) {
+      const transformaciones: Record<string, unknown>[] = [contadorReportes(-1)];
+      if (descuento > 0) {
+        transformaciones.push({ fieldPath: 'descuentos', appendMissingElements: { values: [aValorFirestore({
+          monto: descuento, motivo: texto(queja.fields.motivo), a_cargo_de: texto(queja.fields.acusado), rol: texto(queja.fields.rol_acusado),
+          id_queja: datos.id_queja, fecha: new Date().toLocaleDateString('es-MX', { timeZone: 'America/Mexico_City' }),
+        })] } });
+      }
+      writes.push({
+        update: { name: `${nombreBase}/Postulaciones/${idContrato}`, fields: {} },
+        updateMask: { fieldPaths: [] },
+        updateTransforms: transformaciones,
+        currentDocument: { exists: true },
+      });
+    }
+
     const admin = docs['Sistema/AdminProfile'];
     writes.push({
       update: {
         name: `${nombreBase}/${rutaQueja}`,
-        fields: aCamposFirestore({ estado: 'Resuelta', resolucion, nota_admin: nota, fecha_resolucion: new Date().toISOString(), atendida_por: (admin && texto(admin.fields.nombre)) || 'Administrador' }),
+        fields: aCamposFirestore({ estado: 'Resuelta', resolucion, nota_admin: nota, descuento, fecha_resolucion: new Date().toISOString(), atendida_por: (admin && texto(admin.fields.nombre)) || 'Administrador' }),
       },
-      updateMask: { fieldPaths: ['estado', 'resolucion', 'nota_admin', 'fecha_resolucion', 'atendida_por'] },
+      updateMask: { fieldPaths: ['estado', 'resolucion', 'nota_admin', 'descuento', 'fecha_resolucion', 'atendida_por'] },
       currentDocument: { updateTime: queja.updateTime },
     });
 
@@ -914,8 +1025,9 @@ const resolverReporte = async (request: Request, env: Env) => {
     const esUsuario = (id: string) => /^[A-Za-z0-9]{10,128}$/.test(id);
     const idReportante = texto(queja.fields.id_reportante);
     const idAcusado = texto(queja.fields.id_acusado);
-    if (esUsuario(idReportante)) writes.push(nuevaNotificacion(env, idReportante, 'Tu reporte fue resuelto', `Reporte "${motivo}"${obra}: ${resolucion}\n\nNota del administrador: ${nota}`));
-    if (esUsuario(idAcusado)) writes.push(nuevaNotificacion(env, idAcusado, 'Se resolvió un reporte sobre ti', `Reporte "${motivo}"${obra}, levantado por ${texto(queja.fields.nombre_reportante) || 'otro usuario'}: ${resolucion}\n\nNota del administrador: ${nota}`));
+    const extra = { tipo: 'admin', importante: true };
+    if (esUsuario(idReportante)) writes.push(nuevaNotificacion(env, idReportante, 'Tu reporte fue resuelto', `Reporte "${motivo}"${obra}: ${resolucion}\n\nNota del administrador: ${nota}`, extra));
+    if (esUsuario(idAcusado)) writes.push(nuevaNotificacion(env, idAcusado, 'Se resolvió un reporte sobre ti', `Reporte "${motivo}"${obra}, levantado por ${texto(queja.fields.nombre_reportante) || 'otro usuario'}: ${resolucion}\n\nNota del administrador: ${nota}`, extra));
 
     if (!(await confirmarEscrituras(env, writes))) return responder(409, { error: 'El reporte cambió mientras lo resolvías. Recarga e intenta de nuevo.' });
     return responder(200, { resuelta: true });
@@ -1143,6 +1255,7 @@ type ValorFirestore = {
   stringValue?: string;
   integerValue?: string;
   doubleValue?: number;
+  booleanValue?: boolean;
   mapValue?: { fields?: Record<string, ValorFirestore> };
 };
 type DocumentoLeido = { fields: Record<string, ValorFirestore>; updateTime: string };

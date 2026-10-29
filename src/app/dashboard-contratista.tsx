@@ -1,9 +1,10 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Picker } from '@react-native-picker/picker';
 import * as ImagePicker from 'expo-image-picker';
+import * as Location from 'expo-location';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Dimensions, Image, LogBox, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, Dimensions, Image, LogBox, Modal, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 // IGNORAR EL ERROR FALSO DE FIREBASE WEBCHANNEL EN EXPO
@@ -16,10 +17,13 @@ import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, query,
 import { auth, db } from '../../firebaseConfig';
 import { subirFotoACloudinary } from '@/lib/cloudinary';
 import { eliminarCuentaEnServidor } from '@/lib/cuenta';
-import { abrirChatCon, accionContrato, AccionContrato, ESTADOS, sePuedeCalificar } from '@/lib/contratos';
-import { distanciaKm, ESTADOS_MEXICO, PERIODOS_PAGO, textoDistancia, textoPrecio, ubicacionDesdeGPS } from '@/lib/ubicacion';
-import { AvisosNotificaciones } from '@/components/avisos-notificaciones';
+import { abrirChatCon, accionContrato, AccionContrato, ESTADOS, MENSAJES_INICIALES, sePuedeCalificar, tieneReporteAbierto } from '@/lib/contratos';
+import { coincide } from '@/lib/busqueda';
+import { distanciaKm, ESTADOS_MEXICO, PERIODOS_PAGO, textoDias, textoDistancia, textoPrecio, ubicacionDesdeGPS } from '@/lib/ubicacion';
+import { BuscadorConSugerencias } from '@/components/buscador-sugerencias';
+import { CampanaNotificaciones } from '@/components/campana-notificaciones';
 import { FiltrosBusqueda, TODOS_LOS_ESTADOS } from '@/components/filtros-busqueda';
+import { PerfilTrabajador } from '@/components/perfil-trabajador';
 import { ModalBitacora } from '@/components/modal-bitacora';
 import { ModalCancelarContrato } from '@/components/modal-cancelar-contrato';
 import { ModalReportarProblema } from '@/components/modal-reportar-problema';
@@ -32,6 +36,14 @@ const ORDENES_TRABAJADORES = [
   { valor: 'cercania', texto: 'Más cerca de mí' },
   { valor: 'precio', texto: 'Menor precio' },
 ];
+
+// TÍTULO DEL ENCABEZADO CORTO DE CADA PESTAÑA (LA PESTAÑA "PERFIL" TIENE SU PROPIO ENCABEZADO GRANDE)
+const TITULOS_PESTAÑA: Record<string, { titulo: string; sub: string }> = {
+  Explorar: { titulo: 'Explorar talentos', sub: 'Encuentra a los mejores trabajadores para tu obra' },
+  Vacantes: { titulo: 'Mis anuncios', sub: 'Publica y administra tus vacantes' },
+  Obras: { titulo: 'Mis obras', sub: 'Bitácora, cierre o cancelación de cada obra' },
+  Candidatos: { titulo: 'Solicitudes', sub: 'Trabajadores que se postularon y propuestas que enviaste' },
+};
 
 const { width } = Dimensions.get('window');
 
@@ -47,6 +59,9 @@ export default function DashboardContratista() {
   const [filtroEstado, setFiltroEstado] = useState(TODOS_LOS_ESTADOS);
   const [ordenExplorar, setOrdenExplorar] = useState('calificacion');
   const [precioMaximo, setPrecioMaximo] = useState('');
+  const [diasFiltro, setDiasFiltro] = useState<string[]>([]);
+  const [busquedaExplorar, setBusquedaExplorar] = useState('');
+  const [refrescando, setRefrescando] = useState(false);
   const [mensajesSinLeer, setMensajesSinLeer] = useState(0);
   const [fotoGrande, setFotoGrande] = useState<string | null>(null);
 
@@ -69,6 +84,9 @@ export default function DashboardContratista() {
   const [vacantePago, setVacantePago] = useState(''); // MONTO EN PESOS (SOLO NÚMEROS)
   const [vacantePeriodo, setVacantePeriodo] = useState('por semana');
   const [vacanteEstado, setVacanteEstado] = useState('');
+  // LUGAR EXACTO DE LA OBRA (GPS). CON ÉL SE COMPRUEBA QUE EL TRABAJADOR SÍ ESTÁ AHÍ CUANDO LLENA SU BITÁCORA
+  const [vacanteLugar, setVacanteLugar] = useState<{ latitud: number; longitud: number } | null>(null);
+  const [buscandoLugar, setBuscandoLugar] = useState(false);
   const [vacanteHorario, setVacanteHorario] = useState('');
   const [vacanteDesc, setVacanteDesc] = useState('');
   const [vacanteCupo, setVacanteCupo] = useState('1'); 
@@ -128,9 +146,7 @@ export default function DashboardContratista() {
         setEditEstado(estado);
         setUserData({ id: userDoc.id, refPath: userDoc.ref.path, ...data, ubicacion_estado: estado });
 
-        // EL ORDEN Y LOS FILTROS SE APLICAN AL DIBUJAR (VER directorioFiltrado)
-        const snapDir = await getDocs(collection(db, 'Usuarios'));
-        setDirectorio(snapDir.docs.map(d => ({id: d.id, ...d.data()})));
+        await cargarDirectorio();
 
         const qVacantes = query(collection(db, 'Vacantes'), where('id_contratista', '==', usuarioActual.uid));
         const vacantesSnap = await getDocs(qVacantes);
@@ -156,7 +172,19 @@ export default function DashboardContratista() {
     } catch (error) { console.log("Error", error); } finally { setCargando(false); }
   };
 
+  // TRABAJADORES DE EXPLORAR. SE VUELVEN A LEER CADA VEZ QUE SE ENTRA A EXPLORAR, PARA VER SUS OBRAS Y RESEÑAS AL DÍA.
+  // EL ORDEN Y LOS FILTROS SE APLICAN AL DIBUJAR (VER directorioFiltrado)
+  const cargarDirectorio = async () => {
+    try {
+      const snapDir = await getDocs(collection(db, 'Usuarios'));
+      setDirectorio(snapDir.docs.map(d => ({id: d.id, ...d.data()})));
+    } catch (error) { console.log("Error cargando trabajadores", error); }
+  };
+
+  const refrescar = async () => { setRefrescando(true); await cargarPerfil(); setRefrescando(false); };
+
   useEffect(() => { cargarPerfil(); }, []);
+  useEffect(() => { if (pestañaActiva === 'Explorar' && !cargando) cargarDirectorio(); }, [pestañaActiva]);
 
   // SI VENIMOS DE OTRA PANTALLA (P. EJ. LA BARRA DE MENSAJES), ABRIR LA PESTAÑA QUE PIDIÓ
   useEffect(() => {
@@ -176,7 +204,8 @@ export default function DashboardContratista() {
   }, []);
 
   const seleccionarFoto = async (destino: 'perfil' | 'vacante' | 'queja') => {
-    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsEditing: true, quality: 0.5, base64: true });
+    // SIN allowsEditing: ASÍ NO APARECE LA PANTALLA DE RECORTE ("CORTAR") Y LA FOTO SE ELIGE DIRECTO
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.5, base64: true });
     if (!result.canceled && result.assets[0].base64) {
       const base64Data = `data:image/jpeg;base64,${result.assets[0].base64}`;
       if (destino === 'vacante') setVacanteFoto(base64Data);
@@ -184,7 +213,7 @@ export default function DashboardContratista() {
       if (destino === 'perfil') {
         Alert.alert("Actualizar Foto", "¿Deseas guardar esta nueva foto?", [
           { text: "Cancelar", style: "cancel" },
-          { text: "Sí", onPress: async () => {
+          { text: "OK", onPress: async () => {
               setProcesando(true);
               try {
                 const urlSegura = await subirFotoACloudinary(base64Data);
@@ -209,6 +238,7 @@ export default function DashboardContratista() {
   };
 
   const abrirModalNuevaVacante = () => {
+    setVacanteLugar(null);
     setVacanteEditandoId(null); setVacanteTitulo(''); setVacanteUbicacion(''); setVacantePago(''); setVacantePeriodo('por semana'); setVacanteEstado(userData?.ubicacion_estado || ''); setVacanteHorario(''); setVacanteDesc(''); setVacanteCupo('1'); setVacanteFoto(null); setVacanteCategoria('Albañilería');
     setModalVacante(true);
   };
@@ -222,6 +252,7 @@ export default function DashboardContratista() {
     setVacantePago(vacante.pago_monto ? String(vacante.pago_monto) : (String(vacante.pago || '').replace(/[^0-9]/g, '')));
     setVacantePeriodo(vacante.pago_periodo || 'por semana');
     setVacanteEstado(vacante.estado_republica || userData?.ubicacion_estado || '');
+    setVacanteLugar(vacante.coordenadas_obra || null);
     setVacanteHorario(vacante.horario);
     setVacanteDesc(vacante.descripcion);
     setVacanteCupo(vacante.cupo_total ? vacante.cupo_total.toString() : '1');
@@ -246,7 +277,8 @@ export default function DashboardContratista() {
         titulo: vacanteTitulo, ubicacion: vacanteUbicacion, estado_republica: vacanteEstado,
         pago: textoPrecio(monto, vacantePeriodo), pago_monto: monto, pago_periodo: vacantePeriodo,
         horario: vacanteHorario, descripcion: vacanteDesc, categoria: vacanteCategoria, cupo_total: parseInt(vacanteCupo) || 1, foto_trabajo: urlFotoTrabajo,
-        coordenadas: userData.ubicacion || null, // PARA ORDENAR "MÁS CERCA DE MÍ" EN LA BOLSA DE TRABAJO
+        coordenadas: vacanteLugar || userData.ubicacion || null, // PARA ORDENAR "MÁS CERCA DE MÍ" EN LA BOLSA DE TRABAJO
+        coordenadas_obra: vacanteLugar,                          // LUGAR EXACTO PARA EL CHECK GPS DE LA BITÁCORA
       };
 
       if (vacanteEditandoId) {
@@ -264,6 +296,18 @@ export default function DashboardContratista() {
       setModalVacante(false);
     } catch (error: any) { Alert.alert("No se pudo guardar la vacante", error?.message || "Intenta de nuevo."); }
     setProcesando(false);
+  };
+
+  // EL CONTRATISTA PARADO EN LA OBRA TOCA EL BOTÓN Y SE GUARDA ESE PUNTO COMO EL LUGAR DE LA OBRA
+  const marcarLugarDeObra = async () => {
+    setBuscandoLugar(true);
+    try {
+      const permiso = await Location.requestForegroundPermissionsAsync();
+      if (!permiso.granted) { Alert.alert("Sin permiso", "Activa el permiso de ubicación para marcar dónde está la obra."); setBuscandoLugar(false); return; }
+      const posicion = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+      setVacanteLugar({ latitud: posicion.coords.latitude, longitud: posicion.coords.longitude });
+    } catch (error) { Alert.alert("Error", "No se pudo obtener tu ubicación. Intenta de nuevo."); }
+    setBuscandoLugar(false);
   };
 
   const cerrarVacante = async (id: string) => {
@@ -328,7 +372,9 @@ export default function DashboardContratista() {
       setModalContratarDirecto(false);
       setPerfilTrabajadorExpandido(null);
       Alert.alert("Propuesta enviada", `${trabajadorParaContratar.nombre} verá tu propuesta en su pestaña Obras. Platiquen los detalles por chat; cuando acepte, se cierra el trato.`);
-      abrirChatCon({ id: trabajadorParaContratar.id, nombre: `${trabajadorParaContratar.nombre} ${trabajadorParaContratar.apellidos}`, rol: trabajadorParaContratar.oficio_principal || 'Trabajador', foto: trabajadorParaContratar.foto_rostro_url });
+      const tituloObra = misVacantes.find(v => v.id === vacanteSeleccionadaParaContratar)?.titulo || '';
+      abrirChatCon({ id: trabajadorParaContratar.id, nombre: `${trabajadorParaContratar.nombre} ${trabajadorParaContratar.apellidos}`, rol: trabajadorParaContratar.oficio_principal || 'Trabajador', foto: trabajadorParaContratar.foto_rostro_url },
+        MENSAJES_INICIALES.propuesta(trabajadorParaContratar.nombre, tituloObra));
     } catch (error: any) { Alert.alert("No se pudo proponer", error?.message || "Intenta de nuevo."); }
     setProcesando(false);
   };
@@ -445,12 +491,15 @@ export default function DashboardContratista() {
     ]);
   };
 
-  const chatearCon = (contrato: any) => abrirChatCon({
+  // mensaje: TEXTO LISTO PARA EMPEZAR LA PLÁTICA (LA PERSONA LO PUEDE CAMBIAR ANTES DE ENVIARLO)
+  const chatearCon = (contrato: any, mensaje?: string) => abrirChatCon({
     id: contrato.id_trabajador,
     nombre: `${contrato.trabajador?.nombre || ''} ${contrato.trabajador?.apellidos || ''}`.trim() || 'Trabajador',
     rol: contrato.trabajador?.oficio_principal || 'Trabajador',
     foto: contrato.trabajador?.foto_rostro_url,
-  });
+  }, mensaje);
+  // UNA SOLICITUD SE PLATICA Y SE ACEPTA EN EL CHAT (AHÍ APARECE EL BOTÓN "ACEPTAR TRATO")
+  const irAlChatDeSolicitud = (cand: any) => chatearCon(cand, MENSAJES_INICIALES.solicitud(cand.trabajador?.nombre || '', cand.titulo_vacante));
 
   // QUÉ PUEDE HACER EL CONTRATISTA CON CADA CONTRATO, SEGÚN SU ESTADO
   const botonesDelContrato = (contrato: any): BotonContrato[] => {
@@ -471,7 +520,7 @@ export default function DashboardContratista() {
       case ESTADOS.ACTIVA: return [
         { ...bitacora, texto: 'Ver bitácora', relleno: true },
         chatear,
-        { texto: 'Marcar terminada', icono: 'flag-outline', color: '#00D06C', onPress: () => confirmarAccion('solicitar_fin', contrato, "Marcar obra como terminada", `¿La obra de ${contrato.trabajador?.nombre} ya terminó? Él tendrá que confirmarlo.`, "Listo. Falta que el trabajador confirme que terminó.") },
+        { texto: 'Marcar terminada', icono: 'flag-outline', color: tieneReporteAbierto(contrato) ? '#9CA3AF' : '#00D06C', onPress: () => tieneReporteAbierto(contrato) ? Alert.alert("Todavía no", "Hay un reporte de esta obra que el administrador está revisando. Podrás terminarla cuando lo resuelva; te avisaremos.") : confirmarAccion('solicitar_fin', contrato, "Marcar obra como terminada", `¿La obra de ${contrato.trabajador?.nombre} ya terminó? Él tendrá que confirmarlo.`, "Listo. Falta que el trabajador confirme que terminó.") },
         reportar,
         { texto: 'Cancelar obra', icono: 'warning-outline', color: '#DC2626', onPress: () => setContratoCancelar(contrato) },
       ];
@@ -513,12 +562,20 @@ export default function DashboardContratista() {
     .filter(t => categoriaExplorar === 'Todos' || t.oficio_principal === categoriaExplorar)
     .filter(t => filtroEstado === TODOS_LOS_ESTADOS || t.ubicacion_estado === filtroEstado)
     .filter(t => !precioMaximo || !t.tarifa_monto || t.tarifa_monto <= parseInt(precioMaximo))
+    // DÍAS: QUE ESTÉ DISPONIBLE EN TODOS LOS DÍAS ELEGIDOS (LOS QUE NO MARCARON DÍAS SE QUEDAN: "A CONVENIR")
+    .filter(t => diasFiltro.length === 0 || !t.dias_disponibles?.length || diasFiltro.every(d => t.dias_disponibles.includes(d)))
+    .filter(t => coincide(`${t.nombre} ${t.apellidos} ${t.oficio_principal || ''} ${t.ubicacion_texto || ''} ${t.ubicacion_estado || ''}`, busquedaExplorar))
     .sort((a, b) => {
       if (ordenExplorar === 'cercania') return (a.distancia ?? Infinity) - (b.distancia ?? Infinity);
       if (ordenExplorar === 'precio') return (a.tarifa_monto || Infinity) - (b.tarifa_monto || Infinity);
       return calificacionDe(b) - calificacionDe(a) || (b.numero_resenas || 0) - (a.numero_resenas || 0);
     });
   const obrasDe = (t: any) => (t.portafolio?.length || 0) + (t.obras_realizadas?.length || 0);
+  // FOTOS PARA LA VISTA PREVIA DE LA TARJETA: PRIMERO LAS DE OBRAS HECHAS EN PALANTEMX, LUEGO LAS DEL PORTAFOLIO
+  const fotosDe = (t: any): string[] => [
+    ...(t.obras_realizadas || []).slice().reverse().flatMap((o: any) => [o.foto_trabajo, ...(o.fotos || [])]),
+    ...(t.portafolio || []).filter((o: any) => o && typeof o === 'object').map((o: any) => o.foto_despues || o.foto_antes),
+  ].filter(Boolean);
 
   if (cargando) { return ( <View style={styles.loadingCenter}><ActivityIndicator size="large" color="#0D2340" /><Text style={styles.loadingText}>Cargando Panel Central...</Text></View> ); }
 
@@ -527,9 +584,23 @@ export default function DashboardContratista() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-      <ScrollView style={{flex: 1}} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 20 }}>
-        
-        <View style={styles.headerCover} />
+      <ScrollView style={{flex: 1}} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 20 }}
+        refreshControl={<RefreshControl refreshing={refrescando} onRefresh={refrescar} colors={['#0D2340']} />}>
+
+        {/* ENCABEZADO: EL PERFIL COMPLETO SOLO EN LA PESTAÑA "PERFIL"; EN LAS DEMÁS, UNO CORTO CON SU TÍTULO */}
+        {pestañaActiva !== 'Perfil' ? (
+          <View style={styles.headerCorto}>
+            <View style={{flex: 1}}>
+              <Text style={styles.headerCortoTitulo}>{TITULOS_PESTAÑA[pestañaActiva]?.titulo}</Text>
+              <Text style={styles.headerCortoSub}>{TITULOS_PESTAÑA[pestañaActiva]?.sub}</Text>
+            </View>
+            <CampanaNotificaciones onNuevos={cargarPerfil} />
+          </View>
+        ) : (
+        <>
+        <View style={styles.headerCover}>
+          <CampanaNotificaciones onNuevos={cargarPerfil} style={{position: 'absolute', top: 14, right: 16}} />
+        </View>
         <View style={styles.profileSection}>
           <TouchableOpacity style={styles.avatarContainer} onPress={() => seleccionarFoto('perfil')}>
             <Image source={{ uri: userData?.foto_rostro_url || 'https://via.placeholder.com/150' }} style={styles.avatar} />
@@ -547,25 +618,25 @@ export default function DashboardContratista() {
             <View style={styles.statBox}><Text style={styles.statNumber}>{misVacantes.length}</Text><Text style={styles.statLabel}>Anuncios</Text></View><View style={styles.statDivider} />
             <View style={styles.statBox}><Text style={[styles.statNumber, {color: '#F59E0B'}]}>{solicitudesPendientes.length}</Text><Text style={styles.statLabel}>Solicitudes</Text></View><View style={styles.statDivider} />
             <View style={styles.statBox}><Text style={[styles.statNumber, {color: '#00D06C'}]}>{trabajadoresContratados.length}</Text><Text style={styles.statLabel}>Obras Activas</Text></View>
+            <View style={styles.statDivider} />
+            <View style={styles.statBox}><Text style={[styles.statNumber, {color: '#F59E0B'}]}>{userData?.calificacion || '0.0'}</Text><Text style={styles.statLabel}>Calificación</Text></View>
           </View>
         </View>
-
-        <View style={styles.tabsContainer}>
-          {['Explorar', 'Vacantes', 'Obras', 'Candidatos', 'Ajustes'].map((tab) => (
-            <TouchableOpacity key={tab} style={[styles.tabButton, pestañaActiva === tab && styles.tabButtonActive]} onPress={() => setPestañaActiva(tab)}>
-              <Text style={[styles.tabText, pestañaActiva === tab && styles.tabTextActive]}>{tab}</Text>
-            </TouchableOpacity>
-          ))}
-        </View>
+        </>
+        )}
 
         <View style={styles.contentSection}>
 
           {/* --- PESTAÑA: DIRECTORIO DE TRABAJADORES CON FILTROS --- */}
           {pestañaActiva === 'Explorar' && (
             <View>
-              <Text style={styles.sectionTitle}>Talentos Sobresalientes</Text>
-              <Text style={{fontSize: 12, color: '#6B7280', marginBottom: 15}}>Encuentra y contacta directamente a los mejores profesionales para tu obra.</Text>
-              
+              <BuscadorConSugerencias
+                valor={busquedaExplorar}
+                onCambio={setBusquedaExplorar}
+                placeholder="Busca por nombre, oficio o ciudad..."
+                vocabulario={[...categoriasFiltro.slice(1), ...directorio.flatMap(t => [`${t.nombre} ${t.apellidos}`, t.oficio_principal, t.ubicacion_texto]), ...ESTADOS_MEXICO]}
+              />
+
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom: 15}}>
                 {categoriasFiltro.map((cat, i) => (
                   <TouchableOpacity key={i} style={[styles.filterChip, categoriaExplorar === cat && styles.filterChipActive]} onPress={() => setCategoriaExplorar(cat)}>
@@ -579,6 +650,7 @@ export default function DashboardContratista() {
                 orden={ordenExplorar} onOrden={setOrdenExplorar} opcionesOrden={ORDENES_TRABAJADORES}
                 precio={precioMaximo} onPrecio={setPrecioMaximo} etiquetaPrecio="Precio máximo"
                 miEstado={userData?.ubicacion_estado}
+                dias={diasFiltro} onDias={setDiasFiltro}
               />
               <Text style={{fontSize: 12, color: '#6B7280', marginBottom: 10}}>{directorioFiltrado.length} trabajador{directorioFiltrado.length === 1 ? '' : 'es'}</Text>
 
@@ -609,14 +681,18 @@ export default function DashboardContratista() {
                         {[trabajador.ubicacion_texto, trabajador.ubicacion_estado].filter(Boolean).join(', ') || 'Sin ubicación'}{trabajador.distancia !== null ? ` • ${textoDistancia(trabajador.distancia)}` : ''}
                       </Text>
                     </View>
-                    
-                    {trabajador.portafolio && trabajador.portafolio.length > 0 && (
+                    <View style={[styles.workerFeedDetailRow, {marginBottom: 12}]}>
+                      <Ionicons name="calendar-outline" size={16} color="#6B7280" />
+                      <Text style={[styles.workerFeedDetailText, {flex: 1}]}>Disponible: {textoDias(trabajador.dias_disponibles)}</Text>
+                    </View>
+
+                    {fotosDe(trabajador).length > 0 && (
                       <View style={styles.workerFeedPreviewRow}>
-                        {trabajador.portafolio.slice(0, 3).map((obra: any, idx: number) => (
-                          <Image key={idx} source={{uri: obra.foto_despues || obra.foto_antes || 'https://via.placeholder.com/150'}} style={styles.workerFeedMiniImg} />
+                        {fotosDe(trabajador).slice(0, 3).map((foto, idx) => (
+                          <Image key={idx} source={{uri: foto}} style={styles.workerFeedMiniImg} />
                         ))}
-                        {trabajador.portafolio.length > 3 && (
-                          <View style={styles.workerFeedMiniImgOverlay}><Text style={styles.workerFeedMiniImgText}>+{trabajador.portafolio.length - 3}</Text></View>
+                        {fotosDe(trabajador).length > 3 && (
+                          <View style={styles.workerFeedMiniImgOverlay}><Text style={styles.workerFeedMiniImgText}>+{fotosDe(trabajador).length - 3}</Text></View>
                         )}
                       </View>
                     )}
@@ -702,7 +778,7 @@ export default function DashboardContratista() {
             <View>
               <Text style={styles.sectionTitle}>Nuevas Solicitudes</Text>
               {solicitudesPendientes.length > 0 && (
-                <Text style={{fontSize: 12, color: '#6B7280', marginBottom: 12}}>Antes de aceptar, platica con el trabajador por chat. Cuando los dos estén de acuerdo, acepta y se cierra el trato.</Text>
+                <Text style={{fontSize: 12, color: '#6B7280', marginBottom: 12}}>Ve al chat con el trabajador y platiquen los detalles. Cuando los dos estén de acuerdo, acepta el trato ahí mismo en el chat.</Text>
               )}
               {solicitudesPendientes.length > 0 ? (
                 solicitudesPendientes.map((cand, index) => (
@@ -717,8 +793,8 @@ export default function DashboardContratista() {
                     </View>
                     <View style={styles.candidatoFooter}><Text style={styles.candidatoFooterText}><Text style={{fontWeight: 'bold'}}>Postuló para:</Text> {cand.titulo_vacante}</Text></View>
                     <View style={{flexDirection: 'row', marginTop: 10}}>
-                      <TouchableOpacity style={[styles.candBtnAccion, {borderColor: '#3B82F6', backgroundColor: '#EFF6FF', marginHorizontal: 0, padding: 10}]} onPress={() => chatearCon(cand)}>
-                        <Ionicons name="chatbubbles-outline" size={18} color="#3B82F6" /><Text style={[styles.candBtnText, {color: '#3B82F6'}]}>Chatear antes de aceptar</Text>
+                      <TouchableOpacity style={[styles.candBtnAccion, {borderColor: '#00D06C', backgroundColor: '#00D06C', marginHorizontal: 0, padding: 10}]} onPress={() => irAlChatDeSolicitud(cand)}>
+                        <Ionicons name="chatbubbles" size={18} color="#FFF" /><Text style={[styles.candBtnText, {color: '#FFF'}]}>Ir al chat para platicar y aceptar</Text>
                       </TouchableOpacity>
                     </View>
                   </TouchableOpacity>
@@ -738,9 +814,31 @@ export default function DashboardContratista() {
             </View>
           )}
 
-          {pestañaActiva === 'Ajustes' && (
+          {/* --- PESTAÑA PERFIL: MIS RESEÑAS Y TODOS LOS AJUSTES DE LA CUENTA --- */}
+          {pestañaActiva === 'Perfil' && (
             <View>
-              <Text style={styles.sectionTitle}>Configuración Empresarial</Text>
+              <Text style={styles.sectionTitle}>Lo que dicen de ti ({userData?.resenas?.length || 0})</Text>
+              {userData?.resenas?.length > 0 ? (
+                [...userData.resenas].reverse().map((resena: any, idx: number) => (
+                  <View key={idx} style={styles.reviewCard}>
+                    <View style={styles.reviewHeader}>
+                      <Image source={{uri: resena.evaluador_foto || undefined}} style={styles.reviewAvatar} />
+                      <View>
+                        <Text style={styles.reviewName}>{resena.evaluador_nombre}</Text>
+                        <View style={styles.reviewStarsRow}>
+                          {[...Array(5)].map((_, i) => (<Ionicons key={i} name={i < resena.estrellas ? "star" : "star-outline"} size={12} color="#F59E0B" />))}
+                          <Text style={styles.reviewDate}> • {resena.fecha}</Text>
+                        </View>
+                      </View>
+                    </View>
+                    <Text style={styles.reviewComment}>"{resena.comentario}"</Text>
+                  </View>
+                ))
+              ) : (
+                <Text style={{color: '#9CA3AF', textAlign: 'center', marginBottom: 20}}>Todavía no tienes reseñas. Aparecen cuando un trabajador te califica al terminar una obra.</Text>
+              )}
+
+              <Text style={[styles.sectionTitle, {marginTop: 10}]}>Ajustes de la cuenta</Text>
               <TouchableOpacity style={styles.settingsOption} onPress={() => setModalEditar(true)}><View style={styles.settingsRow}><Ionicons name="person-circle-outline" size={24} color="#0D2340" /><Text style={styles.settingsText}>Editar datos de la empresa</Text></View><Ionicons name="chevron-forward" size={20} color="#9CA3AF" /></TouchableOpacity>
               <TouchableOpacity style={styles.settingsOption} onPress={abrirModalEvaluar}><View style={styles.settingsRow}><Ionicons name="star-outline" size={24} color="#F59E0B" /><Text style={styles.settingsText}>Evaluar a un Trabajador contratado</Text></View><Ionicons name="chevron-forward" size={20} color="#9CA3AF" /></TouchableOpacity>
               <TouchableOpacity style={styles.settingsOption} onPress={abrirModalQueja}><View style={styles.settingsRow}><Ionicons name="shield-half-outline" size={24} color="#D32F2F" /><Text style={[styles.settingsText, {color: '#D32F2F'}]}>Levantar Reporte a Trabajador</Text></View><Ionicons name="chevron-forward" size={20} color="#9CA3AF" /></TouchableOpacity>
@@ -751,18 +849,29 @@ export default function DashboardContratista() {
         </View>
       </ScrollView>
 
-      {/* --- MENÚ INFERIOR ACTUALIZADO DE 5 BOTONES --- */}
+      {/* --- MENÚ INFERIOR: CADA BOTÓN ES UNA SOLA COSA (ANUNCIOS SOLO VACANTES; PERFIL TODO LO DE LA CUENTA) --- */}
       <View style={styles.bottomNavigation}>
-        <TouchableOpacity style={styles.navItem} onPress={() => setPestañaActiva('Explorar')}><Ionicons name="search" size={26} color={pestañaActiva === 'Explorar' ? "#0D2340" : "#6B7280"} /><Text style={[styles.navText, pestañaActiva === 'Explorar' && {color: '#0D2340', fontWeight: 'bold'}]}>Explorar</Text></TouchableOpacity>
-        <TouchableOpacity style={styles.navItem} onPress={() => setPestañaActiva('Vacantes')}><Ionicons name="megaphone" size={26} color={pestañaActiva === 'Vacantes' ? "#0D2340" : "#6B7280"} /><Text style={[styles.navText, pestañaActiva === 'Vacantes' && {color: '#0D2340', fontWeight: 'bold'}]}>Anuncios</Text></TouchableOpacity>
-        <TouchableOpacity style={styles.navItem} onPress={() => setPestañaActiva('Obras')}><Ionicons name="construct" size={26} color={pestañaActiva === 'Obras' ? "#0D2340" : "#6B7280"} /><Text style={[styles.navText, pestañaActiva === 'Obras' && {color: '#0D2340', fontWeight: 'bold'}]}>Obras</Text></TouchableOpacity>
-        <TouchableOpacity style={styles.navItem} onPress={() => setPestañaActiva('Candidatos')}><Ionicons name="people" size={26} color={pestañaActiva === 'Candidatos' ? "#0D2340" : "#6B7280"} />{solicitudesPendientes.length > 0 && <View style={styles.badge}><Text style={styles.badgeText}>{solicitudesPendientes.length}</Text></View>}<Text style={[styles.navText, pestañaActiva === 'Candidatos' && {color: '#0D2340', fontWeight: 'bold'}]}>Solicitud</Text></TouchableOpacity>
+        {([
+          ['Explorar', 'search', 'Explorar'], ['Vacantes', 'megaphone', 'Anuncios'], ['Obras', 'construct', 'Obras'], ['Candidatos', 'people', 'Solicitud'],
+        ] as const).map(([pestaña, icono, texto]) => (
+          <TouchableOpacity key={pestaña} style={styles.navItem} onPress={() => setPestañaActiva(pestaña)}>
+            <View>
+              <Ionicons name={pestañaActiva === pestaña ? icono : `${icono}-outline`} size={24} color={pestañaActiva === pestaña ? "#0D2340" : "#6B7280"} />
+              {pestaña === 'Candidatos' && solicitudesPendientes.length > 0 && <View style={styles.badgeNotif}><Text style={styles.badgeNotifText}>{solicitudesPendientes.length}</Text></View>}
+            </View>
+            <Text style={[styles.navText, pestañaActiva === pestaña && {color: '#0D2340', fontWeight: 'bold'}]}>{texto}</Text>
+          </TouchableOpacity>
+        ))}
         <TouchableOpacity style={styles.navItem} onPress={() => router.replace('/mensajes' as any)}>
-          <View style={{position: 'relative'}}>
-            <Ionicons name="chatbubbles-outline" size={26} color="#6B7280" />
+          <View>
+            <Ionicons name="chatbubbles-outline" size={24} color="#6B7280" />
             {mensajesSinLeer > 0 && <View style={styles.badgeNotif}><Text style={styles.badgeNotifText}>{mensajesSinLeer > 9 ? '+9' : mensajesSinLeer}</Text></View>}
           </View>
-          <Text style={styles.navText}>Mensaje</Text>
+          <Text style={styles.navText}>Mensajes</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.navItem} onPress={() => setPestañaActiva('Perfil')}>
+          <Ionicons name={pestañaActiva === 'Perfil' ? 'person-circle' : 'person-circle-outline'} size={24} color={pestañaActiva === 'Perfil' ? "#0D2340" : "#6B7280"} />
+          <Text style={[styles.navText, pestañaActiva === 'Perfil' && {color: '#0D2340', fontWeight: 'bold'}]}>Perfil</Text>
         </TouchableOpacity>
       </View>
 
@@ -871,6 +980,12 @@ export default function DashboardContratista() {
                 </Picker>
               </View>
               <Text style={styles.modalLabel}>Ciudad / colonia</Text><TextInput style={styles.modalInput} placeholder="Ej. Toluca" value={vacanteUbicacion} onChangeText={setVacanteUbicacion} />
+              <Text style={styles.modalLabel}>Lugar exacto de la obra (recomendado)</Text>
+              <TouchableOpacity style={[styles.uploadArea, {padding: 12, flexDirection: 'row', justifyContent: 'center'}, vacanteLugar && {borderColor: '#00D06C', backgroundColor: '#F0FDF4'}]} onPress={marcarLugarDeObra} disabled={buscandoLugar}>
+                {buscandoLugar ? <ActivityIndicator color="#0D2340" /> : <Ionicons name={vacanteLugar ? 'checkmark-circle' : 'locate'} size={20} color={vacanteLugar ? '#00A355' : '#0D2340'} />}
+                <Text style={{marginLeft: 8, fontWeight: 'bold', color: vacanteLugar ? '#00A355' : '#0D2340', flexShrink: 1}}>{vacanteLugar ? 'Lugar marcado. Toca para volver a marcarlo' : 'Estoy en la obra: usar mi ubicación actual'}</Text>
+              </TouchableOpacity>
+              <Text style={{fontSize: 11, color: '#6B7280', marginTop: -8, marginBottom: 10}}>Con este punto comprobamos que el trabajador sí está en la obra cuando llena su bitácora.</Text>
               <View style={{flexDirection: 'row', justifyContent: 'space-between'}}>
                 <View style={{flex: 1, marginRight: 5}}><Text style={styles.modalLabel}>Pago ($, solo número)</Text><TextInput style={styles.modalInput} placeholder="Vacío = a convenir" keyboardType="numeric" value={vacantePago} onChangeText={t => setVacantePago(t.replace(/[^0-9]/g, ''))} /></View>
                 <View style={{flex: 1, marginLeft: 5}}>
@@ -963,13 +1078,10 @@ export default function DashboardContratista() {
               <TouchableOpacity style={styles.verPortafolioBtn} onPress={() => { const trabajadorCompleto = candidatoSeleccionado.trabajador; setCandidatoSeleccionado(null); verPerfilTrabajador(trabajadorCompleto, true); }}>
                 <Ionicons name="images-outline" size={18} color="#0D2340" style={{marginRight: 8}}/><Text style={styles.verPortafolioText}>Ver Perfil Completo</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[styles.verPortafolioBtn, {marginTop: 10, borderColor: '#3B82F6', backgroundColor: '#EFF6FF'}]} onPress={() => { const cand = candidatoSeleccionado; setCandidatoSeleccionado(null); chatearCon(cand); }}>
-                <Ionicons name="chatbubbles-outline" size={18} color="#3B82F6" style={{marginRight: 8}}/><Text style={[styles.verPortafolioText, {color: '#3B82F6'}]}>Chatear antes de aceptar</Text>
-              </TouchableOpacity>
-              <Text style={{fontSize: 11, color: '#6B7280', textAlign: 'center', marginTop: 12}}>Acepta solo cuando ya se pusieron de acuerdo por chat: al aceptar se cierra el trato y empieza la obra.</Text>
-              <View style={{flexDirection: 'row', justifyContent: 'space-between', marginTop: 20}}>
-                <TouchableOpacity style={[styles.candBtnAccion, {backgroundColor: '#FEE2E2', borderColor: '#F87171'}]} onPress={() => responderSolicitud('rechazar')} disabled={procesando}><Ionicons name="close-circle-outline" size={20} color="#DC2626" /><Text style={[styles.candBtnText, {color: '#DC2626'}]}>Rechazar</Text></TouchableOpacity>
-                <TouchableOpacity style={[styles.candBtnAccion, {backgroundColor: '#0D2340', borderColor: '#0D2340'}]} onPress={() => responderSolicitud('aceptar')} disabled={procesando}><Ionicons name="checkmark-circle" size={20} color="#FFF" /><Text style={[styles.candBtnText, {color: '#FFF'}]}>Aceptar</Text></TouchableOpacity>
+              <Text style={{fontSize: 12, color: '#6B7280', textAlign: 'center', marginTop: 14}}>El trato se acepta en el chat, después de platicar y ponerse de acuerdo.</Text>
+              <View style={{flexDirection: 'row', justifyContent: 'space-between', marginTop: 12}}>
+                <TouchableOpacity style={[styles.candBtnAccion, {backgroundColor: '#FEE2E2', borderColor: '#F87171', flex: 1}]} onPress={() => responderSolicitud('rechazar')} disabled={procesando}><Ionicons name="close-circle-outline" size={20} color="#DC2626" /><Text style={[styles.candBtnText, {color: '#DC2626'}]}>Rechazar</Text></TouchableOpacity>
+                <TouchableOpacity style={[styles.candBtnAccion, {backgroundColor: '#00D06C', borderColor: '#00D06C', flex: 2}]} onPress={() => { const cand = candidatoSeleccionado; setCandidatoSeleccionado(null); irAlChatDeSolicitud(cand); }}><Ionicons name="chatbubbles" size={20} color="#FFF" /><Text style={[styles.candBtnText, {color: '#FFF'}]}>Ir al chat y aceptar</Text></TouchableOpacity>
               </View>
             </View>
           </View>
@@ -984,90 +1096,14 @@ export default function DashboardContratista() {
               <View style={{flexDirection: 'row', alignItems: 'center'}}><Ionicons name="person-circle" size={28} color="#00D06C" style={{marginRight: 10}}/><Text style={{color: '#FFF', fontWeight: 'bold', fontSize: 16}}>Perfil de {perfilTrabajadorExpandido?.nombre}</Text></View>
               <TouchableOpacity onPress={() => setPerfilTrabajadorExpandido(null)}><Ionicons name="close-circle" size={28} color="#FFF"/></TouchableOpacity>
             </View>
-            <View style={{backgroundColor: '#FFF', padding: 15, borderBottomWidth: 1, borderColor: '#E5E7EB', alignItems: 'center'}}>
-              <Text style={{fontSize: 12, color: '#6B7280', fontWeight: 'bold', marginBottom: 5}}>ESTADO ACTUAL DEL TRABAJADOR</Text>
-              <View style={{flexDirection: 'row', alignItems: 'center', backgroundColor: perfilTrabajadorExpandido?.disponibilidad === 'Ocupado' ? '#FEF3C7' : '#D1FAE5', paddingHorizontal: 15, paddingVertical: 5, borderRadius: 15}}>
-                <View style={[styles.dispDot, {backgroundColor: perfilTrabajadorExpandido?.disponibilidad === 'Ocupado' ? '#F59E0B' : '#059669', marginRight: 5}]} />
-                <Text style={{color: perfilTrabajadorExpandido?.disponibilidad === 'Ocupado' ? '#B45309' : '#059669', fontWeight: 'bold'}}>{perfilTrabajadorExpandido?.disponibilidad === 'Ocupado' ? 'OCUPADO EN OTRA OBRA' : 'DISPONIBLE PARA TRABAJAR'}</Text>
-              </View>
-            </View>
-            <ScrollView contentContainerStyle={{padding: 20}}>
-              {/* DATOS DEL TRABAJADOR: FOTO, OFICIO, PRECIO, UBICACIÓN Y CALIFICACIÓN */}
-              <View style={[styles.feedJobCard, {alignItems: 'center'}]}>
-                <TouchableOpacity onPress={() => perfilTrabajadorExpandido?.foto_rostro_url && setFotoGrande(perfilTrabajadorExpandido.foto_rostro_url)}>
-                  <Image source={{ uri: perfilTrabajadorExpandido?.foto_rostro_url || undefined }} style={styles.candAvatarBig} />
-                </TouchableOpacity>
-                <Text style={styles.candNameBig}>{perfilTrabajadorExpandido?.nombre} {perfilTrabajadorExpandido?.apellidos}</Text>
-                <Text style={styles.candOficioBig}>{perfilTrabajadorExpandido?.oficio_principal || 'Trabajador General'}</Text>
-                <Text style={[styles.workerFeedPrecio, {fontSize: 15, marginTop: 6}]}>{textoPrecio(perfilTrabajadorExpandido?.tarifa_monto, perfilTrabajadorExpandido?.tarifa_periodo)}</Text>
-                <View style={[styles.locationBadge, {marginTop: 10}]}>
-                  <Ionicons name="location" size={12} color="#0D2340" />
-                  <Text style={styles.locationText}>
-                    {[perfilTrabajadorExpandido?.ubicacion_texto, perfilTrabajadorExpandido?.ubicacion_estado].filter(Boolean).join(', ') || 'Sin ubicación registrada'}
-                    {distanciaKm(userData?.ubicacion, perfilTrabajadorExpandido?.ubicacion) !== null ? ` • ${textoDistancia(distanciaKm(userData?.ubicacion, perfilTrabajadorExpandido?.ubicacion))}` : ''}
-                  </Text>
-                </View>
-                <View style={styles.candStatsRow}>
-                  <View style={styles.candStatBox}><Text style={styles.candStatValue}>{perfilTrabajadorExpandido?.calificacion || '0.0'} <Ionicons name="star" size={14} color="#F59E0B"/></Text><Text style={styles.candStatLabel}>Calificación</Text></View>
-                  <View style={styles.candStatBox}><Text style={styles.candStatValue}>{perfilTrabajadorExpandido?.numero_resenas || 0}</Text><Text style={styles.candStatLabel}>Reseñas</Text></View>
-                  <View style={styles.candStatBox}><Text style={styles.candStatValue}>{perfilTrabajadorExpandido ? obrasDe(perfilTrabajadorExpandido) : 0}</Text><Text style={styles.candStatLabel}>Obras</Text></View>
-                </View>
-              </View>
-
-              {/* OBRAS TERMINADAS DENTRO DE PALANTEMX (LAS AGREGA EL SERVIDOR AL FINALIZAR CADA CONTRATO) */}
-              {perfilTrabajadorExpandido?.obras_realizadas?.length > 0 && (
-                <View style={{marginBottom: 10}}>
-                  <Text style={styles.sectionTitle}>🤝 Obras realizadas en PalanteMX</Text>
-                  {[...perfilTrabajadorExpandido.obras_realizadas].reverse().map((obra: any, idx: number) => (
-                    <View key={idx} style={[styles.feedJobCard, {padding: 0, overflow: 'hidden', marginBottom: 12}]}>
-                      {obra.foto_trabajo ? (
-                        <TouchableOpacity onPress={() => setFotoGrande(obra.foto_trabajo)}><Image source={{uri: obra.foto_trabajo}} style={{width: '100%', height: 140}} /></TouchableOpacity>
-                      ) : null}
-                      <View style={{padding: 14}}>
-                        <Text style={{fontSize: 15, fontWeight: 'bold', color: '#0D2340'}}>{obra.titulo}</Text>
-                        <Text style={{fontSize: 12, color: '#6B7280', marginTop: 2}}>Para: {obra.contratista}{obra.ubicacion ? ` • ${obra.ubicacion}` : ''}</Text>
-                        <Text style={{fontSize: 12, color: '#6B7280', marginTop: 2}}>Del {obra.fecha_inicio || '—'} al {obra.fecha_fin}</Text>
-                      </View>
-                    </View>
-                  ))}
-                </View>
+            <ScrollView contentContainerStyle={{padding: 16}}>
+              {/* EL MISMO PERFIL QUE VE EL ADMIN: DATOS, DÍAS DISPONIBLES, OBRAS EN PALANTEMX CON FOTOS, PORTAFOLIO Y RESEÑAS */}
+              {perfilTrabajadorExpandido && (
+                <PerfilTrabajador
+                  trabajador={perfilTrabajadorExpandido}
+                  distancia={textoDistancia(distanciaKm(userData?.ubicacion, perfilTrabajadorExpandido.ubicacion))}
+                />
               )}
-
-              <Text style={styles.sectionTitle}>Portafolio (subido por el trabajador)</Text>
-              {perfilTrabajadorExpandido?.portafolio && perfilTrabajadorExpandido.portafolio.length > 0 ? (
-                perfilTrabajadorExpandido.portafolio.map((trabajo: any, idx: number) => (
-                  <View key={idx} style={[styles.feedJobCard, {padding: 0, overflow: 'hidden', elevation: 2}]}>
-                    <View style={{flexDirection: 'row', height: 150}}>
-                      {trabajo.foto_antes && (<View style={{flex: 1, borderRightWidth: 1, borderColor: '#FFF', position: 'relative'}}><Image source={{uri: trabajo.foto_antes}} style={{width: '100%', height: '100%'}}/><View style={styles.imageTag}><Text style={styles.imageTagText}>Inicio</Text></View></View>)}
-                      {trabajo.foto_despues && (<View style={{flex: 1, position: 'relative'}}><Image source={{uri: trabajo.foto_despues}} style={{width: '100%', height: '100%'}}/><View style={styles.imageTag}><Text style={styles.imageTagText}>Fin</Text></View></View>)}
-                    </View>
-                    <View style={{padding: 15}}>
-                      <Text style={{fontSize: 16, fontWeight: 'bold', color: '#0D2340'}}>{trabajo.titulo}</Text>
-                      <Text style={{fontSize: 13, color: '#6B7280'}}>{trabajo.lugar} • {trabajo.estado}</Text>
-                      <Text style={{marginTop: 5, fontSize: 13, color: '#4B5563'}}>{trabajo.descripcion}</Text>
-                    </View>
-                  </View>
-                ))
-              ) : ( <Text style={{textAlign: 'center', color: '#6B7280', marginBottom: 20}}>Este trabajador aún no ha subido fotos de sus obras pasadas.</Text> )}
-
-              <Text style={styles.sectionTitle}>Reseñas</Text>
-              {perfilTrabajadorExpandido?.resenas?.length > 0 ? (
-                [...perfilTrabajadorExpandido.resenas].reverse().map((resena: any, idx: number) => (
-                  <View key={idx} style={styles.reviewCard}>
-                    <View style={styles.reviewHeader}>
-                      <Image source={{uri: resena.evaluador_foto || undefined}} style={styles.reviewAvatar} />
-                      <View>
-                        <Text style={styles.reviewName}>{resena.evaluador_nombre}</Text>
-                        <View style={styles.reviewStarsRow}>
-                          {[...Array(5)].map((_, i) => (<Ionicons key={i} name={i < resena.estrellas ? "star" : "star-outline"} size={12} color="#F59E0B" />))}
-                          <Text style={styles.reviewDate}> • {resena.fecha}</Text>
-                        </View>
-                      </View>
-                    </View>
-                    <Text style={styles.reviewComment}>"{resena.comentario}"</Text>
-                  </View>
-                ))
-              ) : ( <Text style={{textAlign: 'center', color: '#6B7280'}}>Todavía no tiene reseñas.</Text> )}
 
               {!perfilTrabajadorExpandido?.yaContratado && (
                 <TouchableOpacity style={{backgroundColor: '#00D06C', flexDirection: 'row', justifyContent: 'center', alignItems: 'center', padding: 15, borderRadius: 12, marginTop: 20}} onPress={() => iniciarContratacionDirecta(perfilTrabajadorExpandido)}>
@@ -1084,8 +1120,6 @@ export default function DashboardContratista() {
       <ModalCancelarContrato contrato={contratoCancelar} onClose={() => setContratoCancelar(null)} onCancelado={() => { setContratoCancelar(null); cargarPerfil(); }} />
       <ModalReportarProblema contrato={contratoReportar} rol="contratista" onClose={() => setContratoReportar(null)} />
       <VisorFoto uri={fotoGrande} onClose={() => setFotoGrande(null)} />
-      {/* AVISOS DEL SERVIDOR (DECISIONES DEL ADMIN...). AL LLEGAR UNO SE RECARGA, PORQUE PUDO CAMBIAR UNA OBRA */}
-      <AvisosNotificaciones onNuevos={cargarPerfil} />
 
       <Modal visible={modalEvaluar} animationType="slide" transparent>
         <View style={styles.modalBg}>
@@ -1149,6 +1183,9 @@ const styles = StyleSheet.create({
   loadingCenter: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F3F4F6' },
   loadingText: { marginTop: 10, color: '#0D2340', fontWeight: 'bold' },
   headerCover: { height: 130, backgroundColor: '#0D2340', borderBottomLeftRadius: 25, borderBottomRightRadius: 25 },
+  headerCorto: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#0D2340', paddingHorizontal: 20, paddingTop: 18, paddingBottom: 22, borderBottomLeftRadius: 25, borderBottomRightRadius: 25 },
+  headerCortoTitulo: { color: '#FFF', fontSize: 22, fontWeight: 'bold' },
+  headerCortoSub: { color: '#9CA3AF', fontSize: 12, marginTop: 2 },
   profileSection: { alignItems: 'center', marginTop: -60, paddingHorizontal: 20 },
   avatarContainer: { position: 'relative' },
   avatar: { width: 110, height: 110, borderRadius: 55, borderWidth: 4, borderColor: '#F3F4F6', backgroundColor: '#E5E7EB' },

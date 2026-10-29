@@ -112,6 +112,7 @@ service cloud.firestore {
       // BITÁCORA DIARIA DE LA OBRA: LA VEN LAS DOS PARTES; LA ESCRIBE SOLO EL TRABAJADOR, Y SOLO CON LA OBRA ACTIVA.
       // CADA DÍA ES UN DOCUMENTO CON ID "AAAA-MM-DD": COMO NO HAY REGLA DE update, NO SE PUEDE REESCRIBIR UN DÍA
       // NI REGISTRAR DOS VECES EL MISMO. LA REVISIÓN DEL CONTRATISTA (revision) LA ESCRIBE SOLO EL WORKER.
+      // ubicacion_registro / distancia_obra_km: EL "CHECK" GPS DE QUE EL TRABAJADOR SÍ ESTABA EN LA OBRA.
       match /Bitacora/{entradaId} {
         allow read: if esAdmin()
           || (conSesion() && (request.auth.uid == contrato().id_trabajador
@@ -120,7 +121,8 @@ service cloud.firestore {
           && request.auth.uid == contrato().id_trabajador
           && contrato().estado == 'Aceptada (En Proceso)'
           && request.resource.data.autor_id == request.auth.uid
-          && request.resource.data.keys().hasOnly(['asistio', 'nota', 'evidencia', 'autor_id', 'fecha', 'timestamp']);
+          && request.resource.data.keys().hasOnly(['asistio', 'nota', 'evidencia', 'autor_id', 'fecha', 'timestamp',
+                                                   'ubicacion_registro', 'distancia_obra_km']);
       }
     }
 

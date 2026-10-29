@@ -14,9 +14,9 @@ import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, query, updateDoc, 
 import { auth, db } from '../../firebaseConfig';
 import { subirFotoACloudinary } from '@/lib/cloudinary';
 import { eliminarCuentaEnServidor } from '@/lib/cuenta';
-import { abrirChatCon, accionContrato, AccionContrato, ESTADOS, sePuedeCalificar } from '@/lib/contratos';
-import { ESTADOS_MEXICO, PERIODOS_PAGO, textoPrecio, ubicacionDesdeGPS } from '@/lib/ubicacion';
-import { AvisosNotificaciones } from '@/components/avisos-notificaciones';
+import { abrirChatCon, accionContrato, AccionContrato, ESTADOS, MENSAJES_INICIALES, sePuedeCalificar, tieneReporteAbierto } from '@/lib/contratos';
+import { DIAS_SEMANA, ESTADOS_MEXICO, PERIODOS_PAGO, textoDias, textoPrecio, ubicacionDesdeGPS } from '@/lib/ubicacion';
+import { CampanaNotificaciones } from '@/components/campana-notificaciones';
 import { ModalBitacora } from '@/components/modal-bitacora';
 import { ModalCancelarContrato } from '@/components/modal-cancelar-contrato';
 import { ModalReportarProblema } from '@/components/modal-reportar-problema';
@@ -43,6 +43,7 @@ export default function DashboardTrabajador() {
   const [editEstado, setEditEstado] = useState('');
   const [editTarifa, setEditTarifa] = useState(''); // MI PRECIO EN PESOS (SOLO NÚMEROS)
   const [editPeriodo, setEditPeriodo] = useState('por día');
+  const [editDias, setEditDias] = useState<string[]>([]); // DÍAS QUE PUEDO TRABAJAR
 
   const [modalTrabajo, setModalTrabajo] = useState(false);
   const [obraEditandoId, setObraEditandoId] = useState<string | null>(null); 
@@ -104,6 +105,7 @@ export default function DashboardTrabajador() {
         setDisponibilidad(data.disponibilidad || 'Disponible');
         setEditTarifa(data.tarifa_monto ? String(data.tarifa_monto) : '');
         setEditPeriodo(data.tarifa_periodo || 'por día');
+        setEditDias(Array.isArray(data.dias_disponibles) ? data.dias_disponibles : []);
 
         // CIUDAD Y ESTADO: LOS QUE EL USUARIO ESCRIBIÓ, O LOS DEL GPS DEL REGISTRO. EL ESTADO SE GUARDA EN EL PERFIL
         // (ubicacion_estado) PORQUE CON ÉL LOS CONTRATISTAS FILTRAN A LOS TRABAJADORES.
@@ -150,7 +152,8 @@ export default function DashboardTrabajador() {
   };
 
   const seleccionarFoto = async (destino: 'perfil' | 'antes' | 'despues' | 'queja') => {
-    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsEditing: true, quality: 0.5, base64: true });
+    // SIN allowsEditing: ASÍ NO APARECE LA PANTALLA DE RECORTE ("CORTAR") Y LA FOTO SE ELIGE DIRECTO
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.5, base64: true });
     if (!result.canceled && result.assets[0].base64) {
       const base64Data = `data:image/jpeg;base64,${result.assets[0].base64}`;
       if (destino === 'antes') setFotoAntes(base64Data);
@@ -159,7 +162,7 @@ export default function DashboardTrabajador() {
       if (destino === 'perfil') {
         Alert.alert("Actualizar Foto", "¿Deseas guardar esta nueva foto?", [
           { text: "Cancelar", style: "cancel" },
-          { text: "Sí", onPress: async () => {
+          { text: "OK", onPress: async () => {
               setProcesando(true);
               try {
                 const urlSegura = await subirFotoACloudinary(base64Data);
@@ -181,6 +184,7 @@ export default function DashboardTrabajador() {
       await updateDoc(doc(db, userData.refPath), {
         oficio_principal: editOficio, ubicacion_texto: editUbicacion, ubicacion_estado: editEstado,
         tarifa_monto: parseInt(editTarifa) || null, tarifa_periodo: editPeriodo,
+        dias_disponibles: DIAS_SEMANA.filter(d => editDias.includes(d)),
       });
       await cargarPerfil(); setModalEditar(false);
     } catch (error: any) { Alert.alert("No se pudo guardar", error?.message || "Intenta de nuevo."); }
@@ -337,10 +341,10 @@ export default function DashboardTrabajador() {
     const reportar: BotonContrato = { texto: 'Reportar problema', icono: 'flag-outline', color: '#EA580C', onPress: () => setContratoReportar(contrato) };
 
     switch (contrato.estado) {
+      // LA PROPUESTA NO SE ACEPTA AQUÍ: PRIMERO SE PLATICA EN EL CHAT, Y AHÍ MISMO SE ACEPTA EL TRATO
       case ESTADOS.PROPUESTA: return [
-        { texto: 'Aceptar', icono: 'checkmark-circle', color: '#00D06C', relleno: true, onPress: () => confirmarAccion('aceptar', contrato, "Aceptar obra", `¿Aceptas trabajar en "${contrato.titulo_vacante}"? Con esto se cierra el trato con el contratista.`, "¡Trato cerrado! La obra ya aparece en tus obras activas.") },
+        { texto: 'Ir al chat para platicar y aceptar', icono: 'chatbubbles', color: '#00D06C', relleno: true, onPress: () => abrirChatCon({ id: contratista.id, nombre: contratista.nombre, rol: 'Contratista', foto: contratista.foto }, MENSAJES_INICIALES.responderPropuesta(contrato.titulo_vacante)) },
         { texto: 'Rechazar', icono: 'close-circle-outline', color: '#DC2626', onPress: () => confirmarAccion('rechazar', contrato, "Rechazar propuesta", "¿Seguro que no quieres esta obra?", "Rechazaste la propuesta.") },
-        chatear,
       ];
       case ESTADOS.ACTIVA: return [
         { ...bitacora, texto: 'Llenar bitácora', relleno: true },
@@ -349,7 +353,7 @@ export default function DashboardTrabajador() {
         { texto: 'Cancelar obra', icono: 'warning-outline', color: '#DC2626', onPress: () => setContratoCancelar(contrato) },
       ];
       case ESTADOS.POR_CONFIRMAR_FIN: return [
-        { texto: 'Sí, terminó', icono: 'flag', color: '#00D06C', relleno: true, onPress: () => confirmarAccion('confirmar_fin', contrato, "Confirmar fin de obra", "¿Confirmas que la obra ya terminó? Pasará a tu historial y a tu portafolio.", "¡Obra finalizada! Ya puedes calificar al contratista.") },
+        { texto: 'Sí, terminó', icono: 'flag', color: tieneReporteAbierto(contrato) ? '#9CA3AF' : '#00D06C', relleno: true, onPress: () => tieneReporteAbierto(contrato) ? Alert.alert("Todavía no", "Hay un reporte de esta obra que el administrador está revisando. Podrás confirmar el fin cuando lo resuelva; te avisaremos.") : confirmarAccion('confirmar_fin', contrato, "Confirmar fin de obra", "¿Confirmas que la obra ya terminó? Pasará a tu historial y a tu portafolio.", "¡Obra finalizada! Ya puedes calificar al contratista.") },
         { texto: 'Aún no', icono: 'arrow-undo-outline', color: '#F59E0B', onPress: () => confirmarAccion('rechazar_fin', contrato, "La obra no ha terminado", "La obra regresará a activa. Platica con el contratista lo que falta.", "La obra sigue activa.") },
         bitacora,
         chatear,
@@ -404,7 +408,9 @@ export default function DashboardTrabajador() {
         
         {(pestañaActiva === 'Portafolio' || pestañaActiva === 'Reseñas' || pestañaActiva === 'Ajustes') && (
           <View>
-            <View style={styles.headerCover} />
+            <View style={styles.headerCover}>
+              <CampanaNotificaciones onNuevos={cargarPerfil} style={{position: 'absolute', top: 14, right: 16}} />
+            </View>
             <View style={styles.profileSection}>
               <TouchableOpacity style={styles.avatarContainer} onPress={() => seleccionarFoto('perfil')}>
                 <Image source={{ uri: userData?.foto_rostro_url || 'https://via.placeholder.com/150' }} style={styles.avatar} />
@@ -415,7 +421,8 @@ export default function DashboardTrabajador() {
               <Text style={styles.userName}>{userData?.nombre} {userData?.apellidos}</Text>
               <Text style={styles.userRole}>{userData?.oficio_principal || userData?.rol_usuario}</Text>
               <TouchableOpacity onPress={() => setModalEditar(true)}>
-                <Text style={{color: '#00A355', fontWeight: 'bold', marginTop: 4}}>{userData?.tarifa_monto ? textoPrecio(userData.tarifa_monto, userData.tarifa_periodo) : 'Pon tu precio para aparecer en los filtros ✏️'}</Text>
+                <Text style={{color: '#00A355', fontWeight: 'bold', marginTop: 4, textAlign: 'center'}}>{userData?.tarifa_monto ? textoPrecio(userData.tarifa_monto, userData.tarifa_periodo) : 'Pon tu precio para aparecer en los filtros ✏️'}</Text>
+                <Text style={{color: '#0D2340', fontSize: 12, marginTop: 2, textAlign: 'center'}}>📅 {userData?.dias_disponibles?.length ? `Disponible: ${textoDias(userData.dias_disponibles)}` : 'Marca los días que puedes trabajar ✏️'}</Text>
               </TouchableOpacity>
               
               <TouchableOpacity style={[styles.dispBadge, disponibilidad === 'Disponible' ? styles.dispDisponible : styles.dispOcupado]} onPress={toggleDisponibilidad} disabled={procesando}>
@@ -589,13 +596,16 @@ export default function DashboardTrabajador() {
             <View style={styles.headerDark}>
               <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center'}}>
                 <Text style={styles.headerDarkTitle}>Mis Obras</Text>
-                {refreshing ? <ActivityIndicator color="#00D06C" /> : <TouchableOpacity onPress={onRefresh}><Ionicons name="refresh" size={24} color="#00D06C" /></TouchableOpacity>}
+                <View style={{flexDirection: 'row', alignItems: 'center'}}>
+                  {refreshing ? <ActivityIndicator color="#00D06C" /> : <TouchableOpacity onPress={onRefresh}><Ionicons name="refresh" size={24} color="#00D06C" /></TouchableOpacity>}
+                  <CampanaNotificaciones onNuevos={cargarPerfil} style={{marginLeft: 16}} />
+                </View>
               </View>
               <Text style={styles.headerDarkSub}>Acepta propuestas, lleva tu bitácora y cierra tus obras con el contratista.</Text>
             </View>
 
             <View style={styles.contentSection}>
-              {seccionContratos('📩 Propuestas para ti', [ESTADOS.PROPUESTA], 'Un contratista te propone esta obra. Platiquen por chat y, si te conviene, acéptala.')}
+              {seccionContratos('📩 Propuestas para ti', [ESTADOS.PROPUESTA], 'Un contratista te propone esta obra. Ve al chat, platiquen los detalles y, si están de acuerdo, acepta el trato ahí mismo.')}
               {seccionContratos('🏗️ Obras activas', [ESTADOS.ACTIVA])}
               {seccionContratos('🏁 Por confirmar que terminó', [ESTADOS.POR_CONFIRMAR_FIN], 'El contratista marcó la obra como terminada. ¿Confirmas?')}
               {seccionContratos('⚠️ Suspendidas', [ESTADOS.SUSPENDIDA], 'Se canceló y el administrador la está revisando.')}
@@ -719,6 +729,18 @@ export default function DashboardTrabajador() {
                   </Picker>
                 </View>
               </View>
+              <Text style={styles.modalLabel}>Días que puedes trabajar (toca para marcar)</Text>
+              <View style={{flexDirection: 'row', flexWrap: 'wrap', marginBottom: 12}}>
+                {DIAS_SEMANA.map(d => {
+                  const marcado = editDias.includes(d);
+                  return (
+                    <TouchableOpacity key={d} onPress={() => setEditDias(marcado ? editDias.filter(x => x !== d) : [...editDias, d])}
+                      style={{borderWidth: 1, borderColor: marcado ? '#00A355' : '#D1D5DB', backgroundColor: marcado ? '#00A355' : '#FFF', borderRadius: 10, paddingHorizontal: 11, paddingVertical: 8, marginRight: 6, marginBottom: 6}}>
+                      <Text style={{fontWeight: 'bold', fontSize: 12, color: marcado ? '#FFF' : '#4B5563'}}>{d}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
               <Text style={styles.modalLabel}>Oficio Principal</Text>
               <View style={styles.pickerBox}>
                 <Picker selectedValue={editOficio} onValueChange={(itemValue) => setEditOficio(itemValue)}>
@@ -781,8 +803,6 @@ export default function DashboardTrabajador() {
       <ModalBitacora contrato={contratoBitacora} rol="trabajador" onClose={() => setContratoBitacora(null)} />
       <ModalCancelarContrato contrato={contratoCancelar} onClose={() => setContratoCancelar(null)} onCancelado={() => { setContratoCancelar(null); cargarPerfil(); }} />
       <ModalReportarProblema contrato={contratoReportar} rol="trabajador" onClose={() => setContratoReportar(null)} />
-      {/* AVISOS DEL SERVIDOR (DECISIONES DEL ADMIN, BITÁCORA RECHAZADA...). AL LLEGAR UNO SE RECARGA, PORQUE PUDO CAMBIAR UNA OBRA */}
-      <AvisosNotificaciones onNuevos={cargarPerfil} />
 
       <Modal visible={modalQueja} animationType="fade" transparent>
         <View style={styles.modalBg}>

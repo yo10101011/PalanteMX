@@ -9,12 +9,27 @@ import { router } from 'expo-router';
 import { collection, doc, getDocs, setDoc } from 'firebase/firestore';
 import { auth, db } from '../../firebaseConfig';
 
-// ABRE EL CHAT CON LA OTRA PARTE (SI NO EXISTE, MENSAJES LO CREA). EL TRATO SE PLATICA AHÍ ANTES DE ACEPTAR.
-export const abrirChatCon = (persona: { id: string; nombre: string; rol: string; foto?: string }) => {
+// ABRE EL CHAT CON LA OTRA PARTE (SI NO EXISTE, MENSAJES LO CREA). EL TRATO SE PLATICA Y SE ACEPTA AHÍ.
+// mensaje: TEXTO YA ESCRITO EN LA CAJA (P. EJ. "HOLA, VI TU PERFIL..."); LA PERSONA LO PUEDE CAMBIAR ANTES DE ENVIARLO.
+export const abrirChatCon = (persona: { id: string; nombre: string; rol: string; foto?: string }, mensaje?: string) => {
   router.replace({
     pathname: '/mensajes',
-    params: { autoOpenId: persona.id, autoOpenNombre: persona.nombre, autoOpenRol: persona.rol, autoOpenFoto: persona.foto || '' },
+    params: { autoOpenId: persona.id, autoOpenNombre: persona.nombre, autoOpenRol: persona.rol, autoOpenFoto: persona.foto || '', autoOpenMensaje: mensaje || '' },
   } as any);
+};
+
+// MENSAJES LISTOS PARA EMPEZAR LA PLÁTICA, SEGÚN QUIÉN ESCRIBE Y POR QUÉ
+export const MENSAJES_INICIALES = {
+  propuesta: (nombre: string, obra: string) => `Hola ${nombre}, vi tu perfil y te propuse la obra "${obra}". ¿Te interesaría? Platiquemos los detalles.`,
+  solicitud: (nombre: string, obra: string) => `Hola ${nombre}, vi tu solicitud para "${obra}". Me interesa tu perfil, ¿platicamos los detalles?`,
+  postulacion: (obra: string) => `Hola, me postulé a su obra "${obra}". Me interesa mucho, ¿platicamos los detalles?`,
+  responderPropuesta: (obra: string) => `Hola, vi su propuesta para "${obra}". Me interesa, ¿me da más detalles?`,
+};
+
+// RESPUESTAS RÁPIDAS QUE APARECEN ARRIBA DE LA CAJA DEL CHAT
+export const RESPUESTAS_RAPIDAS: Record<string, string[]> = {
+  Contratista: ['Hola, vi tu perfil. ¿Te interesaría una obra?', '¿Cuándo podrías empezar?', '¿Cuál es tu precio?', '¿Tienes herramienta propia?', 'De acuerdo, acepto el trato.'],
+  Trabajador: ['Hola, me interesa esta obra.', '¿Cuándo empezaríamos?', '¿El material lo pone usted?', '¿Cuál es el horario?', 'De acuerdo, acepto el trato.'],
 };
 
 export const ESTADOS = {
@@ -52,7 +67,7 @@ export type AccionContrato =
 
 type DatosAccion = {
   id_contrato?: string; id_vacante?: string; id_trabajador?: string; motivo?: string;
-  id_entrada?: string; veredicto?: 'confirmar' | 'rechazar'; categoria?: string; nota?: string;
+  id_entrada?: string; veredicto?: 'confirmar' | 'rechazar'; categoria?: string; nota?: string; descuento?: number;
 };
 
 // LLAMA A UNA RUTA DEL SERVIDOR CON LA SESIÓN. SI NO SE PUEDE, LANZA UN ERROR CON EL MOTIVO (LISTO PARA UN Alert)
@@ -79,8 +94,15 @@ export const accionContrato = async (accion: AccionContrato, datos: DatosAccion 
 
 // EL ADMIN RESUELVE UN REPORTE (QUE NO SEA UNA CANCELACIÓN DE OBRA). EL SERVIDOR LES AVISA A LAS DOS PARTES.
 //   bitácora: 'a_favor_trabajador' | 'a_favor_contratista'      otros: 'procede' | 'no_procede'
-export const resolverReporte = (idQueja: string, decision: string, nota: string) =>
-  llamarServidor('/reportes', { id_queja: idQueja, decision, nota }, "No se pudo resolver el reporte.");
+//   descuento: PESOS QUE SE LE DESCUENTAN A QUIEN NO TUVO LA RAZÓN (0 = SIN DESCUENTO)
+export const resolverReporte = (idQueja: string, decision: string, nota: string, descuento = 0) =>
+  llamarServidor('/reportes', { id_queja: idQueja, decision, nota, descuento }, "No se pudo resolver el reporte.");
+
+// ¿HAY REPORTES DE ESTA OBRA QUE EL ADMIN AÚN NO RESUELVE? MIENTRAS LOS HAYA, NO SE PUEDE TERMINAR LA OBRA
+export const tieneReporteAbierto = (contrato: any) => (contrato?.reportes_abiertos || 0) > 0;
+
+// SUMA DE LOS DESCUENTOS QUE APLICÓ EL ADMIN EN ESTA OBRA
+export const totalDescuentos = (contrato: any) => (contrato?.descuentos || []).reduce((suma: number, d: any) => suma + (d.monto || 0), 0);
 
 // ---------------------------------------------------------------- BITÁCORA
 
@@ -117,7 +139,12 @@ export const leerBitacora = async (idContrato: string) => {
 };
 
 // UN SOLO REGISTRO POR DÍA: EL DOCUMENTO SE LLAMA COMO LA FECHA Y LAS REGLAS NO DEJAN REESCRIBIRLO
-export const agregarABitacora = async (idContrato: string, entrada: { asistio: boolean; nota: string; evidencia: string | null }) => {
+export const agregarABitacora = async (idContrato: string, entrada: {
+  asistio: boolean; nota: string; evidencia: string | null;
+  // CHECK DE UBICACIÓN: DÓNDE ESTABA EL TELÉFONO AL REGISTRAR Y A CUÁNTOS KM DE LA OBRA (null SI LA OBRA NO TIENE MAPA)
+  ubicacion_registro: { latitud: number; longitud: number; precision: number | null; simulada: boolean } | null;
+  distancia_obra_km: number | null;
+}) => {
   const ahora = new Date();
   try {
     await setDoc(doc(db, 'Postulaciones', idContrato, 'Bitacora', claveDia(ahora)), {

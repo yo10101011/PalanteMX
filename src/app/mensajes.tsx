@@ -41,6 +41,7 @@ import {
 } from 'firebase/firestore';
 import { auth, db } from '../../firebaseConfig';
 import { subirACloudinary, subirFotoACloudinary } from '@/lib/cloudinary';
+import { accionContrato, ESTADOS, RESPUESTAS_RAPIDAS } from '@/lib/contratos';
 import { useTecladoVisible } from '@/lib/teclado';
 
 export default function Mensajes() {
@@ -80,6 +81,43 @@ export default function Mensajes() {
   // GASTAN DATOS, Y LA DE UN CHAT VIEJO PUEDE PONER SUS MENSAJES EN EL CHAT QUE ESTÁS VIENDO.
   const escuchaChatsRef = useRef<(() => void) | null>(null);
   const escuchaMensajesRef = useRef<(() => void) | null>(null);
+
+  // TRATOS PENDIENTES CON LA PERSONA DEL CHAT ABIERTO (PROPUESTAS O SOLICITUDES QUE AÚN NO SE ACEPTAN).
+  // EL TRATO SE ACEPTA AQUÍ, EN EL CHAT, DESPUÉS DE PLATICAR: ASÍ NADIE CIERRA UN TRATO SIN HABERSE PUESTO DE ACUERDO.
+  const [tratos, setTratos] = useState<any[]>([]);
+  const mensajeAplicadoRef = useRef(''); // PARA PONER EL MENSAJE LISTO (autoOpenMensaje) UNA SOLA VEZ
+
+  const cargarTratos = async (otroId?: string) => {
+    if (!otroId || !auth.currentUser) { setTratos([]); return; }
+    const soyTrabajador = miPerfilRef.current?.rol === 'Trabajador';
+    try {
+      const snap = await getDocs(query(collection(db, 'Postulaciones'), where(soyTrabajador ? 'id_trabajador' : 'id_contratista', '==', auth.currentUser.uid)));
+      setTratos(snap.docs.map(d => ({ id: d.id, ...d.data() } as any))
+        .filter(c => (soyTrabajador ? c.id_contratista : c.id_trabajador) === otroId)
+        .filter(c => c.estado === ESTADOS.PROPUESTA || c.estado === ESTADOS.PENDIENTE));
+    } catch (error) { console.log("Error cargando tratos", error); }
+  };
+  const miPerfilRef = useRef<any>(null);
+  miPerfilRef.current = miPerfil;
+
+  const responderTrato = (trato: any, accion: 'aceptar' | 'rechazar') => {
+    const aceptar = accion === 'aceptar';
+    Alert.alert(aceptar ? "Aceptar el trato" : "No aceptar", aceptar
+      ? `¿Ya se pusieron de acuerdo en todo? Al aceptar, "${trato.titulo_vacante}" empieza como obra activa.`
+      : `¿Seguro que no quieres seguir con "${trato.titulo_vacante}"?`, [
+      { text: "Volver", style: "cancel" },
+      { text: aceptar ? "Sí, aceptar" : "Sí", style: aceptar ? 'default' : 'destructive', onPress: async () => {
+          setProcesando(true);
+          try {
+            await accionContrato(accion, { id_contrato: trato.id });
+            Alert.alert(aceptar ? "¡Trato cerrado!" : "Listo", aceptar ? "La obra ya está activa en la pestaña Obras." : "Se le avisó a la otra persona.");
+            await cargarTratos(trato.id_trabajador === miPerfil?.id ? trato.id_contratista : trato.id_trabajador);
+          } catch (error: any) { Alert.alert("No se pudo", error?.message || "Intenta de nuevo."); }
+          setProcesando(false);
+        }
+      }
+    ]);
+  };
 
   // FOTOS Y NOMBRES ACTUALES DE CADA PERSONA. EL CHAT GUARDA UNA COPIA DE CUANDO SE CREÓ (datos_usuarios), QUE NO
   // CAMBIA SI LA PERSONA CAMBIA SU FOTO: POR ESO SE LEE SU PERFIL Y SE USA ESTO PRIMERO.
@@ -186,6 +224,14 @@ export default function Mensajes() {
     escuchaMensajesRef.current = null;
     setMensajes([]);
     setChatActivo(chat);
+    setTratos([]);
+    cargarTratos(chat.usuarios_ids?.find((id: string) => id !== miPerfil.id));
+    // MENSAJE LISTO PARA EMPEZAR LA PLÁTICA (P. EJ. "HOLA, VI TU PERFIL..."), SOLO SI VIENE DE OTRA PANTALLA CON UNO
+    const listo = String(params.autoOpenMensaje || '');
+    if (listo && mensajeAplicadoRef.current !== listo && chat.usuarios_ids?.includes(String(params.autoOpenId))) {
+      mensajeAplicadoRef.current = listo;
+      setNuevoMensaje(listo);
+    }
     if (chat.ultimo_emisor_id !== miPerfil.id && chat.leido === false) {
       await updateDoc(doc(db, 'Chats', chat.id), { leido: true });
     }
@@ -200,7 +246,7 @@ export default function Mensajes() {
 
   const seleccionarImagen = async () => {
     setModalAdjuntos(false);
-    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsEditing: true, quality: 0.5, base64: true });
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.5, base64: true });
     if (!result.canceled && result.assets[0].base64) {
       setArchivoSeleccionado({ uri: `data:image/jpeg;base64,${result.assets[0].base64}`, nombre: 'Imagen adjunta', tipo: 'imagen' });
     }
@@ -393,7 +439,7 @@ export default function Mensajes() {
         <KeyboardAvoidingView style={{flex: 1}} behavior="padding">
           
           <View style={styles.chatHeader}>
-            <TouchableOpacity style={styles.backBtn} onPress={() => { escuchaMensajesRef.current?.(); escuchaMensajesRef.current = null; setChatActivo(null); router.setParams({ autoOpenId: '', autoOpenNombre: '' }); }}>
+            <TouchableOpacity style={styles.backBtn} onPress={() => { escuchaMensajesRef.current?.(); escuchaMensajesRef.current = null; setChatActivo(null); setTratos([]); router.setParams({ autoOpenId: '', autoOpenNombre: '', autoOpenMensaje: '' }); }}>
               <Ionicons name="arrow-back" size={24} color="#FFF" />
             </TouchableOpacity>
             <Image source={{uri: otroUsuarioData.foto || undefined}} style={styles.chatAvatar} />
@@ -406,10 +452,40 @@ export default function Mensajes() {
             </TouchableOpacity>
           </View>
 
-          <View style={styles.privacyBanner}>
-            <Ionicons name="shield-checkmark" size={16} color="#B45309" style={{marginRight: 8}} />
-            <Text style={styles.privacyText}>Por tu seguridad, mantén el respeto. La plataforma sancionará fraudes o vocabulario inapropiado.</Text>
-          </View>
+          {tratos.length === 0 ? (
+            <View style={styles.privacyBanner}>
+              <Ionicons name="shield-checkmark" size={16} color="#B45309" style={{marginRight: 8}} />
+              <Text style={styles.privacyText}>Por tu seguridad, mantén el respeto. La plataforma sancionará fraudes o vocabulario inapropiado.</Text>
+            </View>
+          ) : tratos.map(trato => {
+            // EL TRATO SE ACEPTA AQUÍ, Y SOLO CUANDO LOS DOS YA ESCRIBIERON (PLATICARON) EN ESTE CHAT
+            const meToca = (trato.estado === ESTADOS.PROPUESTA && miPerfil.rol === 'Trabajador') || (trato.estado === ESTADOS.PENDIENTE && miPerfil.rol === 'Contratista');
+            const yaPlaticaron = mensajes.some(m => m.emisor_id === miPerfil.id) && mensajes.some(m => m.emisor_id === otroUsuarioId);
+            return (
+              <View key={trato.id} style={styles.tratoBanner}>
+                <View style={{flexDirection: 'row', alignItems: 'center'}}>
+                  <Ionicons name="briefcase" size={18} color="#1D4ED8" />
+                  <Text style={styles.tratoTitulo} numberOfLines={1}>{trato.estado === ESTADOS.PROPUESTA ? 'Propuesta' : 'Solicitud'}: {trato.titulo_vacante}</Text>
+                </View>
+                {trato.vacante?.pago ? <Text style={styles.tratoDato}>{trato.vacante.pago}{trato.vacante.ubicacion ? ` • ${trato.vacante.ubicacion}` : ''}</Text> : null}
+                {meToca ? (
+                  <>
+                    <Text style={styles.tratoAyuda}>{yaPlaticaron ? 'Si ya se pusieron de acuerdo, acepta el trato:' : 'Primero platiquen los detalles aquí (los dos deben escribir). Después podrás aceptar el trato.'}</Text>
+                    <View style={{flexDirection: 'row', marginTop: 8}}>
+                      <TouchableOpacity style={[styles.tratoBoton, {backgroundColor: yaPlaticaron ? '#00D06C' : '#D1D5DB', flex: 2}]} disabled={!yaPlaticaron || procesando} onPress={() => responderTrato(trato, 'aceptar')}>
+                        <Ionicons name="checkmark-circle" size={16} color="#FFF" /><Text style={styles.tratoBotonTexto}>Aceptar trato</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={[styles.tratoBoton, {backgroundColor: '#FFF', borderWidth: 1, borderColor: '#DC2626', flex: 1, marginLeft: 8}]} disabled={procesando} onPress={() => responderTrato(trato, 'rechazar')}>
+                        <Text style={[styles.tratoBotonTexto, {color: '#DC2626'}]}>Rechazar</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </>
+                ) : (
+                  <Text style={styles.tratoAyuda}>Platiquen los detalles. Cuando estén de acuerdo, {otroUsuarioData.nombre} acepta el trato desde este chat.</Text>
+                )}
+              </View>
+            );
+          })}
 
           <FlatList
             ref={flatListRef}
@@ -479,6 +555,15 @@ export default function Mensajes() {
               <Text style={styles.blockedBannerText}>Este chat ha sido bloqueado por seguridad. Ya no pueden enviarse mensajes.</Text>
             </View>
           ) : (
+            <>
+            {/* RESPUESTAS RÁPIDAS: SE TOCAN PARA ESCRIBIRLAS EN LA CAJA (SE PUEDEN CAMBIAR ANTES DE ENVIAR) */}
+            {!nuevoMensaje.trim() && !archivoSeleccionado && (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" style={styles.rapidasFila} contentContainerStyle={{paddingHorizontal: 10}}>
+                {(RESPUESTAS_RAPIDAS[miPerfil.rol] || RESPUESTAS_RAPIDAS.Trabajador).map(r => (
+                  <TouchableOpacity key={r} style={styles.rapida} onPress={() => setNuevoMensaje(r)}><Text style={styles.rapidaTexto}>{r}</Text></TouchableOpacity>
+                ))}
+              </ScrollView>
+            )}
             <View style={[styles.inputContainer, { paddingBottom: tecladoVisible ? 10 : Math.max(insets.bottom, 0) + 10 }]}>
               <TouchableOpacity style={styles.attachBtn} onPress={() => setModalAdjuntos(true)}>
                 <Ionicons name="add-circle" size={28} color="#0D2340" />
@@ -490,6 +575,7 @@ export default function Mensajes() {
                 {procesando ? <ActivityIndicator size="small" color="#FFF" /> : <Ionicons name="send" size={18} color="#FFF" style={{marginLeft: 3}} />}
               </TouchableOpacity>
             </View>
+            </>
           )}
 
         </KeyboardAvoidingView>
@@ -638,7 +724,8 @@ export default function Mensajes() {
             <TouchableOpacity style={styles.navItem} onPress={() => router.replace({ pathname: '/dashboard-contratista', params: { tab: 'Vacantes' } } as any)}><Ionicons name="megaphone-outline" size={26} color="#6B7280" /><Text style={styles.navText}>Anuncios</Text></TouchableOpacity>
             <TouchableOpacity style={styles.navItem} onPress={() => router.replace({ pathname: '/dashboard-contratista', params: { tab: 'Obras' } } as any)}><Ionicons name="construct-outline" size={26} color="#6B7280" /><Text style={styles.navText}>Obras</Text></TouchableOpacity>
             <TouchableOpacity style={styles.navItem} onPress={() => router.replace({ pathname: '/dashboard-contratista', params: { tab: 'Candidatos' } } as any)}><Ionicons name="people-outline" size={26} color="#6B7280" /><Text style={styles.navText}>Solicitud</Text></TouchableOpacity>
-            <TouchableOpacity style={styles.navItem}><Ionicons name="chatbubbles" size={26} color="#00D06C" /><Text style={[styles.navText, {color: '#00D06C', fontWeight: 'bold'}]}>Mensaje</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.navItem}><Ionicons name="chatbubbles" size={26} color="#00D06C" /><Text style={[styles.navText, {color: '#00D06C', fontWeight: 'bold'}]}>Mensajes</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.navItem} onPress={() => router.replace({ pathname: '/dashboard-contratista', params: { tab: 'Perfil' } } as any)}><Ionicons name="person-circle-outline" size={26} color="#6B7280" /><Text style={styles.navText}>Perfil</Text></TouchableOpacity>
           </>
         ) : (
           <>
@@ -709,6 +796,15 @@ const styles = StyleSheet.create({
   chatRole: { fontSize: 11, color: '#00D06C', fontWeight: 'bold' },
   privacyBanner: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FEF3C7', paddingHorizontal: 15, paddingVertical: 10, borderBottomWidth: 1, borderColor: '#FDE68A' },
   privacyText: { flex: 1, fontSize: 11, color: '#B45309', fontWeight: 'bold' },
+  tratoBanner: { backgroundColor: '#EFF6FF', borderBottomWidth: 1, borderColor: '#BFDBFE', padding: 12 },
+  tratoTitulo: { fontSize: 14, fontWeight: 'bold', color: '#1E3A8A', marginLeft: 6, flex: 1 },
+  tratoDato: { fontSize: 12, color: '#00A355', fontWeight: 'bold', marginTop: 2 },
+  tratoAyuda: { fontSize: 12, color: '#1E40AF', marginTop: 4 },
+  tratoBoton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', borderRadius: 10, paddingVertical: 9 },
+  tratoBotonTexto: { color: '#FFF', fontWeight: 'bold', fontSize: 13, marginLeft: 4 },
+  rapidasFila: { flexGrow: 0, backgroundColor: '#FFF', borderTopWidth: 1, borderColor: '#F3F4F6', paddingVertical: 8 },
+  rapida: { backgroundColor: '#EFF6FF', borderWidth: 1, borderColor: '#BFDBFE', borderRadius: 16, paddingHorizontal: 12, paddingVertical: 6, marginRight: 8 },
+  rapidaTexto: { fontSize: 12, color: '#1D4ED8', fontWeight: '600' },
   messagesContainer: { padding: 15, flexGrow: 1, justifyContent: 'flex-end' },
   messageBubbleWrapper: { marginBottom: 12, flexDirection: 'row' },
   messageMineWrapper: { justifyContent: 'flex-end' },

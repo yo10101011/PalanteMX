@@ -1,16 +1,18 @@
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Image, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, Image, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 // FIREBASE
 // @ts-ignore
 import { collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
 import { auth, db } from '../../firebaseConfig';
-import { abrirChatCon, accionContrato, ESTADOS, estiloEstado } from '@/lib/contratos';
-import { distanciaKm, textoDistancia } from '@/lib/ubicacion';
-import { AvisosNotificaciones } from '@/components/avisos-notificaciones';
+import { abrirChatCon, accionContrato, ESTADOS, estiloEstado, MENSAJES_INICIALES } from '@/lib/contratos';
+import { coincide } from '@/lib/busqueda';
+import { distanciaKm, ESTADOS_MEXICO, textoDistancia } from '@/lib/ubicacion';
+import { BuscadorConSugerencias } from '@/components/buscador-sugerencias';
+import { CampanaNotificaciones } from '@/components/campana-notificaciones';
 import { FiltrosBusqueda, TODOS_LOS_ESTADOS } from '@/components/filtros-busqueda';
 import { VisorFoto } from '@/components/visor-foto';
 
@@ -111,8 +113,11 @@ export default function FeedTrabajador() {
               // EL SERVIDOR CREA LA SOLICITUD (Y REVISA QUE NO ESTÉS YA POSTULADO Y QUE LA VACANTE TENGA CUPO).
               // EL CONTRATISTA LA REVISA, PLATICAN POR CHAT Y, SI LA ACEPTA, SE CIERRA EL TRATO.
               await accionContrato('postular', { id_vacante: vacante.id });
+              // SE ABRE EL CHAT CON EL CONTRATISTA CON UN MENSAJE LISTO PARA PRESENTARSE; AHÍ PLATICAN Y ÉL ACEPTA EL TRATO
+              Alert.alert("¡Solicitud enviada!", "Ahora preséntate con el contratista en el chat. Cuando se pongan de acuerdo, él acepta el trato ahí mismo.", [
+                { text: "Ir al chat", onPress: () => abrirChatCon({ id: vacante.id_contratista, nombre: vacante.contratista, rol: 'Contratista', foto: contratistas[vacante.id_contratista]?.foto_rostro_url }, MENSAJES_INICIALES.postulacion(vacante.titulo)) },
+              ]);
               await cargarDatos();
-              Alert.alert("¡Solicitud enviada!", "El contratista revisará tu perfil. Pueden platicar por chat; cuando él acepte, la obra aparecerá en tu pestaña Obras.");
               setPestañaFeed('Postulaciones');
             } catch (error: any) {
               Alert.alert("No se pudo enviar", error?.message || "Revisa tu conexión.");
@@ -148,7 +153,7 @@ export default function FeedTrabajador() {
   const vacantesFiltradas = vacantes
     .map(v => ({ ...v, distancia: distanciaKm(miPerfil?.ubicacion, v.coordenadas || contratistas[v.id_contratista]?.ubicacion) }))
     .filter(v => filtroActivo === 'Todos' || v.categoria === filtroActivo)
-    .filter(v => `${v.titulo} ${v.descripcion || ''} ${v.ubicacion || ''}`.toLowerCase().includes(busqueda.toLowerCase()))
+    .filter(v => coincide(`${v.titulo} ${v.categoria || ''} ${v.descripcion || ''} ${v.ubicacion || ''} ${v.estado_republica || ''} ${v.contratista || ''} ${v.empresa || ''}`, busqueda))
     .filter(v => filtroEstado === TODOS_LOS_ESTADOS || v.estado_republica === filtroEstado
       || (!v.estado_republica && String(v.ubicacion || '').toLowerCase().includes(filtroEstado.toLowerCase())))
     .filter(v => !pagoMinimo || !v.pago_monto || v.pago_monto >= parseInt(pagoMinimo))
@@ -169,9 +174,12 @@ export default function FeedTrabajador() {
           <Text style={styles.headerTitle}>Bolsa de Trabajo</Text>
           <Text style={styles.headerSubtitle}>Encuentra tu próximo proyecto hoy</Text>
         </View>
-        <TouchableOpacity style={styles.headerIcon} onPress={onRefresh} disabled={refreshing}>
-          {refreshing ? <ActivityIndicator size="small" color="#0D2340" /> : <Ionicons name="refresh" size={24} color="#0D2340" />}
-        </TouchableOpacity>
+        <View style={{flexDirection: 'row', alignItems: 'center'}}>
+          <TouchableOpacity style={styles.headerIcon} onPress={onRefresh} disabled={refreshing}>
+            {refreshing ? <ActivityIndicator size="small" color="#0D2340" /> : <Ionicons name="refresh" size={24} color="#0D2340" />}
+          </TouchableOpacity>
+          <CampanaNotificaciones onNuevos={cargarDatos} colorIcono="#0D2340" style={{marginLeft: 10}} />
+        </View>
       </View>
 
       {/* PESTAÑAS PRINCIPALES DEL FEED */}
@@ -201,14 +209,17 @@ export default function FeedTrabajador() {
           {/* PANTALLA 1: EXPLORAR VACANTES */}
           {pestañaFeed === 'Explorar' && (
             <View style={{flex: 1}}>
-              {/* BARRA DE BÚSQUEDA */}
-              <View style={styles.searchContainer}>
-                <Ionicons name="search" size={20} color="#9CA3AF" style={styles.searchIcon} />
-                <TextInput 
-                  style={styles.searchInput} 
-                  placeholder="Buscar oficios, obras..." 
-                  value={busqueda}
-                  onChangeText={setBusqueda}
+              {/* BARRA DE BÚSQUEDA CON SUGERENCIAS (ACEPTA FALTAS DE ORTOGRAFÍA Y PALABRAS PARECIDAS) */}
+              <View style={{paddingHorizontal: 20, paddingTop: 12}}>
+                <BuscadorConSugerencias
+                  valor={busqueda}
+                  onCambio={setBusqueda}
+                  placeholder="Buscar oficios, obras, ciudades..."
+                  vocabulario={[
+                    ...categorias.slice(1), 'Albañil', 'Plomero', 'Electricista', 'Carpintero', 'Pintor', 'Limpieza',
+                    ...vacantes.flatMap(v => [v.titulo, v.ubicacion, v.contratista, v.empresa]),
+                    ...ESTADOS_MEXICO,
+                  ]}
                 />
               </View>
 
@@ -347,7 +358,7 @@ export default function FeedTrabajador() {
                     {post.estado === ESTADOS.PENDIENTE && (
                       <View style={styles.accionesPostulacion}>
                         {post.id_contratista ? (
-                          <TouchableOpacity style={[styles.botonPostulacion, { borderColor: '#3B82F6' }]} onPress={() => abrirChatCon({ id: post.id_contratista, nombre: post.vacante?.contratista || post.contratista || 'Contratista', rol: 'Contratista', foto: post.vacante?.foto_contratista })}>
+                          <TouchableOpacity style={[styles.botonPostulacion, { borderColor: '#3B82F6' }]} onPress={() => abrirChatCon({ id: post.id_contratista, nombre: post.vacante?.contratista || post.contratista || 'Contratista', rol: 'Contratista', foto: post.vacante?.foto_contratista }, MENSAJES_INICIALES.postulacion(post.vacante?.titulo || post.titulo_vacante))}>
                             <Ionicons name="chatbubbles-outline" size={16} color="#3B82F6" /><Text style={[styles.botonPostulacionTexto, { color: '#3B82F6' }]}>Chatear</Text>
                           </TouchableOpacity>
                         ) : null}
@@ -403,7 +414,6 @@ export default function FeedTrabajador() {
       </View>
 
       <VisorFoto uri={fotoGrande} onClose={() => setFotoGrande(null)} />
-      <AvisosNotificaciones onNuevos={cargarDatos} />
     </SafeAreaView>
   );
 }

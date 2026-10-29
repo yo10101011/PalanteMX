@@ -44,6 +44,19 @@ export const distanciaKm = (a?: { latitud?: number; longitud?: number } | null, 
 
 export const textoDistancia = (km: number | null) => (km === null ? '' : km < 1 ? 'a menos de 1 km' : `a ${Math.round(km)} km`);
 
+// DÍAS DE LA SEMANA EN QUE EL TRABAJADOR ESTÁ DISPONIBLE (CAMPO dias_disponibles DEL PERFIL)
+export const DIAS_SEMANA = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
+
+// "Lun a Vie", "Lun, Mié, Vie", "Todos los días"...
+export const textoDias = (dias?: string[]) => {
+  const elegidos = DIAS_SEMANA.filter(d => dias?.includes(d));
+  if (elegidos.length === 0) return 'Días a convenir';
+  if (elegidos.length === 7) return 'Todos los días';
+  const indices = elegidos.map(d => DIAS_SEMANA.indexOf(d));
+  const seguidos = indices.every((n, i) => i === 0 || n === indices[i - 1] + 1);
+  return seguidos && elegidos.length > 2 ? `${elegidos[0]} a ${elegidos[elegidos.length - 1]}` : elegidos.join(', ');
+};
+
 // PRECIOS: UN MONTO EN PESOS Y CADA CUÁNTO (LO PONE EL TRABAJADOR EN SU PERFIL Y EL CONTRATISTA EN SU VACANTE)
 export const PERIODOS_PAGO = ['por día', 'por semana', 'por obra'];
 

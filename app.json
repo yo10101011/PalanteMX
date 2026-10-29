@@ -34,7 +34,20 @@
         }
       ],
       "expo-secure-store",
-      "@react-native-community/datetimepicker"
+      "@react-native-community/datetimepicker",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "PalanteMX usa tu ubicación para comprobar que estás en la obra al llenar la bitácora y para mostrarte trabajos cerca de ti."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "PalanteMX usa tus fotos para tu perfil, tus vacantes y la evidencia de tus obras.",
+          "cameraPermission": "PalanteMX usa la cámara para tomar la foto de evidencia de tu avance en la obra."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

@@ -5,14 +5,30 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Picker } from '@react-native-picker/picker';
 import * as ImagePicker from 'expo-image-picker';
+import * as Location from 'expo-location';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Image, KeyboardAvoidingView, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, Image, KeyboardAvoidingView, Linking, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { CalendarioBitacora } from '@/components/calendario-bitacora';
 import { VisorFoto } from '@/components/visor-foto';
 import { subirFotoACloudinary } from '@/lib/cloudinary';
 import { accionContrato, agregarABitacora, claveDia, ESTADOS, estiloDia, leerBitacora, REVISION } from '@/lib/contratos';
+import { distanciaKm, textoDistancia } from '@/lib/ubicacion';
+
+// MÁS LEJOS QUE ESTO DE LA OBRA, EL REGISTRO SE MARCA COMO "LEJOS" (EL GPS DEL TELÉFONO PUEDE FALLAR UNOS METROS)
+const DISTANCIA_MAXIMA_KM = 0.5;
+
+// TEXTO Y COLOR DEL CHECK DE UBICACIÓN DE UN DÍA
+const checkUbicacion = (dia: any, obraConMapa: boolean) => {
+  if (!dia.asistio) return null;
+  if (!dia.ubicacion_registro) return { texto: 'Sin ubicación registrada (registro anterior al check GPS)', color: '#9CA3AF', icono: 'location-outline' as const };
+  if (dia.ubicacion_registro.simulada) return { texto: 'Ubicación FALSA detectada (app de GPS falso)', color: '#DC2626', icono: 'warning' as const };
+  if (dia.distancia_obra_km === null || dia.distancia_obra_km === undefined || !obraConMapa) return { texto: 'Ubicación registrada (la obra no tiene lugar marcado en el mapa)', color: '#3B82F6', icono: 'location' as const };
+  return dia.distancia_obra_km <= DISTANCIA_MAXIMA_KM
+    ? { texto: `En la obra (${textoDistancia(dia.distancia_obra_km)})`, color: '#059669', icono: 'checkmark-circle' as const }
+    : { texto: `Lejos de la obra: ${textoDistancia(dia.distancia_obra_km)}`, color: '#EA580C', icono: 'warning' as const };
+};
 
 type Props = {
   contrato: any | null; // null = MODAL CERRADO
@@ -46,25 +62,68 @@ export function ModalBitacora({ contrato, rol, onClose }: Props) {
     cargar();
   }, [contrato?.id]);
 
-  const elegirFoto = async () => {
+  // FOTO DEL AVANCE: CON LA CÁMARA (RECOMENDADO, ES DEL MOMENTO) O DE LA GALERÍA. SIN PANTALLA DE RECORTE.
+  const elegirFoto = async (origen: 'camara' | 'galeria') => {
     try {
-      const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsEditing: true, quality: 0.5, base64: true });
+      if (origen === 'camara') {
+        const permiso = await ImagePicker.requestCameraPermissionsAsync();
+        if (!permiso.granted) { Alert.alert("Sin permiso", "Activa el permiso de cámara para tomar la foto de tu avance."); return; }
+      }
+      const opciones: ImagePicker.ImagePickerOptions = { mediaTypes: ['images'], quality: 0.5, base64: true };
+      const result = origen === 'camara' ? await ImagePicker.launchCameraAsync(opciones) : await ImagePicker.launchImageLibraryAsync(opciones);
       if (!result.canceled && result.assets[0].base64) setEvidencia(`data:image/jpeg;base64,${result.assets[0].base64}`);
-    } catch (error) { Alert.alert("Error", "No se pudo abrir la galería."); }
+    } catch (error) { Alert.alert("Error", "No se pudo abrir la cámara o la galería."); }
+  };
+
+  // CHECK DE UBICACIÓN: DÓNDE ESTÁ EL TELÉFONO AHORA MISMO. SIN ESTO NO SE PUEDE REGISTRAR ASISTENCIA,
+  // PORQUE UNA FOTO SE PUEDE TOMAR EN CUALQUIER LADO.
+  const ubicacionActual = async () => {
+    const permiso = await Location.requestForegroundPermissionsAsync();
+    if (!permiso.granted) throw new Error("Para registrar tu asistencia necesitamos tu ubicación: así el contratista comprueba que sí estuviste en la obra. Activa el permiso de ubicación.");
+    const posicion = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+    return {
+      latitud: posicion.coords.latitude,
+      longitud: posicion.coords.longitude,
+      precision: posicion.coords.accuracy ?? null,
+      simulada: posicion.mocked === true, // ANDROID AVISA SI ES UNA UBICACIÓN FALSA (APPS DE "FAKE GPS")
+    };
+  };
+
+  const enviar = async (ubicacion: Awaited<ReturnType<typeof ubicacionActual>> | null, distancia: number | null) => {
+    setGuardando(true);
+    try {
+      const urlEvidencia = evidencia ? await subirFotoACloudinary(evidencia) : null;
+      await agregarABitacora(contrato.id, {
+        asistio, nota: nota.trim(), evidencia: urlEvidencia,
+        ubicacion_registro: ubicacion, distancia_obra_km: distancia === null ? null : Math.round(distancia * 100) / 100,
+      });
+      setNota(''); setEvidencia(null); setAsistio(true);
+      await cargar();
+      Alert.alert("Bitácora actualizada", "Tu avance y tu ubicación de hoy quedaron registrados. El contratista los revisará.");
+    } catch (error: any) { Alert.alert("No se pudo guardar", error?.message || "Intenta de nuevo."); }
+    setGuardando(false);
   };
 
   const guardar = async () => {
     if (!nota.trim()) { Alert.alert("Aviso", "Describe brevemente qué hiciste o por qué faltaste hoy."); return; }
-    if (asistio && !evidencia) { Alert.alert("Evidencia requerida", "Para comprobar tu asistencia, adjunta una foto de tu avance de hoy."); return; }
+    if (asistio && !evidencia) { Alert.alert("Evidencia requerida", "Para comprobar tu asistencia, toma una foto de tu avance de hoy."); return; }
+    if (!asistio) { enviar(null, null); return; }
+
     setGuardando(true);
-    try {
-      const urlEvidencia = evidencia ? await subirFotoACloudinary(evidencia) : null;
-      await agregarABitacora(contrato.id, { asistio, nota: nota.trim(), evidencia: urlEvidencia });
-      setNota(''); setEvidencia(null); setAsistio(true);
-      await cargar();
-      Alert.alert("Bitácora actualizada", "Tu avance de hoy quedó registrado. El contratista lo revisará y lo confirmará.");
-    } catch (error: any) { Alert.alert("No se pudo guardar", error?.message || "Intenta de nuevo."); }
+    let ubicacion;
+    try { ubicacion = await ubicacionActual(); }
+    catch (error: any) { setGuardando(false); Alert.alert("Ubicación necesaria", error?.message || "No se pudo obtener tu ubicación. Intenta de nuevo."); return; }
     setGuardando(false);
+
+    const distancia = distanciaKm(ubicacion, contrato?.vacante?.coordenadas);
+    if (distancia !== null && distancia > DISTANCIA_MAXIMA_KM) {
+      Alert.alert("Estás lejos de la obra", `Tu ubicación está ${textoDistancia(distancia)} de la obra. El contratista verá esa distancia. ¿Registrar de todos modos?`, [
+        { text: "Volver", style: "cancel" },
+        { text: "Registrar", onPress: () => enviar(ubicacion, distancia) },
+      ]);
+      return;
+    }
+    enviar(ubicacion, distancia);
   };
 
   const revisar = async (dia: any, veredicto: 'confirmar' | 'rechazar') => {
@@ -157,6 +216,22 @@ export function ModalBitacora({ contrato, rol, onClose }: Props) {
                             <Image source={{ uri: dia.evidencia }} style={styles.evidencia} />
                           </TouchableOpacity>
                         ) : null}
+                        {(() => {
+                          const check = checkUbicacion(dia, !!contrato?.vacante?.coordenadas);
+                          if (!check) return null;
+                          const { latitud, longitud } = dia.ubicacion_registro || {};
+                          return (
+                            <View style={styles.check}>
+                              <Ionicons name={check.icono} size={15} color={check.color} />
+                              <Text style={[styles.checkTexto, { color: check.color }]}>{check.texto}</Text>
+                              {latitud ? (
+                                <TouchableOpacity onPress={() => Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${latitud},${longitud}`)}>
+                                  <Text style={styles.verMapa}>Ver en mapa</Text>
+                                </TouchableOpacity>
+                              ) : null}
+                            </View>
+                          );
+                        })()}
                         {dia.motivo_rechazo ? <Text style={styles.rechazo}>Contratista: "{dia.motivo_rechazo}"</Text> : null}
                         {dia.nota_admin ? <Text style={styles.notaAdmin}>Administrador: "{dia.nota_admin}"</Text> : null}
 
@@ -204,9 +279,16 @@ export function ModalBitacora({ contrato, rol, onClose }: Props) {
                       <Text style={styles.etiquetaForm}>Notas y avances (obligatorio)</Text>
                       <TextInput style={[styles.input, { height: 80, textAlignVertical: 'top' }]} multiline value={nota} onChangeText={setNota} />
                       <Text style={styles.etiquetaForm}>Foto de evidencia (para el contratista)</Text>
-                      <TouchableOpacity style={styles.subirFoto} onPress={elegirFoto}>
-                        {evidencia ? <Image source={{ uri: evidencia }} style={styles.vistaPrevia} /> : <><Ionicons name="camera-outline" size={28} color="#9CA3AF" /><Text style={styles.subirTexto}>Subir foto del avance</Text></>}
-                      </TouchableOpacity>
+                      {evidencia ? <Image source={{ uri: evidencia }} style={[styles.vistaPrevia, { marginBottom: 8 }]} /> : null}
+                      <View style={{ flexDirection: 'row', marginBottom: 10 }}>
+                        <TouchableOpacity style={[styles.subirFoto, { flex: 1, marginRight: 5, minHeight: 0, marginBottom: 0 }]} onPress={() => elegirFoto('camara')}>
+                          <Ionicons name="camera" size={24} color="#0D2340" /><Text style={[styles.subirTexto, { color: '#0D2340', fontWeight: 'bold' }]}>Tomar foto</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={[styles.subirFoto, { flex: 1, marginLeft: 5, minHeight: 0, marginBottom: 0 }]} onPress={() => elegirFoto('galeria')}>
+                          <Ionicons name="images-outline" size={24} color="#9CA3AF" /><Text style={styles.subirTexto}>De la galería</Text>
+                        </TouchableOpacity>
+                      </View>
+                      {asistio && <Text style={styles.avisoGps}>📍 Al guardar se registrará tu ubicación actual como comprobante de que estás en la obra.</Text>}
                       <TouchableOpacity style={styles.botonGuardar} onPress={guardar} disabled={guardando}>
                         {guardando ? <ActivityIndicator color="#FFF" /> : <Text style={styles.botonGuardarTexto}>Guardar y enviar al contratista</Text>}
                       </TouchableOpacity>
@@ -250,6 +332,10 @@ const styles = StyleSheet.create({
   nota: { fontSize: 13, color: '#4B5563', marginTop: 3 },
   evidencia: { width: 110, height: 110, borderRadius: 8, marginTop: 8, borderWidth: 1, borderColor: '#E5E7EB' },
   rechazo: { fontSize: 12, color: '#EA580C', marginTop: 6, fontStyle: 'italic' },
+  check: { flexDirection: 'row', alignItems: 'center', marginTop: 8, backgroundColor: '#F9FAFB', borderRadius: 8, padding: 6 },
+  checkTexto: { fontSize: 12, fontWeight: 'bold', marginLeft: 5, flex: 1 },
+  verMapa: { fontSize: 12, color: '#2563EB', fontWeight: 'bold', marginLeft: 6 },
+  avisoGps: { fontSize: 12, color: '#2563EB', marginBottom: 10 },
   notaAdmin: { fontSize: 12, color: '#0D2340', marginTop: 4, fontStyle: 'italic', fontWeight: '600' },
   botonesRevision: { flexDirection: 'row', marginTop: 10, marginHorizontal: -4 },
   botonRevision: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderRadius: 10, paddingVertical: 9, marginHorizontal: 4 },

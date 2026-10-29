@@ -1,3 +1,8 @@
+// PANEL DEL ADMINISTRADOR. ORGANIZADO EN 5 PESTAÑAS (BARRA DE ABAJO) Y CON UN CÓDIGO DE COLORES FIJO:
+//   REPORTES:  ROJO = CANCELACIÓN DE OBRA · NARANJA = BITÁCORA RECHAZADA · MORADO = INCUMPLIMIENTO · AZUL = CHAT / OTROS
+//   ESTADO:    ÁMBAR = PENDIENTE · VERDE = RESUELTO
+//   USUARIOS:  VERDE = TRABAJADOR · AZUL = CONTRATISTA · ROJO = CUENTA BLOQUEADA
+//   OBRAS:     LOS MISMOS COLORES DE ESTADO QUE VEN TRABAJADORES Y CONTRATISTAS (lib/contratos)
 import { Ionicons } from '@expo/vector-icons';
 import { Picker } from '@react-native-picker/picker';
 import * as ImagePicker from 'expo-image-picker';
@@ -6,15 +11,15 @@ import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  Dimensions,
   Image,
+  KeyboardAvoidingView,
   LogBox,
   Modal,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
-  KeyboardAvoidingView,
   TouchableOpacity,
   View
 } from 'react-native';
@@ -30,50 +35,92 @@ import { collection, deleteDoc, doc, getDoc, getDocs, setDoc, updateDoc } from '
 import { auth, db } from '../../firebaseConfig';
 import { subirFotoACloudinary } from '@/lib/cloudinary';
 import { eliminarCuentaEnServidor } from '@/lib/cuenta';
-import { accionContrato, resolverReporte } from '@/lib/contratos';
+import { coincide } from '@/lib/busqueda';
+import { accionContrato, ESTADOS, estiloEstado, resolverReporte, totalDescuentos } from '@/lib/contratos';
+import { PerfilTrabajador } from '@/components/perfil-trabajador';
+import { VisorFoto } from '@/components/visor-foto';
+
+// ---------------------------------------------------------------- COLORES Y TIPOS
+
+const COLOR = {
+  marino: '#0D2340',
+  pendiente: '#F59E0B',
+  resuelto: '#059669',
+  trabajador: '#00A355',
+  contratista: '#2563EB',
+  bloqueada: '#DC2626',
+};
+
+type TipoReporte = 'cancelacion' | 'bitacora' | 'incumplimiento' | 'otro';
+const TIPOS_REPORTE: Record<TipoReporte, { texto: string; color: string; fondo: string; icono: keyof typeof Ionicons.glyphMap }> = {
+  cancelacion: { texto: 'Cancelación de obra', color: '#DC2626', fondo: '#FEE2E2', icono: 'close-circle' },
+  bitacora: { texto: 'Bitácora rechazada', color: '#EA580C', fondo: '#FFEDD5', icono: 'reader' },
+  incumplimiento: { texto: 'Incumplimiento', color: '#7C3AED', fondo: '#EDE9FE', icono: 'flag' },
+  otro: { texto: 'Chat / otros', color: '#2563EB', fondo: '#DBEAFE', icono: 'chatbubbles' },
+};
 
 // QUÉ PUEDE DECIDIR EL ADMIN SEGÚN EL TIPO DE REPORTE. LAS CANCELACIONES DE OBRA SE DECIDEN CON EL CONTRATO
 // (REACTIVAR O CANCELAR); LOS DEMÁS, CON /reportes. EN TODOS SE ESCRIBE UNA NOTA QUE LES LLEGA A LAS DOS PARTES.
 const esCancelacion = (q: any) => !!q.id_contrato && (q.tipo === 'cancelacion' || (!q.tipo && q.motivo === 'Cancelación de obra'));
+const tipoDe = (q: any): TipoReporte => esCancelacion(q) ? 'cancelacion' : q.tipo === 'bitacora' ? 'bitacora' : q.tipo === 'incumplimiento' ? 'incumplimiento' : 'otro';
 const opcionesDeReporte = (q: any): { valor: string; texto: string; color: string }[] => {
   if (esCancelacion(q)) return [
-    { valor: 'admin_reactivar', texto: 'Reactivar la obra', color: '#00D06C' },
+    { valor: 'admin_reactivar', texto: 'Reactivar la obra', color: '#059669' },
     { valor: 'admin_cancelar', texto: 'Cancelar definitivamente', color: '#DC2626' },
   ];
   if (q.tipo === 'bitacora') return [
-    { valor: 'a_favor_trabajador', texto: 'El trabajador tiene razón: el día cuenta', color: '#00D06C' },
-    { valor: 'a_favor_contratista', texto: 'El contratista tiene razón: se descuenta', color: '#DC2626' },
+    { valor: 'a_favor_trabajador', texto: 'El trabajador tiene razón: el día cuenta', color: '#059669' },
+    { valor: 'a_favor_contratista', texto: 'El contratista tiene razón: se descuenta el día', color: '#DC2626' },
   ];
   return [
-    { valor: 'procede', texto: `${q.nombre_reportante || 'Quien reporta'} tiene razón`, color: '#00D06C' },
+    { valor: 'procede', texto: `${q.nombre_reportante || 'Quien reporta'} tiene razón`, color: '#059669' },
     { valor: 'no_procede', texto: 'El reporte no procede', color: '#6B7280' },
   ];
 };
+// SOLO SE PUEDE DESCONTAR DINERO CUANDO SE LE DA LA RAZÓN A QUIEN REPORTÓ (EL DESCUENTO ES PARA EL REPORTADO)
+const permiteDescuento = (decision: string) => decision === 'procede' || decision === 'a_favor_contratista';
 
-const { width } = Dimensions.get('window');
+const PESTAÑAS = [
+  { clave: 'Resumen', icono: 'grid' },
+  { clave: 'Reportes', icono: 'shield' },
+  { clave: 'Usuarios', icono: 'people' },
+  { clave: 'Obras', icono: 'construct' },
+  { clave: 'Equipo', icono: 'person-circle' },
+] as const;
 
 export default function AdminDashboard() {
   const [cargando, setCargando] = useState(true);
+  const [refrescando, setRefrescando] = useState(false);
   const [procesando, setProcesando] = useState(false);
-  const [pestañaActiva, setPestañaActiva] = useState('Usuarios'); 
-  const [subTabUsuarios, setSubTabUsuarios] = useState('Trabajadores');
-  const [subTabReportes, setSubTabReportes] = useState('Pendientes');
+  const [pestañaActiva, setPestañaActiva] = useState('Resumen');
+
+  // FILTROS DE CADA PESTAÑA
+  const [vistaReportes, setVistaReportes] = useState<'Pendientes' | 'Historial'>('Pendientes');
+  const [filtroTipo, setFiltroTipo] = useState<TipoReporte | 'todos'>('todos');
+  const [vistaUsuarios, setVistaUsuarios] = useState<'Trabajadores' | 'Contratistas'>('Trabajadores');
+  const [busquedaUsuarios, setBusquedaUsuarios] = useState('');
+  const [soloBloqueadas, setSoloBloqueadas] = useState(false);
+  const [vistaObras, setVistaObras] = useState<'Contratos' | 'Vacantes'>('Contratos');
+  const [filtroEstadoObra, setFiltroEstadoObra] = useState('todos');
 
   // DATOS DEL SISTEMA
-  const [adminData, setAdminData] = useState<any>({ nombre: 'Administrador Principal', cargo: 'Super Admin', foto: 'https://via.placeholder.com/150' });
+  const [adminData, setAdminData] = useState<any>({ nombre: 'Administrador Principal', cargo: 'Super Admin', foto: '' });
   const [trabajadores, setTrabajadores] = useState<any[]>([]);
   const [contratistas, setContratistas] = useState<any[]>([]);
   const [vacantes, setVacantes] = useState<any[]>([]);
+  const [contratos, setContratos] = useState<any[]>([]);
   const [quejas, setQuejas] = useState<any[]>([]);
   const [personalSoporte, setPersonalSoporte] = useState<any[]>([]);
 
   const [usuarioExpandido, setUsuarioExpandido] = useState<any>(null);
   const [vacanteExpandida, setVacanteExpandida] = useState<any>(null);
-  const [fotoEvidencia, setFotoEvidencia] = useState<string | null>(null);
-  // VENTANA PARA RESOLVER UN REPORTE: LA DECISIÓN ELEGIDA Y LA NOTA QUE SE LES ENVÍA A LAS DOS PARTES
+  const [fotoGrande, setFotoGrande] = useState<string | null>(null);
+
+  // VENTANA PARA RESOLVER UN REPORTE: DECISIÓN, NOTA PARA LAS DOS PARTES Y DESCUENTO OPCIONAL
   const [quejaResolviendo, setQuejaResolviendo] = useState<any>(null);
   const [decision, setDecision] = useState('');
   const [notaAdmin, setNotaAdmin] = useState('');
+  const [descuento, setDescuento] = useState('');
 
   const [modalEditarAdmin, setModalEditarAdmin] = useState(false);
   const [editAdminNombre, setEditAdminNombre] = useState('');
@@ -86,16 +133,16 @@ export default function AdminDashboard() {
 
   const cargarDatosAdmin = async () => {
     try {
-      // MAGIA: Ejecutar todas las lecturas al mismo tiempo en paralelo para que cargue súper rápido
+      // TODAS LAS LECTURAS AL MISMO TIEMPO PARA QUE CARGUE RÁPIDO
       const adminRef = doc(db, 'Sistema', 'AdminProfile');
-      
-      const [adminDoc, snapTrabajadores, snapContratistas, snapVacantes, snapQuejas, snapSoporte] = await Promise.all([
+      const [adminDoc, snapTrabajadores, snapContratistas, snapVacantes, snapContratos, snapQuejas, snapSoporte] = await Promise.all([
         getDoc(adminRef),
         getDocs(collection(db, 'Usuarios')),
         getDocs(collection(db, 'Contratistas')),
         getDocs(collection(db, 'Vacantes')),
+        getDocs(collection(db, 'Postulaciones')),
         getDocs(collection(db, 'Quejas_Soporte')),
-        getDocs(collection(db, 'Equipo_Soporte'))
+        getDocs(collection(db, 'Equipo_Soporte')),
       ]);
 
       if (adminDoc.exists()) {
@@ -103,26 +150,21 @@ export default function AdminDashboard() {
         setEditAdminNombre(adminDoc.data().nombre || '');
         setEditAdminCargo(adminDoc.data().cargo || 'Super Admin');
       } else {
-        await setDoc(adminRef, { nombre: 'Administrador Principal', cargo: 'Super Admin', foto: 'https://via.placeholder.com/150' });
+        await setDoc(adminRef, { nombre: 'Administrador Principal', cargo: 'Super Admin', foto: '' });
         setEditAdminNombre('Administrador Principal');
         setEditAdminCargo('Super Admin');
       }
 
       setTrabajadores(snapTrabajadores.docs.map(d => ({ id: d.id, rol: 'Trabajador', ...d.data() })));
       setContratistas(snapContratistas.docs.map(d => ({ id: d.id, rol: 'Contratista', ...d.data() })));
-
-      const listaVacantes: any[] = snapVacantes.docs.map(d => ({ id: d.id, ...d.data() }));
-      listaVacantes.sort((a, b) => new Date(b.fecha_publicacion).getTime() - new Date(a.fecha_publicacion).getTime());
-      setVacantes(listaVacantes);
-
-      const listaQuejas = snapQuejas.docs.map(d => ({ id: d.id, ...d.data() }));
-      listaQuejas.sort((a: any, b: any) => new Date(b.fecha_reporte).getTime() - new Date(a.fecha_reporte).getTime());
-      setQuejas(listaQuejas);
-
+      setVacantes(snapVacantes.docs.map(d => ({ id: d.id, ...d.data() } as any)).sort((a, b) => new Date(b.fecha_publicacion).getTime() - new Date(a.fecha_publicacion).getTime()));
+      setContratos(snapContratos.docs.map(d => ({ id: d.id, ...d.data() } as any)).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)));
+      setQuejas(snapQuejas.docs.map(d => ({ id: d.id, ...d.data() } as any)).sort((a, b) => new Date(b.fecha_reporte).getTime() - new Date(a.fecha_reporte).getTime()));
       setPersonalSoporte(snapSoporte.docs.map(d => ({ id: d.id, ...d.data() })));
-
     } catch (error) { console.log("Error cargando panel admin:", error); } finally { setCargando(false); }
   };
+
+  const refrescar = async () => { setRefrescando(true); await cargarDatosAdmin(); setRefrescando(false); };
 
   // SOLO ENTRA QUIEN TIENE SESIÓN Y UN DOCUMENTO EN /Administradores/{uid} (SE CREA A MANO EN LA CONSOLA DE FIREBASE).
   // LAS REGLAS DE FIRESTORE HACEN LA MISMA REVISIÓN DEL LADO DEL SERVIDOR; ESTO SOLO EVITA MOSTRAR UNA PANTALLA VACÍA.
@@ -142,22 +184,26 @@ export default function AdminDashboard() {
     verificarAccesoAdmin();
   }, []);
 
-  const cerrarSesionAdmin = async () => {
-    await signOut(auth);
-    router.replace('/' as any);
+  const cerrarSesionAdmin = () => {
+    Alert.alert("Cerrar sesión", "¿Salir del panel de administración?", [
+      { text: "Cancelar", style: "cancel" },
+      { text: "Salir", onPress: async () => { await signOut(auth); router.replace('/' as any); } },
+    ]);
   };
 
   const cambiarFotoAdmin = async () => {
-    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsEditing: true, quality: 0.5, base64: true });
+    // SIN allowsEditing: NO APARECE LA PANTALLA DE RECORTE ("CORTAR")
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.5, base64: true });
     if (!result.canceled && result.assets[0].base64) {
       Alert.alert("Actualizar Foto", "¿Deseas cambiar tu foto de administrador?", [
         { text: "Cancelar", style: "cancel" },
-        { text: "Sí", onPress: async () => {
+        { text: "OK", onPress: async () => {
             setProcesando(true);
-            const base64Data = `data:image/jpeg;base64,${result.assets[0].base64}`;
-            const urlSegura = await subirFotoACloudinary(base64Data);
-            await updateDoc(doc(db, 'Sistema', 'AdminProfile'), { foto: urlSegura });
-            await cargarDatosAdmin();
+            try {
+              const urlSegura = await subirFotoACloudinary(`data:image/jpeg;base64,${result.assets[0].base64}`);
+              await updateDoc(doc(db, 'Sistema', 'AdminProfile'), { foto: urlSegura });
+              await cargarDatosAdmin();
+            } catch (error: any) { Alert.alert("No se pudo cambiar la foto", error?.message || "Intenta de nuevo."); }
             setProcesando(false);
           }
         }
@@ -177,46 +223,36 @@ export default function AdminDashboard() {
     if (!nuevoNombre || !nuevoCorreo) { Alert.alert("Faltan datos", "Llena los campos obligatorios."); return; }
     setProcesando(true);
     try {
-      const nuevoId = new Date().getTime().toString();
-      const nuevoObj = {
-        nombre: nuevoNombre.toUpperCase(),
-        correo: nuevoCorreo,
-        rol_usuario: nuevoRol,
-        estado_cuenta: 'Activa',
-        fecha_registro: new Date().toISOString(),
-        foto_rostro_url: 'https://via.placeholder.com/150',
-        permisos: ['monitoreo', 'resolucion_quejas']
-      };
-
-      await setDoc(doc(db, 'Equipo_Soporte', nuevoId), nuevoObj);
-      Alert.alert("Éxito", `El usuario de ${nuevoRol} ha sido creado y podrá monitorear la plataforma.`);
-      
-      setModalCrear(false);
-      setNuevoNombre(''); setNuevoCorreo('');
+      await setDoc(doc(db, 'Equipo_Soporte', new Date().getTime().toString()), {
+        nombre: nuevoNombre.toUpperCase(), correo: nuevoCorreo, rol_usuario: nuevoRol, estado_cuenta: 'Activa',
+        fecha_registro: new Date().toISOString(), permisos: ['monitoreo', 'resolucion_quejas'],
+      });
+      Alert.alert("Éxito", `Se registró a ${nuevoNombre} como ${nuevoRol}.`);
+      setModalCrear(false); setNuevoNombre(''); setNuevoCorreo('');
       await cargarDatosAdmin();
     } catch (error) { Alert.alert("Error", "No se pudo registrar en la base de datos."); }
     setProcesando(false);
   };
 
-  const alternarBloqueoUsuario = async (id: string, coleccion: string, estadoActual: string) => {
-    const nuevoEstado = estadoActual === 'Bloqueada' ? 'Activa' : 'Bloqueada';
-    Alert.alert("Modificar Acceso", `¿Estás seguro de que deseas marcar esta cuenta como ${nuevoEstado}?`, [
+  const alternarBloqueoUsuario = (usuario: any) => {
+    const coleccion = usuario.rol === 'Trabajador' ? 'Usuarios' : 'Contratistas';
+    const nuevoEstado = usuario.estado_cuenta === 'Bloqueada' ? 'Activa' : 'Bloqueada';
+    Alert.alert(nuevoEstado === 'Bloqueada' ? "Bloquear cuenta" : "Desbloquear cuenta", `¿Marcar la cuenta de ${usuario.nombre} como ${nuevoEstado}?`, [
       { text: "Cancelar", style: "cancel" },
-      { text: "Sí, modificar", style: nuevoEstado === 'Bloqueada' ? 'destructive' : 'default', onPress: async () => {
+      { text: "Sí", style: nuevoEstado === 'Bloqueada' ? 'destructive' : 'default', onPress: async () => {
           setProcesando(true);
-          await updateDoc(doc(db, coleccion, id), { estado_cuenta: nuevoEstado });
-          await cargarDatosAdmin();
+          try {
+            await updateDoc(doc(db, coleccion, usuario.id), { estado_cuenta: nuevoEstado });
+            await cargarDatosAdmin();
+            setUsuarioExpandido({ ...usuario, estado_cuenta: nuevoEstado });
+          } catch (error: any) { Alert.alert("No se pudo", error?.message || "Intenta de nuevo."); }
           setProcesando(false);
-          if(usuarioExpandido) {
-            setUsuarioExpandido({...usuarioExpandido, estado_cuenta: nuevoEstado});
-          }
         }
       }
     ]);
   };
 
-  // BORRA LA CUENTA COMPLETA DE UN USUARIO (PERFIL, DATOS PRIVADOS, FOTOS DE INE Y SU USUARIO DE FIREBASE).
-  // ANTES SOLO SE BORRABA EL PERFIL Y EL USUARIO SEGUÍA EXISTIENDO.
+  // BORRA LA CUENTA COMPLETA DE UN USUARIO (PERFIL, DATOS PRIVADOS, FOTOS DE INE Y SU USUARIO DE FIREBASE)
   const eliminarUsuarioCompleto = (id: string, nombre: string) => {
     Alert.alert("ELIMINACIÓN DEFINITIVA", `¿Eliminar a ${nombre} de la plataforma permanentemente? Se borra su perfil, sus datos de verificación y su acceso.`, [
       { text: "Cancelar", style: "cancel" },
@@ -233,36 +269,32 @@ export default function AdminDashboard() {
     ]);
   };
 
-  const eliminarDocumento = (id: string, coleccion: string, mensaje: string, esModal: boolean = false) => {
-    Alert.alert("ELIMINACIÓN DEFINITIVA", mensaje, [
+  const eliminarVacante = (id: string) => {
+    Alert.alert("Eliminar vacante", "¿Eliminar esta vacante del sistema?", [
       { text: "Cancelar", style: "cancel" },
       { text: "Eliminar", style: 'destructive', onPress: async () => {
           setProcesando(true);
-          await deleteDoc(doc(db, coleccion, id));
-          await cargarDatosAdmin();
+          try { await deleteDoc(doc(db, 'Vacantes', id)); setVacanteExpandida(null); await cargarDatosAdmin(); }
+          catch (error: any) { Alert.alert("No se pudo", error?.message || "Intenta de nuevo."); }
           setProcesando(false);
-          if (esModal) {
-            setUsuarioExpandido(null);
-            setVacanteExpandida(null);
-          }
         }
       }
     ]);
   };
 
-  const eliminarObraDeUsuario = (idUsuario: string, idObra: string, coleccion: string) => {
-    Alert.alert("Borrar Obra del Portafolio", "¿Estás seguro de que deseas eliminar este trabajo del perfil de este usuario?", [
+  const eliminarObraDeUsuario = (idUsuario: string, idObra: string) => {
+    Alert.alert("Borrar obra del portafolio", "¿Eliminar este trabajo del perfil de este usuario?", [
       { text: "Cancelar", style: "cancel" },
-      { text: "Eliminar Obra", style: "destructive", onPress: async () => {
+      { text: "Eliminar", style: "destructive", onPress: async () => {
           setProcesando(true);
           try {
-            const userRef = doc(db, coleccion, idUsuario);
+            const userRef = doc(db, 'Usuarios', idUsuario);
             const userDoc = await getDoc(userRef);
             if (userDoc.exists()) {
               const portafolioActualizado = (userDoc.data().portafolio || []).filter((o: any) => o && o.id_obra !== idObra);
               await updateDoc(userRef, { portafolio: portafolioActualizado });
               await cargarDatosAdmin();
-              setUsuarioExpandido({...usuarioExpandido, portafolio: portafolioActualizado});
+              setUsuarioExpandido({ ...usuarioExpandido, portafolio: portafolioActualizado });
             }
           } catch (error) { Alert.alert("Error", "No se pudo borrar."); }
           setProcesando(false);
@@ -278,485 +310,480 @@ export default function AdminDashboard() {
     else Alert.alert("Perfil no encontrado", "Esta cuenta ya no existe o fue eliminada.");
   };
 
-  const abrirResolucion = (queja: any) => { setQuejaResolviendo(queja); setDecision(''); setNotaAdmin(''); };
+  const abrirResolucion = (queja: any) => { setQuejaResolviendo(queja); setDecision(''); setNotaAdmin(''); setDescuento(''); };
 
-  // RESUELVE EL REPORTE EN EL SERVIDOR: CAMBIA LA OBRA O EL DÍA DE BITÁCORA SI TOCA, ARCHIVA EL REPORTE
-  // Y LES MANDA UN AVISO CON LA NOTA A LAS DOS PARTES
+  // RESUELVE EL REPORTE EN EL SERVIDOR: CAMBIA LA OBRA O EL DÍA DE BITÁCORA SI TOCA, APLICA EL DESCUENTO,
+  // ARCHIVA EL REPORTE Y LES MANDA UNA NOTIFICACIÓN CON LA NOTA A LAS DOS PARTES
   const confirmarResolucion = async () => {
     if (!decision) { Alert.alert("Aviso", "Elige tu decisión."); return; }
     if (!notaAdmin.trim()) { Alert.alert("Aviso", "Escribe una nota explicando tu decisión. Les llegará a las dos partes."); return; }
+    const monto = permiteDescuento(decision) ? parseInt(descuento) || 0 : 0;
     setProcesando(true);
     try {
       if (esCancelacion(quejaResolviendo)) {
         await accionContrato(decision as 'admin_reactivar' | 'admin_cancelar', { id_contrato: quejaResolviendo.id_contrato, nota: notaAdmin.trim() });
       } else {
-        await resolverReporte(quejaResolviendo.id, decision, notaAdmin.trim());
+        await resolverReporte(quejaResolviendo.id, decision, notaAdmin.trim(), monto);
       }
       setQuejaResolviendo(null);
       await cargarDatosAdmin();
-      Alert.alert("Reporte resuelto", "Se archivó en el historial legal y se les avisó a las dos partes.");
+      Alert.alert("Reporte resuelto", "Se archivó en el historial y se les notificó la decisión a las dos partes.");
     } catch (error: any) { Alert.alert("No se pudo", error?.message || "Intenta de nuevo."); }
     setProcesando(false);
   };
 
-  if (cargando) { return ( <View style={styles.loadingCenter}><ActivityIndicator size="large" color="#D32F2F" /><Text style={styles.loadingText}>Accediendo a la Base de Datos...</Text></View> ); }
+  if (cargando) { return ( <View style={styles.loadingCenter}><ActivityIndicator size="large" color={COLOR.marino} /><Text style={styles.loadingText}>Cargando el panel...</Text></View> ); }
+
+  // ---------------------------------------------------------------- CÁLCULOS PARA LAS PESTAÑAS
 
   const quejasPendientes = quejas.filter(q => q.estado !== 'Resuelta');
   const quejasResueltas = quejas.filter(q => q.estado === 'Resuelta');
+  const reportesVisibles = (vistaReportes === 'Pendientes' ? quejasPendientes : quejasResueltas).filter(q => filtroTipo === 'todos' || tipoDe(q) === filtroTipo);
+  const pendientesPorTipo = (Object.keys(TIPOS_REPORTE) as TipoReporte[]).map(t => ({ tipo: t, cantidad: quejasPendientes.filter(q => tipoDe(q) === t).length }));
+
+  const usuariosVisibles = (vistaUsuarios === 'Trabajadores' ? trabajadores : contratistas)
+    .filter(u => !soloBloqueadas || u.estado_cuenta === 'Bloqueada')
+    .filter(u => coincide(`${u.nombre} ${u.apellidos} ${u.correo || ''} ${u.nombre_usuario || ''} ${u.oficio_principal || ''} ${u.empresa || ''} ${u.ubicacion_texto || ''} ${u.ubicacion_estado || ''}`, busquedaUsuarios));
+  const reportesContra = (id: string) => quejas.filter(q => q.id_acusado === id);
+
+  const estadosObra = [ESTADOS.PROPUESTA, ESTADOS.PENDIENTE, ESTADOS.ACTIVA, ESTADOS.POR_CONFIRMAR_FIN, ESTADOS.SUSPENDIDA, ESTADOS.FINALIZADA, ESTADOS.CANCELADA, ESTADOS.RECHAZADA];
+  const contratosVisibles = contratos.filter(c => filtroEstadoObra === 'todos' || c.estado === filtroEstadoObra);
+  const cuenta = (estado: string) => contratos.filter(c => c.estado === estado).length;
+
+  const tarjetasResumen = [
+    { titulo: 'Reportes pendientes', numero: quejasPendientes.length, color: COLOR.pendiente, icono: 'alert-circle' as const, ir: () => { setPestañaActiva('Reportes'); setVistaReportes('Pendientes'); setFiltroTipo('todos'); } },
+    { titulo: 'Obras suspendidas', numero: cuenta(ESTADOS.SUSPENDIDA), color: '#DC2626', icono: 'pause-circle' as const, ir: () => { setPestañaActiva('Obras'); setVistaObras('Contratos'); setFiltroEstadoObra(ESTADOS.SUSPENDIDA); } },
+    { titulo: 'Obras activas', numero: cuenta(ESTADOS.ACTIVA), color: '#00D06C', icono: 'hammer' as const, ir: () => { setPestañaActiva('Obras'); setVistaObras('Contratos'); setFiltroEstadoObra(ESTADOS.ACTIVA); } },
+    { titulo: 'Obras finalizadas', numero: cuenta(ESTADOS.FINALIZADA), color: COLOR.marino, icono: 'flag' as const, ir: () => { setPestañaActiva('Obras'); setVistaObras('Contratos'); setFiltroEstadoObra(ESTADOS.FINALIZADA); } },
+    { titulo: 'Trabajadores', numero: trabajadores.length, color: COLOR.trabajador, icono: 'construct' as const, ir: () => { setPestañaActiva('Usuarios'); setVistaUsuarios('Trabajadores'); } },
+    { titulo: 'Contratistas', numero: contratistas.length, color: COLOR.contratista, icono: 'business' as const, ir: () => { setPestañaActiva('Usuarios'); setVistaUsuarios('Contratistas'); } },
+    { titulo: 'Vacantes activas', numero: vacantes.filter(v => v.estado === 'Activa').length, color: '#7C3AED', icono: 'megaphone' as const, ir: () => { setPestañaActiva('Obras'); setVistaObras('Vacantes'); } },
+    { titulo: 'Cuentas bloqueadas', numero: [...trabajadores, ...contratistas].filter(u => u.estado_cuenta === 'Bloqueada').length, color: COLOR.bloqueada, icono: 'lock-closed' as const, ir: () => { setPestañaActiva('Usuarios'); setSoloBloqueadas(true); } },
+  ];
+
+  // ---------------------------------------------------------------- PIEZAS DE INTERFAZ
+
+  const Segmentos = <T extends string>({ opciones, valor, onCambio }: { opciones: { valor: T; texto: string }[]; valor: T; onCambio: (v: T) => void }) => (
+    <View style={styles.segmentos}>
+      {opciones.map(o => (
+        <TouchableOpacity key={o.valor} style={[styles.segmento, valor === o.valor && styles.segmentoActivo]} onPress={() => onCambio(o.valor)}>
+          <Text style={[styles.segmentoTexto, valor === o.valor && styles.segmentoTextoActivo]}>{o.texto}</Text>
+        </TouchableOpacity>
+      ))}
+    </View>
+  );
+
+  const Chip = ({ texto, color, activo, onPress }: { texto: string; color: string; activo: boolean; onPress: () => void }) => (
+    <TouchableOpacity style={[styles.chip, { borderColor: color }, activo && { backgroundColor: color }]} onPress={onPress}>
+      <Text style={[styles.chipTexto, { color: activo ? '#FFF' : color }]}>{texto}</Text>
+    </TouchableOpacity>
+  );
+
+  const Etiqueta = ({ texto, color, fondo }: { texto: string; color: string; fondo?: string }) => (
+    <View style={[styles.etiqueta, { backgroundColor: fondo || color }]}><Text style={[styles.etiquetaTexto, { color: fondo ? color : '#FFF' }]}>{texto}</Text></View>
+  );
+
+  const TarjetaReporte = ({ queja }: { queja: any }) => {
+    const tipo = TIPOS_REPORTE[tipoDe(queja)];
+    const resuelta = queja.estado === 'Resuelta';
+    return (
+      <View style={[styles.tarjeta, { borderLeftWidth: 5, borderLeftColor: tipo.color }]}>
+        <View style={styles.filaEntre}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+            <Ionicons name={tipo.icono} size={16} color={tipo.color} />
+            <Text style={[styles.tipoTexto, { color: tipo.color }]}>{tipo.texto}</Text>
+          </View>
+          <Etiqueta texto={resuelta ? 'RESUELTO' : 'PENDIENTE'} color={resuelta ? COLOR.resuelto : COLOR.pendiente} />
+        </View>
+        <Text style={styles.fecha}>{new Date(queja.fecha_reporte).toLocaleString('es-MX')}</Text>
+        <Text style={styles.tituloTarjeta}>{queja.motivo}</Text>
+        {queja.titulo_obra ? <Text style={styles.obraTexto}>Obra: "{queja.titulo_obra}"</Text> : null}
+
+        {/* QUIÉN REPORTA Y A QUIÉN: SE TOCA PARA VER SU PERFIL COMPLETO */}
+        <View style={styles.partes}>
+          <TouchableOpacity style={styles.parte} onPress={() => verPerfilDe(queja.id_reportante)}>
+            <Text style={styles.parteEtiqueta}>REPORTA</Text>
+            <Text style={styles.parteNombre} numberOfLines={1}>{queja.nombre_reportante}</Text>
+            <Text style={[styles.parteRol, { color: queja.rol_reportante === 'Contratista' ? COLOR.contratista : COLOR.trabajador }]}>{queja.rol_reportante || 'Usuario'} · Ver perfil ›</Text>
+          </TouchableOpacity>
+          <Ionicons name="arrow-forward" size={18} color="#9CA3AF" style={{ alignSelf: 'center' }} />
+          <TouchableOpacity style={styles.parte} onPress={() => verPerfilDe(queja.id_acusado)}>
+            <Text style={styles.parteEtiqueta}>REPORTADO</Text>
+            <Text style={styles.parteNombre} numberOfLines={1}>{queja.acusado}</Text>
+            <Text style={[styles.parteRol, { color: queja.rol_acusado === 'Contratista' ? COLOR.contratista : COLOR.trabajador }]}>{queja.rol_acusado || 'Usuario'} · Ver perfil ›</Text>
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.descripcion}><Text style={styles.descripcionTexto}>{queja.descripcion}</Text></View>
+        {queja.foto_evidencia ? (
+          <TouchableOpacity style={styles.botonEvidencia} onPress={() => setFotoGrande(queja.foto_evidencia)}>
+            <Ionicons name="image-outline" size={16} color={COLOR.marino} /><Text style={styles.botonEvidenciaTexto}>Ver evidencia</Text>
+          </TouchableOpacity>
+        ) : null}
+
+        {!resuelta ? (
+          <TouchableOpacity style={[styles.botonPrincipal, { backgroundColor: tipo.color }]} disabled={procesando} onPress={() => abrirResolucion(queja)}>
+            <Ionicons name="hammer" size={16} color="#FFF" /><Text style={styles.botonPrincipalTexto}>Resolver y notificar a los dos</Text>
+          </TouchableOpacity>
+        ) : (
+          <View style={styles.resolucion}>
+            {queja.resolucion ? <Text style={styles.resolucionTexto}>Decisión: {queja.resolucion}</Text> : null}
+            {queja.nota_admin ? <Text style={styles.resolucionNota}>Nota: "{queja.nota_admin}"</Text> : null}
+            <Text style={styles.resolucionPie}>🔒 Registro inmutable · Atendió: {queja.atendida_por || 'Admin'}</Text>
+          </View>
+        )}
+      </View>
+    );
+  };
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-      
+      {/* ENCABEZADO */}
       <View style={styles.header}>
-        <View style={{flexDirection: 'row', alignItems: 'center'}}>
-          <Ionicons name="shield-checkmark" size={28} color="#FFF" style={{marginRight: 10}}/>
-          <View>
-            <Text style={styles.headerTitle}>Panel de Control</Text>
-            <Text style={styles.headerSubtitle}>Centro de Monitoreo</Text>
-          </View>
-        </View>
-        <TouchableOpacity onPress={cerrarSesionAdmin}>
-          <Ionicons name="log-out-outline" size={28} color="#FFF" />
+        <TouchableOpacity onPress={() => setPestañaActiva('Equipo')}>
+          <Image source={{ uri: adminData.foto || undefined }} style={styles.headerFoto} />
         </TouchableOpacity>
+        <View style={{ flex: 1, marginLeft: 12 }}>
+          <Text style={styles.headerTitulo}>Panel de Administración</Text>
+          <Text style={styles.headerSub}>{adminData.nombre} · {adminData.cargo}</Text>
+        </View>
+        <TouchableOpacity onPress={refrescar} style={{ marginRight: 16 }}><Ionicons name="refresh" size={24} color="#FFF" /></TouchableOpacity>
+        <TouchableOpacity onPress={cerrarSesionAdmin}><Ionicons name="log-out-outline" size={26} color="#FFF" /></TouchableOpacity>
       </View>
 
-      <View style={styles.tabsContainer}>
-        {['Usuarios', 'Feed', 'Auditoría', 'Staff'].map((tab) => (
-          <TouchableOpacity key={tab} style={[styles.tabButton, pestañaActiva === tab && styles.tabButtonActive]} onPress={() => setPestañaActiva(tab)}>
-            <Text style={[styles.tabText, pestañaActiva === tab && styles.tabTextActive]}>{tab}</Text>
-            {tab === 'Auditoría' && quejasPendientes.length > 0 && (
-              <View style={styles.badge}><Text style={styles.badgeText}>{quejasPendientes.length}</Text></View>
+      <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ padding: 16, paddingBottom: 30 }}
+        refreshControl={<RefreshControl refreshing={refrescando} onRefresh={refrescar} colors={[COLOR.marino]} />}>
+
+        {/* ---------------------------------------------------------------- RESUMEN */}
+        {pestañaActiva === 'Resumen' && (
+          <View>
+            <Text style={styles.seccion}>Estado de la plataforma</Text>
+            <View style={styles.cuadricula}>
+              {tarjetasResumen.map(t => (
+                <TouchableOpacity key={t.titulo} style={[styles.cuadro, { borderTopColor: t.color }]} onPress={t.ir} activeOpacity={0.8}>
+                  <View style={[styles.cuadroIcono, { backgroundColor: `${t.color}1A` }]}><Ionicons name={t.icono} size={20} color={t.color} /></View>
+                  <Text style={[styles.cuadroNumero, { color: t.color }]}>{t.numero}</Text>
+                  <Text style={styles.cuadroTitulo}>{t.titulo}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <Text style={styles.seccion}>Reportes pendientes por tipo</Text>
+            <View style={styles.tarjeta}>
+              {pendientesPorTipo.map(({ tipo, cantidad }) => (
+                <TouchableOpacity key={tipo} style={styles.filaTipo} onPress={() => { setPestañaActiva('Reportes'); setVistaReportes('Pendientes'); setFiltroTipo(tipo); }}>
+                  <View style={[styles.puntoTipo, { backgroundColor: TIPOS_REPORTE[tipo].color }]} />
+                  <Text style={styles.filaTipoTexto}>{TIPOS_REPORTE[tipo].texto}</Text>
+                  <Text style={[styles.filaTipoNumero, { color: cantidad > 0 ? TIPOS_REPORTE[tipo].color : '#9CA3AF' }]}>{cantidad}</Text>
+                  <Ionicons name="chevron-forward" size={16} color="#9CA3AF" />
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <Text style={styles.seccion}>Código de colores</Text>
+            <View style={[styles.tarjeta, { flexDirection: 'row', flexWrap: 'wrap' }]}>
+              {[
+                ['#DC2626', 'Cancelación / bloqueada'], ['#EA580C', 'Bitácora rechazada'], ['#7C3AED', 'Incumplimiento'], ['#2563EB', 'Chat / contratista'],
+                [COLOR.pendiente, 'Pendiente'], [COLOR.resuelto, 'Resuelto'], [COLOR.trabajador, 'Trabajador'],
+              ].map(([color, texto]) => (
+                <View key={texto} style={styles.leyenda}><View style={[styles.puntoTipo, { backgroundColor: color }]} /><Text style={styles.leyendaTexto}>{texto}</Text></View>
+              ))}
+            </View>
+          </View>
+        )}
+
+        {/* ---------------------------------------------------------------- REPORTES */}
+        {pestañaActiva === 'Reportes' && (
+          <View>
+            <Segmentos opciones={[{ valor: 'Pendientes', texto: `Pendientes (${quejasPendientes.length})` }, { valor: 'Historial', texto: `Historial (${quejasResueltas.length})` }]} valor={vistaReportes} onCambio={setVistaReportes} />
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
+              <Chip texto="Todos" color={COLOR.marino} activo={filtroTipo === 'todos'} onPress={() => setFiltroTipo('todos')} />
+              {(Object.keys(TIPOS_REPORTE) as TipoReporte[]).map(t => (
+                <Chip key={t} texto={TIPOS_REPORTE[t].texto} color={TIPOS_REPORTE[t].color} activo={filtroTipo === t} onPress={() => setFiltroTipo(t)} />
+              ))}
+            </ScrollView>
+            {reportesVisibles.length > 0 ? reportesVisibles.map(q => <TarjetaReporte key={q.id} queja={q} />) : (
+              <View style={styles.vacio}>
+                <Ionicons name="shield-checkmark-outline" size={50} color="#D1D5DB" />
+                <Text style={styles.vacioTitulo}>{vistaReportes === 'Pendientes' ? 'Sin reportes pendientes' : 'Historial vacío'}</Text>
+              </View>
             )}
-          </TouchableOpacity>
-        ))}
-      </View>
+          </View>
+        )}
 
-      <ScrollView style={{flex: 1}} showsVerticalScrollIndicator={false} contentContainerStyle={{ padding: 20, paddingBottom: 100 }}>
-        
+        {/* ---------------------------------------------------------------- USUARIOS */}
         {pestañaActiva === 'Usuarios' && (
           <View>
-            <View style={styles.subTabsContainer}>
-              <TouchableOpacity style={[styles.subTab, subTabUsuarios === 'Trabajadores' && styles.subTabActive]} onPress={() => setSubTabUsuarios('Trabajadores')}>
-                <Text style={[styles.subTabText, subTabUsuarios === 'Trabajadores' && styles.subTabTextActive]}>Trabajadores ({trabajadores.length})</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.subTab, subTabUsuarios === 'Contratistas' && styles.subTabActive]} onPress={() => setSubTabUsuarios('Contratistas')}>
-                <Text style={[styles.subTabText, subTabUsuarios === 'Contratistas' && styles.subTabTextActive]}>Contratistas ({contratistas.length})</Text>
-              </TouchableOpacity>
+            <Segmentos opciones={[{ valor: 'Trabajadores', texto: `Trabajadores (${trabajadores.length})` }, { valor: 'Contratistas', texto: `Contratistas (${contratistas.length})` }]} valor={vistaUsuarios} onCambio={setVistaUsuarios} />
+            <View style={styles.buscador}>
+              <Ionicons name="search" size={18} color="#9CA3AF" />
+              <TextInput style={styles.buscadorInput} placeholder="Buscar por nombre, correo, oficio, ciudad..." value={busquedaUsuarios} onChangeText={setBusquedaUsuarios} />
             </View>
-
-            {subTabUsuarios === 'Trabajadores' && (
-              trabajadores.map((user, index) => (
-                <TouchableOpacity key={index} style={[styles.adminCard, user.estado_cuenta === 'Bloqueada' && {borderColor: '#FCA5A5', borderWidth: 1}]} activeOpacity={0.8} onPress={() => setUsuarioExpandido(user)}>
-                  <View style={styles.userCardHeader}>
-                    <Image source={{ uri: user.foto_rostro_url || 'https://via.placeholder.com/150' }} style={styles.userAvatar} />
-                    <View style={{flex: 1}}>
-                      <Text style={styles.userName}>{user.nombre} {user.apellidos}</Text>
-                      <Text style={styles.userSub}>{user.correo} | {user.numero_telefono}</Text>
-                      <Text style={styles.userOficio}>{user.oficio_principal || 'Sin Oficio'} • {user.ubicacion_texto || 'Sin Ubicación'}</Text>
-                    </View>
-                    {user.estado_cuenta === 'Bloqueada' ? <Ionicons name="lock-closed" size={24} color="#DC2626" /> : <Ionicons name="chevron-forward" size={20} color="#9CA3AF" />}
-                  </View>
-                </TouchableOpacity>
-              ))
-            )}
-
-            {subTabUsuarios === 'Contratistas' && (
-              contratistas.map((user, index) => (
-                <TouchableOpacity key={index} style={[styles.adminCard, user.estado_cuenta === 'Bloqueada' && {borderColor: '#FCA5A5', borderWidth: 1}]} activeOpacity={0.8} onPress={() => setUsuarioExpandido(user)}>
-                  <View style={styles.userCardHeader}>
-                    <Image source={{ uri: user.foto_rostro_url || 'https://via.placeholder.com/150' }} style={styles.userAvatar} />
-                    <View style={{flex: 1}}>
-                      <Text style={styles.userName}>{user.nombre} {user.apellidos}</Text>
-                      <Text style={styles.userSub}>{user.correo} | {user.numero_telefono}</Text>
-                      <Text style={styles.userOficio}>{user.empresa || 'Independiente'} • {user.ubicacion_texto || 'Sin Ubicación'}</Text>
-                    </View>
-                    {user.estado_cuenta === 'Bloqueada' ? <Ionicons name="lock-closed" size={24} color="#DC2626" /> : <Ionicons name="chevron-forward" size={20} color="#9CA3AF" />}
-                  </View>
-                </TouchableOpacity>
-              ))
-            )}
-          </View>
-        )}
-
-        {pestañaActiva === 'Feed' && (
-          <View>
-            <Text style={styles.sectionTitle}>Gestión de Obras y Vacantes</Text>
-            {vacantes.length > 0 ? (
-              vacantes.map((vac, index) => (
-                <TouchableOpacity key={index} style={styles.adminCard} activeOpacity={0.8} onPress={() => setVacanteExpandida(vac)}>
-                  <View style={{flexDirection: 'row', justifyContent: 'space-between'}}>
-                    <View style={[styles.statusTag, vac.estado === 'Cerrada' ? {backgroundColor: '#F3F4F6'} : {backgroundColor: '#D1FAE5'}]}>
-                      <Text style={[styles.statusTagText, vac.estado === 'Cerrada' ? {color: '#6B7280'} : {color: '#059669'}]}>{vac.estado}</Text>
-                    </View>
-                    <Text style={styles.dateText}>{new Date(vac.fecha_publicacion).toLocaleDateString()}</Text>
-                  </View>
-                  <Text style={[styles.userName, {marginTop: 10}]}>{vac.titulo}</Text>
-                  <Text style={styles.userSub}>Publicado por: {vac.contratista}</Text>
-                  <Text style={styles.userOficio} numberOfLines={2}>{vac.descripcion}</Text>
-                  <Text style={{color: '#D32F2F', fontSize: 11, marginTop: 10, fontWeight: 'bold'}}>👁️ Toca para revisar detalles y expandir</Text>
-                </TouchableOpacity>
-              ))
-            ) : (
-               <Text style={styles.emptyText}>No hay vacantes publicadas en el sistema.</Text>
-            )}
-          </View>
-        )}
-
-        {/* --- AUDITORÍA LEGAL (HISTORIAL DE REPORTES INMUTABLES) --- */}
-        {pestañaActiva === 'Auditoría' && (
-          <View>
-            <Text style={styles.sectionTitle}>Auditoría Legal y Reportes</Text>
-            
-            <View style={styles.subTabsContainer}>
-              <TouchableOpacity style={[styles.subTab, subTabReportes === 'Pendientes' && styles.subTabActive]} onPress={() => setSubTabReportes('Pendientes')}>
-                <Text style={[styles.subTabText, subTabReportes === 'Pendientes' && styles.subTabTextActive]}>Requieren Atención ({quejasPendientes.length})</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.subTab, subTabReportes === 'Historial' && styles.subTabActive]} onPress={() => setSubTabReportes('Historial')}>
-                <Text style={[styles.subTabText, subTabReportes === 'Historial' && styles.subTabTextActive]}>Historial Legal ({quejasResueltas.length})</Text>
-              </TouchableOpacity>
+            <View style={{ flexDirection: 'row', marginBottom: 12 }}>
+              <Chip texto={soloBloqueadas ? 'Solo bloqueadas ✓' : 'Solo bloqueadas'} color={COLOR.bloqueada} activo={soloBloqueadas} onPress={() => setSoloBloqueadas(!soloBloqueadas)} />
             </View>
-
-            {(subTabReportes === 'Pendientes' ? quejasPendientes : quejasResueltas).length > 0 ? (
-              (subTabReportes === 'Pendientes' ? quejasPendientes : quejasResueltas).map((queja, index) => (
-                <View key={index} style={[styles.adminCard, queja.estado === 'Resuelta' ? {opacity: 0.8, borderColor: '#D1D5DB', borderWidth: 1} : {borderLeftWidth: 4, borderLeftColor: '#D32F2F'}]}>
-                  <View style={{flexDirection: 'row', justifyContent: 'space-between', marginBottom: 5}}>
-                    <Text style={styles.dateText}>{new Date(queja.fecha_reporte).toLocaleString('es-MX')}</Text>
-                    <Text style={[styles.statusTagText, queja.estado === 'Resuelta' ? {color: '#00D06C'} : {color: '#D32F2F'}]}>{queja.estado}</Text>
-                  </View>
-                  
-                  <Text style={{fontSize: 16, fontWeight: 'bold', color: '#0D2340'}}>{queja.motivo}</Text>
-                  {queja.titulo_obra ? <Text style={{fontSize: 12, color: '#B45309', marginTop: 2, fontWeight: 'bold'}}>Obra: "{queja.titulo_obra}"</Text> : null}
-
-                  {/* QUIÉN REPORTA Y A QUIÉN: SE TOCA PARA VER SU PERFIL COMPLETO */}
-                  <TouchableOpacity style={styles.filaPersona} onPress={() => verPerfilDe(queja.id_reportante)}>
-                    <Text style={{fontSize: 12, color: '#6B7280', flex: 1}}><Text style={{fontWeight: 'bold'}}>Reporta:</Text> {queja.nombre_reportante} ({queja.rol_reportante || 'Usuario'})</Text>
-                    <Text style={styles.verPerfilTexto}>Ver perfil ›</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={styles.filaPersona} onPress={() => verPerfilDe(queja.id_acusado)}>
-                    <Text style={{fontSize: 12, color: '#DC2626', flex: 1}}><Text style={{fontWeight: 'bold'}}>Acusa a:</Text> {queja.acusado}{queja.rol_acusado ? ` (${queja.rol_acusado})` : ''}</Text>
-                    <Text style={styles.verPerfilTexto}>Ver perfil ›</Text>
-                  </TouchableOpacity>
-
-                  <View style={styles.quejaDescBox}>
-                    <Text style={{fontSize: 13, color: '#4B5563'}}>{queja.descripcion}</Text>
-                  </View>
-
-                  {queja.foto_evidencia && (
-                    <TouchableOpacity style={styles.btnVerEvidencia} onPress={() => setFotoEvidencia(queja.foto_evidencia)}>
-                      <Ionicons name="image-outline" size={16} color="#0D2340" style={{marginRight: 5}}/>
-                      <Text style={{fontSize: 12, fontWeight: 'bold', color: '#0D2340'}}>Ver Evidencia de Fraude/Acoso</Text>
-                    </TouchableOpacity>
-                  )}
-
-                  {queja.estado !== 'Resuelta' ? (
-                    <View style={{marginTop: 15}}>
-                      {esCancelacion(queja) && <Text style={{fontSize: 12, color: '#B45309', fontWeight: 'bold', marginBottom: 8}}>La obra está suspendida hasta que decidas.</Text>}
-                      {queja.tipo === 'bitacora' && <Text style={{fontSize: 12, color: '#B45309', fontWeight: 'bold', marginBottom: 8}}>El contratista rechazó el día {queja.fecha_dia} de la bitácora. Decide si cuenta o se descuenta.</Text>}
-                      <TouchableOpacity style={[styles.btnWarning, {backgroundColor: '#0D2340'}]} disabled={procesando} onPress={() => abrirResolucion(queja)}>
-                        <Text style={styles.btnTextWhite}>Resolver y avisar a las dos partes</Text>
-                      </TouchableOpacity>
-                    </View>
-                  ) : (
-                    <View style={{marginTop: 15, backgroundColor: '#F3F4F6', padding: 10, borderRadius: 8}}>
-                      {queja.resolucion ? <Text style={{fontSize: 12, color: '#0D2340', fontWeight: 'bold'}}>Decisión: {queja.resolucion}</Text> : null}
-                      {queja.nota_admin ? <Text style={{fontSize: 12, color: '#4B5563', marginTop: 3}}>Nota: "{queja.nota_admin}"</Text> : null}
-                      <View style={{flexDirection: 'row', alignItems: 'center', marginTop: 6}}>
-                        <Ionicons name="lock-closed" size={16} color="#6B7280" style={{marginRight: 8}}/>
-                        <Text style={{fontSize: 11, color: '#6B7280', flex: 1}}>Registro inmutable para fines legales. Atendida por: {queja.atendida_por || 'Admin'}</Text>
+            {usuariosVisibles.map(u => {
+              const colorRol = u.rol === 'Trabajador' ? COLOR.trabajador : COLOR.contratista;
+              const reportes = reportesContra(u.id);
+              return (
+                <TouchableOpacity key={u.id} style={[styles.tarjeta, { borderLeftWidth: 5, borderLeftColor: u.estado_cuenta === 'Bloqueada' ? COLOR.bloqueada : colorRol }]} activeOpacity={0.8} onPress={() => setUsuarioExpandido(u)}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    <Image source={{ uri: u.foto_rostro_url || undefined }} style={styles.avatar} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.tituloTarjeta}>{u.nombre} {u.apellidos}</Text>
+                      <Text style={styles.datoChico}>{u.correo}{u.numero_telefono ? ` · ${u.numero_telefono}` : ''}</Text>
+                      <Text style={styles.datoChico}>{u.rol === 'Trabajador' ? (u.oficio_principal || 'Sin oficio') : (u.empresa || 'Independiente')} · {[u.ubicacion_texto, u.ubicacion_estado].filter(Boolean).join(', ') || 'Sin ubicación'}</Text>
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 6 }}>
+                        <Etiqueta texto={u.rol.toUpperCase()} color={colorRol} fondo={`${colorRol}1A`} />
+                        <Etiqueta texto={`★ ${u.calificacion || '0.0'}`} color="#B45309" fondo="#FEF3C7" />
+                        {reportes.length > 0 && <Etiqueta texto={`${reportes.length} reporte${reportes.length > 1 ? 's' : ''}`} color="#DC2626" fondo="#FEE2E2" />}
+                        {u.estado_cuenta === 'Bloqueada' && <Etiqueta texto="BLOQUEADA" color={COLOR.bloqueada} />}
                       </View>
                     </View>
-                  )}
-                </View>
-              ))
+                    <Ionicons name="chevron-forward" size={20} color="#9CA3AF" />
+                  </View>
+                </TouchableOpacity>
+              );
+            })}
+            {usuariosVisibles.length === 0 && <Text style={styles.vacioTexto}>No hay usuarios con esa búsqueda.</Text>}
+          </View>
+        )}
+
+        {/* ---------------------------------------------------------------- OBRAS (CONTRATOS Y VACANTES) */}
+        {pestañaActiva === 'Obras' && (
+          <View>
+            <Segmentos opciones={[{ valor: 'Contratos', texto: `Obras / contratos (${contratos.length})` }, { valor: 'Vacantes', texto: `Vacantes (${vacantes.length})` }]} valor={vistaObras} onCambio={setVistaObras} />
+
+            {vistaObras === 'Contratos' ? (
+              <View>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
+                  <Chip texto={`Todas (${contratos.length})`} color={COLOR.marino} activo={filtroEstadoObra === 'todos'} onPress={() => setFiltroEstadoObra('todos')} />
+                  {estadosObra.map(e => <Chip key={e} texto={`${estiloEstado(e).texto} (${cuenta(e)})`} color={estiloEstado(e).color} activo={filtroEstadoObra === e} onPress={() => setFiltroEstadoObra(e)} />)}
+                </ScrollView>
+                {contratosVisibles.map(c => {
+                  const estilo = estiloEstado(c.estado);
+                  return (
+                    <View key={c.id} style={[styles.tarjeta, { borderLeftWidth: 5, borderLeftColor: estilo.color }]}>
+                      <View style={styles.filaEntre}>
+                        <Text style={[styles.tituloTarjeta, { flex: 1 }]} numberOfLines={2}>{c.titulo_vacante || c.vacante?.titulo}</Text>
+                        <Etiqueta texto={estilo.texto} color={estilo.color} />
+                      </View>
+                      <TouchableOpacity onPress={() => verPerfilDe(c.id_trabajador)}><Text style={styles.datoChico}><Text style={{ color: COLOR.trabajador, fontWeight: 'bold' }}>Trabajador:</Text> {c.nombre_trabajador || '—'} ›</Text></TouchableOpacity>
+                      <TouchableOpacity onPress={() => verPerfilDe(c.id_contratista)}><Text style={styles.datoChico}><Text style={{ color: COLOR.contratista, fontWeight: 'bold' }}>Contratista:</Text> {c.contratista || c.vacante?.contratista || '—'} ›</Text></TouchableOpacity>
+                      <Text style={styles.datoChico}>{c.vacante?.pago || ''}{c.fecha_inicio ? ` · Inició: ${c.fecha_inicio}` : ''}{c.fecha_fin ? ` · Terminó: ${c.fecha_fin}` : ''}</Text>
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 6 }}>
+                        {(c.reportes_abiertos || 0) > 0 && <Etiqueta texto={`${c.reportes_abiertos} reporte(s) abierto(s)`} color={COLOR.pendiente} fondo="#FEF3C7" />}
+                        {totalDescuentos(c) > 0 && <Etiqueta texto={`Descuentos: $${totalDescuentos(c).toLocaleString('es-MX')}`} color="#DC2626" fondo="#FEE2E2" />}
+                      </View>
+                    </View>
+                  );
+                })}
+                {contratosVisibles.length === 0 && <Text style={styles.vacioTexto}>No hay obras en este estado.</Text>}
+              </View>
             ) : (
-              <View style={styles.emptyState}>
-                <Ionicons name="shield-checkmark-outline" size={50} color="#D1D5DB" />
-                <Text style={styles.emptyStateTitle}>{subTabReportes === 'Pendientes' ? 'Cero Problemas' : 'Historial Vacío'}</Text>
-                <Text style={styles.emptyText}>{subTabReportes === 'Pendientes' ? 'No hay reportes ni quejas esperando atención.' : 'Aún no se ha archivado ningún reporte.'}</Text>
+              <View>
+                {vacantes.map(v => (
+                  <TouchableOpacity key={v.id} style={[styles.tarjeta, { borderLeftWidth: 5, borderLeftColor: v.estado === 'Activa' ? '#7C3AED' : '#9CA3AF' }]} activeOpacity={0.8} onPress={() => setVacanteExpandida(v)}>
+                    <View style={styles.filaEntre}>
+                      <Text style={[styles.tituloTarjeta, { flex: 1 }]} numberOfLines={2}>{v.titulo}</Text>
+                      <Etiqueta texto={v.estado === 'Activa' ? 'ACTIVA' : 'CERRADA'} color={v.estado === 'Activa' ? '#7C3AED' : '#6B7280'} />
+                    </View>
+                    <Text style={styles.datoChico}>Publicó: {v.contratista} · {new Date(v.fecha_publicacion).toLocaleDateString('es-MX')}</Text>
+                    <Text style={styles.datoChico}>{[v.ubicacion, v.estado_republica].filter(Boolean).join(', ')} · {v.pago} · {v.cupo_actual || 0}/{v.cupo_total || 1} contratados</Text>
+                  </TouchableOpacity>
+                ))}
+                {vacantes.length === 0 && <Text style={styles.vacioTexto}>No hay vacantes publicadas.</Text>}
               </View>
             )}
           </View>
         )}
 
-        {/* --- PESTAÑA STAFF / PERFIL ADMIN --- */}
-        {pestañaActiva === 'Staff' && (
-          <View style={{alignItems: 'center', marginTop: 10}}>
-            <TouchableOpacity style={styles.avatarContainer} onPress={cambiarFotoAdmin}>
-              <Image source={{ uri: adminData.foto }} style={styles.avatarBig} />
-              <View style={styles.editAvatarBadge}><Ionicons name="camera" size={16} color="#FFF" /></View>
-            </TouchableOpacity>
-            
-            <Text style={{fontSize: 24, fontWeight: 'bold', color: '#0D2340', marginTop: 15}}>{adminData.nombre}</Text>
-            <Text style={{fontSize: 14, color: '#D32F2F', fontWeight: 'bold', marginTop: 2}}>{adminData.cargo?.toUpperCase()}</Text>
-
-            <View style={{width: '100%', marginTop: 30}}>
-              <Text style={styles.sectionTitle}>Equipo de Monitoreo</Text>
-              {personalSoporte.map((staff, i) => (
-                <View key={i} style={[styles.adminCard, {flexDirection: 'row', alignItems: 'center'}]}>
-                  <View style={{width: 40, height: 40, borderRadius: 20, backgroundColor: '#D1FAE5', justifyContent: 'center', alignItems: 'center', marginRight: 15}}>
-                    <Ionicons name="headset" size={20} color="#059669" />
-                  </View>
-                  <View style={{flex: 1}}>
-                    <Text style={{fontWeight: 'bold', fontSize: 15, color: '#0D2340'}}>{staff.nombre}</Text>
-                    <Text style={{fontSize: 12, color: '#6B7280'}}>{staff.rol_usuario} | {staff.correo}</Text>
-                  </View>
-                </View>
-              ))}
-
-              <Text style={[styles.sectionTitle, {marginTop: 20}]}>Opciones Avanzadas</Text>
-              <TouchableOpacity style={styles.settingsOption} onPress={() => setModalEditarAdmin(true)}>
-                <View style={{flexDirection: 'row', alignItems: 'center'}}>
-                  <Ionicons name="pencil-outline" size={24} color="#0D2340" />
-                  <Text style={styles.settingsText}>Editar Mi Perfil Administrativo</Text>
-                </View>
-                <Ionicons name="chevron-forward" size={20} color="#9CA3AF" />
+        {/* ---------------------------------------------------------------- EQUIPO / MI PERFIL */}
+        {pestañaActiva === 'Equipo' && (
+          <View>
+            <View style={[styles.tarjeta, { alignItems: 'center' }]}>
+              <TouchableOpacity onPress={cambiarFotoAdmin}>
+                <Image source={{ uri: adminData.foto || undefined }} style={styles.fotoAdmin} />
+                <View style={styles.camara}><Ionicons name="camera" size={14} color="#FFF" /></View>
               </TouchableOpacity>
-
-              <TouchableOpacity style={styles.settingsOption} onPress={cargarDatosAdmin}>
-                <View style={{flexDirection: 'row', alignItems: 'center'}}>
-                  <Ionicons name="refresh-outline" size={24} color="#00D06C" />
-                  <Text style={[styles.settingsText, {color: '#00D06C'}]}>Refrescar Base de Datos</Text>
-                </View>
+              <Text style={styles.nombreAdmin}>{adminData.nombre}</Text>
+              <Text style={styles.cargoAdmin}>{adminData.cargo}</Text>
+              <TouchableOpacity style={[styles.botonPrincipal, { backgroundColor: COLOR.marino, alignSelf: 'stretch' }]} onPress={() => setModalEditarAdmin(true)}>
+                <Ionicons name="pencil" size={16} color="#FFF" /><Text style={styles.botonPrincipalTexto}>Editar mi perfil</Text>
               </TouchableOpacity>
             </View>
+
+            <View style={styles.filaEntre}>
+              <Text style={styles.seccion}>Equipo de monitoreo ({personalSoporte.length})</Text>
+              <TouchableOpacity style={styles.botonChico} onPress={() => setModalCrear(true)}><Ionicons name="person-add" size={14} color="#FFF" /><Text style={styles.botonChicoTexto}>Agregar</Text></TouchableOpacity>
+            </View>
+            {personalSoporte.map(s => (
+              <View key={s.id} style={[styles.tarjeta, { flexDirection: 'row', alignItems: 'center' }]}>
+                <View style={styles.iconoEquipo}><Ionicons name="headset" size={20} color={COLOR.resuelto} /></View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.tituloTarjeta}>{s.nombre}</Text>
+                  <Text style={styles.datoChico}>{s.rol_usuario} · {s.correo}</Text>
+                </View>
+              </View>
+            ))}
+            {personalSoporte.length === 0 && <Text style={styles.vacioTexto}>Todavía no hay personal de monitoreo.</Text>}
           </View>
         )}
-
       </ScrollView>
 
-      {/* BOTÓN FLOTANTE PARA CREAR PERSONAL DE MONITOREO DESDE EL DASHBOARD */}
-      {pestañaActiva === 'Staff' && (
-        <TouchableOpacity style={styles.fab} onPress={() => setModalCrear(true)}>
-          <Ionicons name="person-add" size={24} color="#FFF" />
-        </TouchableOpacity>
-      )}
-
-      {/* --- MODALES DEL ADMIN --- */}
-
-      {/* MODAL CREAR PERSONAL DE MONITOREO/SOPORTE */}
-      <Modal visible={modalCrear} animationType="slide" transparent>
-        <View style={styles.modalBg}>
-          <View style={[styles.modalContainer, {maxHeight: '90%'}]}>
-            <View style={{flexDirection: 'row', alignItems: 'center', marginBottom: 15}}>
-              <Ionicons name="headset" size={24} color="#00D06C" style={{marginRight: 10}}/>
-              <Text style={[styles.modalTitle, {marginBottom: 0}]}>Crear Cuenta de Monitoreo</Text>
-            </View>
-            <Text style={{fontSize: 12, color: '#6B7280', marginBottom: 20}}>Estas cuentas tendrán acceso para vigilar el comportamiento y revisar la auditoría legal.</Text>
-            
-            <ScrollView showsVerticalScrollIndicator={false}>
-              <Text style={styles.modalLabel}>Puesto de Monitoreo</Text>
-              <View style={styles.pickerBox}>
-                <Picker selectedValue={nuevoRol} onValueChange={(itemValue) => setNuevoRol(itemValue)}>
-                  <Picker.Item label="Soporte Técnico" value="Soporte Técnico" />
-                  <Picker.Item label="Auditor Legal" value="Auditor Legal" />
-                  <Picker.Item label="Moderador de Quejas" value="Moderador" />
-                </Picker>
+      {/* BARRA DE ABAJO */}
+      <View style={styles.barra}>
+        {PESTAÑAS.map(p => {
+          const activa = pestañaActiva === p.clave;
+          return (
+            <TouchableOpacity key={p.clave} style={styles.barraBoton} onPress={() => setPestañaActiva(p.clave)}>
+              <View>
+                <Ionicons name={activa ? p.icono : `${p.icono}-outline`} size={24} color={activa ? COLOR.marino : '#9CA3AF'} />
+                {p.clave === 'Reportes' && quejasPendientes.length > 0 && <View style={styles.globo}><Text style={styles.globoTexto}>{quejasPendientes.length}</Text></View>}
               </View>
+              <Text style={[styles.barraTexto, activa && { color: COLOR.marino, fontWeight: 'bold' }]}>{p.clave}</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
 
-              <Text style={styles.modalLabel}>Nombre del Agente</Text>
-              <TextInput style={styles.modalInput} placeholder="Ej. Ana Laura" value={nuevoNombre} onChangeText={setNuevoNombre} />
-              
-              <Text style={styles.modalLabel}>Correo Institucional</Text>
-              <TextInput style={styles.modalInput} placeholder="soporte@palantemx.com" value={nuevoCorreo} onChangeText={setNuevoCorreo} keyboardType="email-address" autoCapitalize="none" />
+      {/* ---------------------------------------------------------------- VENTANAS */}
 
-              <View style={styles.modalBtnRow}>
-                <TouchableOpacity style={styles.modalBtnCancel} onPress={() => setModalCrear(false)}><Text style={styles.modalBtnTextC}>Cancelar</Text></TouchableOpacity>
-                <TouchableOpacity style={[styles.modalBtnSave, {backgroundColor: '#00D06C'}]} onPress={crearPersonalMonitoreo} disabled={procesando}>{procesando ? <ActivityIndicator color="#FFF" /> : <Text style={styles.modalBtnTextS}>Crear Personal</Text>}</TouchableOpacity>
-              </View>
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
-
-      {/* RESOLVER UN REPORTE: ELEGIR LA DECISIÓN Y ESCRIBIR LA NOTA QUE LES LLEGA A LAS DOS PARTES */}
+      {/* RESOLVER UN REPORTE */}
       <Modal visible={!!quejaResolviendo} animationType="fade" transparent onRequestClose={() => setQuejaResolviendo(null)}>
-        <KeyboardAvoidingView style={styles.modalBg} behavior="padding">
-          <View style={[styles.modalContainer, {maxHeight: '90%'}]}>
+        <KeyboardAvoidingView style={styles.modalFondo} behavior="padding">
+          <View style={[styles.modalCaja, { maxHeight: '90%' }]}>
             <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-              <Text style={[styles.modalTitle, {marginBottom: 6}]}>Resolver reporte</Text>
-              <Text style={{fontSize: 13, color: '#6B7280', marginBottom: 12}}>{quejaResolviendo?.motivo}{quejaResolviendo?.titulo_obra ? ` • "${quejaResolviendo.titulo_obra}"` : ''}</Text>
-              <Text style={styles.modalLabel}>Tu decisión</Text>
-              {quejaResolviendo && opcionesDeReporte(quejaResolviendo).map(op => (
-                <TouchableOpacity key={op.valor} style={[styles.opcionDecision, decision === op.valor && {borderColor: op.color, backgroundColor: `${op.color}18`}]} onPress={() => setDecision(op.valor)}>
-                  <Ionicons name={decision === op.valor ? 'radio-button-on' : 'radio-button-off'} size={20} color={op.color} />
-                  <Text style={{marginLeft: 8, fontWeight: 'bold', color: '#1F2937', flex: 1}}>{op.texto}</Text>
-                </TouchableOpacity>
-              ))}
-              <Text style={[styles.modalLabel, {marginTop: 10}]}>Nota para las dos partes (obligatoria)</Text>
-              <TextInput style={[styles.modalInput, {height: 100, textAlignVertical: 'top'}]} multiline value={notaAdmin} onChangeText={setNotaAdmin} placeholder="Ej. Revisamos la evidencia: el contratista no entregó el material acordado..." />
-              <View style={styles.modalBtnRow}>
-                <TouchableOpacity style={styles.modalBtnCancel} onPress={() => setQuejaResolviendo(null)}><Text style={styles.modalBtnTextC}>Volver</Text></TouchableOpacity>
-                <TouchableOpacity style={[styles.modalBtnSave, {backgroundColor: '#0D2340'}]} onPress={confirmarResolucion} disabled={procesando}>{procesando ? <ActivityIndicator color="#FFF" /> : <Text style={styles.modalBtnTextS}>Resolver</Text>}</TouchableOpacity>
-              </View>
+              {quejaResolviendo && (
+                <>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
+                    <Ionicons name={TIPOS_REPORTE[tipoDe(quejaResolviendo)].icono} size={22} color={TIPOS_REPORTE[tipoDe(quejaResolviendo)].color} />
+                    <Text style={[styles.modalTitulo, { marginLeft: 8, marginBottom: 0 }]}>Resolver reporte</Text>
+                  </View>
+                  <Text style={styles.datoChico}>{quejaResolviendo.motivo}{quejaResolviendo.titulo_obra ? ` · "${quejaResolviendo.titulo_obra}"` : ''}</Text>
+                  <Text style={[styles.datoChico, { marginBottom: 12 }]}>{quejaResolviendo.nombre_reportante} → {quejaResolviendo.acusado}</Text>
+
+                  <Text style={styles.modalEtiqueta}>Tu decisión</Text>
+                  {opcionesDeReporte(quejaResolviendo).map(op => (
+                    <TouchableOpacity key={op.valor} style={[styles.opcion, decision === op.valor && { borderColor: op.color, backgroundColor: `${op.color}14` }]} onPress={() => setDecision(op.valor)}>
+                      <Ionicons name={decision === op.valor ? 'radio-button-on' : 'radio-button-off'} size={20} color={op.color} />
+                      <Text style={styles.opcionTexto}>{op.texto}</Text>
+                    </TouchableOpacity>
+                  ))}
+
+                  {permiteDescuento(decision) && (
+                    <>
+                      <Text style={[styles.modalEtiqueta, { marginTop: 8 }]}>Descuento a {quejaResolviendo.acusado} (opcional, en pesos)</Text>
+                      <TextInput style={styles.modalInput} keyboardType="numeric" placeholder="0 = sin descuento" value={descuento} onChangeText={t => setDescuento(t.replace(/[^0-9]/g, ''))} />
+                    </>
+                  )}
+
+                  <Text style={[styles.modalEtiqueta, { marginTop: 8 }]}>Nota para las dos partes (obligatoria)</Text>
+                  <TextInput style={[styles.modalInput, { height: 100, textAlignVertical: 'top' }]} multiline value={notaAdmin} onChangeText={setNotaAdmin} placeholder="Ej. Revisamos la evidencia: el contratista no entregó el material acordado..." />
+                  <Text style={[styles.datoChico, { marginBottom: 10 }]}>Se les enviará una notificación con tu decisión{permiteDescuento(decision) ? ', el descuento' : ''} y esta nota.</Text>
+
+                  <View style={styles.modalBotones}>
+                    <TouchableOpacity style={styles.modalCancelar} onPress={() => setQuejaResolviendo(null)}><Text style={styles.modalCancelarTexto}>Volver</Text></TouchableOpacity>
+                    <TouchableOpacity style={[styles.modalGuardar, { backgroundColor: COLOR.marino }]} onPress={confirmarResolucion} disabled={procesando}>{procesando ? <ActivityIndicator color="#FFF" /> : <Text style={styles.modalGuardarTexto}>Resolver</Text>}</TouchableOpacity>
+                  </View>
+                </>
+              )}
             </ScrollView>
           </View>
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* VISTA DETALLADA DEL USUARIO/TRABAJADOR */}
-      <Modal visible={!!usuarioExpandido} animationType="slide" transparent>
-        <View style={styles.modalBgDark}>
+      {/* PERFIL DE UN USUARIO */}
+      <Modal visible={!!usuarioExpandido} animationType="slide" transparent onRequestClose={() => setUsuarioExpandido(null)}>
+        <View style={styles.modalFondoOscuro}>
           {usuarioExpandido && (
-            <SafeAreaView style={{flex: 1, backgroundColor: '#F3F4F6', borderRadius: 20, overflow: 'hidden'}}>
-              <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#0D2340', padding: 15}}>
-                <View style={{flexDirection: 'row', alignItems: 'center'}}>
-                  <Ionicons name="person-circle" size={28} color="#00D06C" style={{marginRight: 10}}/>
-                  <Text style={{color: '#FFF', fontWeight: 'bold', fontSize: 16}}>Perfil de {usuarioExpandido?.rol}</Text>
-                </View>
-                <TouchableOpacity onPress={() => setUsuarioExpandido(null)}>
-                  <Ionicons name="close-circle" size={28} color="#FFF"/>
-                </TouchableOpacity>
+            <SafeAreaView style={styles.panelCompleto}>
+              <View style={[styles.panelEncabezado, { backgroundColor: usuarioExpandido.rol === 'Trabajador' ? COLOR.trabajador : COLOR.contratista }]}>
+                <Text style={styles.panelTitulo}>Perfil de {usuarioExpandido.rol.toLowerCase()}</Text>
+                <TouchableOpacity onPress={() => setUsuarioExpandido(null)}><Ionicons name="close-circle" size={28} color="#FFF" /></TouchableOpacity>
               </View>
-
-              <ScrollView contentContainerStyle={{padding: 20}}>
-                <View style={{alignItems: 'center', marginBottom: 20}}>
-                  <Image source={{ uri: usuarioExpandido?.foto_rostro_url || 'https://via.placeholder.com/150' }} style={{width: 120, height: 120, borderRadius: 60, borderWidth: 3, borderColor: '#D1D5DB'}} />
-                  <Text style={{fontSize: 22, fontWeight: 'bold', color: '#0D2340', marginTop: 10}}>{usuarioExpandido?.nombre} {usuarioExpandido?.apellidos}</Text>
-                  <Text style={{fontSize: 14, color: '#6B7280'}}>{usuarioExpandido?.correo} | {usuarioExpandido?.numero_telefono}</Text>
-                  <View style={[styles.statusTag, {marginTop: 10}, usuarioExpandido?.estado_cuenta === 'Bloqueada' ? {backgroundColor: '#FEE2E2'} : {backgroundColor: '#D1FAE5'}]}>
-                    <Text style={[styles.statusTagText, usuarioExpandido?.estado_cuenta === 'Bloqueada' ? {color: '#DC2626'} : {color: '#059669'}]}>CUENTA {usuarioExpandido?.estado_cuenta?.toUpperCase()}</Text>
+              <ScrollView contentContainerStyle={{ padding: 16 }}>
+                {/* DATOS QUE SOLO VE EL ADMIN */}
+                <View style={styles.tarjeta}>
+                  <View style={styles.filaEntre}>
+                    <Text style={styles.seccionChica}>DATOS DE LA CUENTA</Text>
+                    <Etiqueta texto={usuarioExpandido.estado_cuenta === 'Bloqueada' ? 'BLOQUEADA' : 'ACTIVA'} color={usuarioExpandido.estado_cuenta === 'Bloqueada' ? COLOR.bloqueada : COLOR.resuelto} />
                   </View>
+                  <Text style={styles.datoChico}>Correo: {usuarioExpandido.correo}</Text>
+                  <Text style={styles.datoChico}>Teléfono: {usuarioExpandido.numero_telefono}</Text>
+                  <Text style={styles.datoChico}>Usuario: {usuarioExpandido.nombre_usuario}</Text>
+                  <Text style={styles.datoChico}>KYC (INE + rostro): {usuarioExpandido.kyc_aprobado ? '✅ Verificado' : '❌ No verificado'}</Text>
                 </View>
 
-                <View style={{backgroundColor: '#FFF', padding: 15, borderRadius: 12, marginBottom: 20, borderWidth: 1, borderColor: '#E5E7EB'}}>
-                  <Text style={{fontSize: 12, fontWeight: 'bold', color: '#9CA3AF', marginBottom: 10}}>INFORMACIÓN TÉCNICA</Text>
-                  {usuarioExpandido?.rol === 'Trabajador' ? (
-                    <>
-                      <Text style={{fontSize: 14, color: '#1F2937'}}><Text style={{fontWeight: 'bold'}}>Oficio Principal:</Text> {usuarioExpandido?.oficio_principal}</Text>
-                      <Text style={{fontSize: 14, color: '#1F2937', marginTop: 5}}><Text style={{fontWeight: 'bold'}}>Calificación:</Text> {usuarioExpandido?.calificacion || '0'} <Ionicons name="star" color="#F59E0B"/></Text>
-                      <Text style={{fontSize: 14, color: '#1F2937', marginTop: 5}}><Text style={{fontWeight: 'bold'}}>Obras en Portafolio:</Text> {usuarioExpandido?.portafolio?.length || 0}</Text>
-                    </>
-                  ) : (
-                    <>
-                      <Text style={{fontSize: 14, color: '#1F2937'}}><Text style={{fontWeight: 'bold'}}>Empresa:</Text> {usuarioExpandido?.empresa || 'Contratista Independiente'}</Text>
-                      <Text style={{fontSize: 14, color: '#1F2937', marginTop: 5}}><Text style={{fontWeight: 'bold'}}>Reputación:</Text> {usuarioExpandido?.calificacion || '0'} <Ionicons name="star" color="#F59E0B"/></Text>
-                    </>
-                  )}
-                  <Text style={{fontSize: 14, color: '#1F2937', marginTop: 5}}><Text style={{fontWeight: 'bold'}}>Ubicación:</Text> {usuarioExpandido?.ubicacion_texto}</Text>
-                </View>
-
-                <Text style={styles.sectionTitle}>Reportes en su contra</Text>
-                {(() => {
-                  // BLINDAJE: indexOf undefined error safe-check
-                  const reportesDelUsuario = quejas.filter(q => {
-                    const acusadoSeguro = q.acusado || '';
-                    const nombreSeguro = usuarioExpandido?.nombre || '';
-                    return acusadoSeguro.toLowerCase().includes(nombreSeguro.toLowerCase());
-                  });
-                  
-                  if (reportesDelUsuario.length === 0) {
-                    return <Text style={{textAlign: 'center', color: '#6B7280', marginBottom: 20}}>Este usuario no tiene reportes en su contra.</Text>;
-                  }
-                  return reportesDelUsuario.map((queja, idx) => (
-                    <View key={idx} style={[styles.adminCard, queja.estado === 'Resuelta' ? {opacity: 0.7} : {borderLeftWidth: 4, borderLeftColor: '#D32F2F'}]}>
-                      <View style={{flexDirection: 'row', justifyContent: 'space-between', marginBottom: 5}}>
-                        <Text style={styles.dateText}>{new Date(queja.fecha_reporte).toLocaleDateString()}</Text>
-                        <Text style={[styles.statusTagText, queja.estado === 'Resuelta' ? {color: '#00D06C'} : {color: '#D32F2F'}]}>{queja.estado}</Text>
-                      </View>
-                      <Text style={{fontSize: 14, fontWeight: 'bold', color: '#0D2340'}}>{queja.motivo}</Text>
-                      <Text style={{fontSize: 12, color: '#6B7280', marginTop: 2}}><Text style={{fontWeight: 'bold'}}>Reportado por:</Text> {queja.nombre_reportante}</Text>
-                      <Text style={{fontSize: 13, color: '#4B5563', marginTop: 5, fontStyle: 'italic'}}>{queja.descripcion}</Text>
-                    </View>
-                  ));
-                })()}
-
-                {usuarioExpandido?.rol === 'Trabajador' && (
-                  <View>
-                    <Text style={styles.sectionTitle}>Historial de Obras</Text>
-                    {usuarioExpandido?.portafolio && usuarioExpandido.portafolio.length > 0 ? (
-                      usuarioExpandido.portafolio.map((trabajo: any, idx: number) => (
-                        <View key={idx} style={[styles.adminCard, {padding: 0, overflow: 'hidden', position: 'relative'}]}>
-                          
-                          <TouchableOpacity style={{position: 'absolute', top: 10, right: 10, backgroundColor: 'rgba(220, 38, 38, 0.9)', padding: 8, borderRadius: 20, zIndex: 10}} onPress={() => eliminarObraDeUsuario(usuarioExpandido.id, trabajo.id_obra, 'Usuarios')} disabled={procesando}>
-                            <Ionicons name="trash" size={18} color="#FFF" />
-                          </TouchableOpacity>
-
-                          <View style={{flexDirection: 'row', height: 150}}>
-                            {trabajo.foto_antes && (
-                              <View style={{flex: 1, borderRightWidth: 1, borderColor: '#FFF', position: 'relative'}}>
-                                <Image source={{uri: trabajo.foto_antes}} style={{width: '100%', height: '100%'}}/>
-                                <View style={styles.imageTag}><Text style={styles.imageTagText}>Antes</Text></View>
-                              </View>
-                            )}
-                            {trabajo.foto_despues && (
-                              <View style={{flex: 1, position: 'relative'}}>
-                                <Image source={{uri: trabajo.foto_despues}} style={{width: '100%', height: '100%'}}/>
-                                <View style={styles.imageTag}><Text style={styles.imageTagText}>Después</Text></View>
-                              </View>
-                            )}
-                          </View>
-                          <View style={{padding: 15}}>
-                            <Text style={{fontSize: 16, fontWeight: 'bold', color: '#0D2340'}}>{trabajo.titulo}</Text>
-                            <Text style={{fontSize: 13, color: '#6B7280'}}>{trabajo.lugar} | {trabajo.estado}</Text>
-                            <Text style={{marginTop: 5, fontSize: 13, color: '#4B5563'}}>{trabajo.descripcion}</Text>
-                          </View>
-                        </View>
-                      ))
-                    ) : (
-                      <Text style={{textAlign: 'center', color: '#6B7280'}}>El portafolio de este trabajador está vacío.</Text>
-                    )}
+                {usuarioExpandido.rol === 'Trabajador' ? (
+                  <PerfilTrabajador trabajador={usuarioExpandido} onEliminarObra={(idObra) => eliminarObraDeUsuario(usuarioExpandido.id, idObra)} />
+                ) : (
+                  <View style={[styles.tarjeta, { alignItems: 'center' }]}>
+                    <TouchableOpacity onPress={() => usuarioExpandido.foto_rostro_url && setFotoGrande(usuarioExpandido.foto_rostro_url)}>
+                      <Image source={{ uri: usuarioExpandido.foto_rostro_url || undefined }} style={styles.fotoAdmin} />
+                    </TouchableOpacity>
+                    <Text style={styles.nombreAdmin}>{usuarioExpandido.nombre} {usuarioExpandido.apellidos}</Text>
+                    <Text style={styles.datoChico}>{usuarioExpandido.empresa || 'Contratista independiente'}</Text>
+                    <Text style={styles.datoChico}>{[usuarioExpandido.ubicacion_texto, usuarioExpandido.ubicacion_estado].filter(Boolean).join(', ') || 'Sin ubicación'}</Text>
+                    <Text style={[styles.datoChico, { color: '#B45309', fontWeight: 'bold' }]}>★ {usuarioExpandido.calificacion || '0.0'} ({usuarioExpandido.numero_resenas || 0} reseñas)</Text>
+                    <Text style={styles.datoChico}>{vacantes.filter(v => v.id_contratista === usuarioExpandido.id).length} vacantes · {contratos.filter(c => c.id_contratista === usuarioExpandido.id && c.estado === ESTADOS.FINALIZADA).length} obras finalizadas</Text>
                   </View>
                 )}
 
-                <View style={[styles.actionButtonsRow, {marginTop: 30, justifyContent: 'space-between', borderTopWidth: 0}]}>
-                  <TouchableOpacity style={[styles.btnWarning, {flex: 1, height: 50, alignItems: 'center'}]} onPress={() => alternarBloqueoUsuario(usuarioExpandido?.id, usuarioExpandido?.rol === 'Trabajador' ? 'Usuarios' : 'Contratistas', usuarioExpandido?.estado_cuenta)}>
-                    <Text style={styles.btnTextWhite}>{usuarioExpandido?.estado_cuenta === 'Bloqueada' ? 'Desbloquear Acceso' : 'Bloquear Cuenta'}</Text>
+                <Text style={styles.seccion}>Reportes en su contra ({reportesContra(usuarioExpandido.id).length})</Text>
+                {reportesContra(usuarioExpandido.id).length === 0 ? <Text style={styles.vacioTexto}>No tiene reportes en su contra.</Text>
+                  : reportesContra(usuarioExpandido.id).map(q => {
+                    const tipo = TIPOS_REPORTE[tipoDe(q)];
+                    return (
+                      <View key={q.id} style={[styles.tarjeta, { borderLeftWidth: 5, borderLeftColor: tipo.color }]}>
+                        <View style={styles.filaEntre}>
+                          <Text style={[styles.tipoTexto, { color: tipo.color, marginLeft: 0 }]}>{tipo.texto}</Text>
+                          <Etiqueta texto={q.estado === 'Resuelta' ? 'RESUELTO' : 'PENDIENTE'} color={q.estado === 'Resuelta' ? COLOR.resuelto : COLOR.pendiente} />
+                        </View>
+                        <Text style={styles.tituloTarjeta}>{q.motivo}</Text>
+                        <Text style={styles.datoChico}>Reportó: {q.nombre_reportante} · {new Date(q.fecha_reporte).toLocaleDateString('es-MX')}</Text>
+                        <Text style={[styles.datoChico, { fontStyle: 'italic' }]} numberOfLines={3}>{q.descripcion}</Text>
+                      </View>
+                    );
+                  })}
+
+                <View style={{ flexDirection: 'row', marginTop: 10 }}>
+                  <TouchableOpacity style={[styles.botonPrincipal, { flex: 1, backgroundColor: usuarioExpandido.estado_cuenta === 'Bloqueada' ? COLOR.resuelto : COLOR.pendiente, marginRight: 6 }]} disabled={procesando} onPress={() => alternarBloqueoUsuario(usuarioExpandido)}>
+                    <Ionicons name={usuarioExpandido.estado_cuenta === 'Bloqueada' ? 'lock-open' : 'lock-closed'} size={16} color="#FFF" />
+                    <Text style={styles.botonPrincipalTexto}>{usuarioExpandido.estado_cuenta === 'Bloqueada' ? 'Desbloquear' : 'Bloquear'}</Text>
                   </TouchableOpacity>
-                  <TouchableOpacity style={[styles.btnDanger, {flex: 1, height: 50, alignItems: 'center', marginLeft: 10}]} onPress={() => eliminarUsuarioCompleto(usuarioExpandido?.id, usuarioExpandido?.nombre)} disabled={procesando}>
-                    <Text style={styles.btnTextWhite}>Eliminar del Sistema</Text>
+                  <TouchableOpacity style={[styles.botonPrincipal, { flex: 1, backgroundColor: COLOR.bloqueada, marginLeft: 6 }]} disabled={procesando} onPress={() => eliminarUsuarioCompleto(usuarioExpandido.id, usuarioExpandido.nombre)}>
+                    <Ionicons name="trash" size={16} color="#FFF" /><Text style={styles.botonPrincipalTexto}>Eliminar cuenta</Text>
                   </TouchableOpacity>
                 </View>
-
               </ScrollView>
             </SafeAreaView>
           )}
         </View>
       </Modal>
 
-      <Modal visible={!!vacanteExpandida} animationType="slide" transparent>
-        <View style={styles.modalBgDark}>
+      {/* DETALLE DE UNA VACANTE */}
+      <Modal visible={!!vacanteExpandida} animationType="slide" transparent onRequestClose={() => setVacanteExpandida(null)}>
+        <View style={styles.modalFondo}>
           {vacanteExpandida && (
-            <View style={[styles.modalContainer, {maxHeight: '90%', padding: 0, overflow: 'hidden'}]}>
-              <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#D32F2F', padding: 15}}>
-                <Text style={{color: '#FFF', fontWeight: 'bold', fontSize: 16}}>👁️ Detalles de la Vacante</Text>
-                <TouchableOpacity onPress={() => setVacanteExpandida(null)}><Ionicons name="close" size={24} color="#FFF"/></TouchableOpacity>
+            <View style={[styles.modalCaja, { maxHeight: '90%', padding: 0, overflow: 'hidden' }]}>
+              <View style={[styles.panelEncabezado, { backgroundColor: '#7C3AED' }]}>
+                <Text style={styles.panelTitulo}>Detalle de la vacante</Text>
+                <TouchableOpacity onPress={() => setVacanteExpandida(null)}><Ionicons name="close-circle" size={28} color="#FFF" /></TouchableOpacity>
               </View>
-              
-              <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{padding: 20}}>
-                <View style={[styles.feedJobCard, {elevation: 0, borderWidth: 1, borderColor: '#E5E7EB'}]}>
-                  <View style={styles.feedJobHeader}>
-                    <Image source={{ uri: vacanteExpandida?.foto_contratista || 'https://via.placeholder.com/150' }} style={styles.feedContractorAvatar} />
-                    <View style={{flex: 1}}>
-                      <Text style={styles.feedJobTitle}>{vacanteExpandida?.titulo}</Text>
-                      <Text style={styles.feedJobCompany}>{vacanteExpandida?.contratista} | {vacanteExpandida?.empresa}</Text>
-                    </View>
-                  </View>
-
-                  {vacanteExpandida?.foto_trabajo && (
-                    <View style={styles.feedJobImageContainer}>
-                      <Image source={{ uri: vacanteExpandida.foto_trabajo }} style={styles.feedJobImage} />
-                    </View>
-                  )}
-
-                  <View style={styles.feedJobDetailsGrid}>
-                    <View style={styles.feedJobDetailRow}><Ionicons name="location-outline" size={16} color="#6B7280" /><Text style={styles.feedJobDetailText}>{vacanteExpandida?.ubicacion}</Text></View>
-                    <View style={styles.feedJobDetailRow}><Ionicons name="cash-outline" size={16} color="#00D06C" /><Text style={[styles.feedJobDetailText, {color: '#00D06C', fontWeight: 'bold'}]}>{vacanteExpandida?.pago}</Text></View>
-                    <View style={styles.feedJobDetailRow}><Ionicons name="calendar-outline" size={16} color="#F59E0B" /><Text style={[styles.feedJobDetailText, {color: '#B45309'}]}>{vacanteExpandida?.horario}</Text></View>
-                  </View>
-                  <Text style={styles.feedJobDesc}>{vacanteExpandida?.descripcion}</Text>
-                </View>
-
-                <View style={styles.expandedProgressBox}>
-                  <Text style={{fontSize: 12, fontWeight: 'bold', color: '#6B7280', marginBottom: 5}}>PROGRESO DE CONTRATACIÓN</Text>
-                  <View style={[styles.progressBarBg, {height: 8}]}>
-                    <View style={[styles.progressBarFill, {width: `${((vacanteExpandida?.cupo_actual || 0) / (vacanteExpandida?.cupo_total || 1)) * 100}%`}]} />
-                  </View>
-                  <Text style={{fontSize: 14, fontWeight: 'bold', color: '#0D2340', marginTop: 5}}>{vacanteExpandida?.cupo_actual || 0} de {vacanteExpandida?.cupo_total || 1} personas contratadas</Text>
-                </View>
-
-                <TouchableOpacity style={[styles.btnDanger, {marginTop: 20, alignItems: 'center', flexDirection: 'row', justifyContent: 'center'}]} onPress={() => eliminarDocumento(vacanteExpandida?.id, 'Vacantes', `¿Eliminar esta vacante del sistema?`, true)}>
-                  <Ionicons name="trash" size={20} color="#FFF" style={{marginRight: 8}}/>
-                  <Text style={styles.btnTextWhite}>Eliminar esta Vacante</Text>
+              <ScrollView contentContainerStyle={{ padding: 18 }}>
+                <Text style={styles.nombreAdmin}>{vacanteExpandida.titulo}</Text>
+                <TouchableOpacity onPress={() => verPerfilDe(vacanteExpandida.id_contratista)}><Text style={[styles.datoChico, { color: COLOR.contratista, fontWeight: 'bold' }]}>{vacanteExpandida.contratista} · {vacanteExpandida.empresa} ›</Text></TouchableOpacity>
+                {vacanteExpandida.foto_trabajo ? (
+                  <TouchableOpacity onPress={() => setFotoGrande(vacanteExpandida.foto_trabajo)}><Image source={{ uri: vacanteExpandida.foto_trabajo }} style={styles.fotoVacante} /></TouchableOpacity>
+                ) : null}
+                <Text style={styles.datoChico}>📍 {[vacanteExpandida.ubicacion, vacanteExpandida.estado_republica].filter(Boolean).join(', ')}</Text>
+                <Text style={styles.datoChico}>💵 {vacanteExpandida.pago}</Text>
+                <Text style={styles.datoChico}>🕒 {vacanteExpandida.horario}</Text>
+                <Text style={[styles.descripcionTexto, { marginTop: 8 }]}>{vacanteExpandida.descripcion}</Text>
+                <Text style={[styles.datoChico, { marginTop: 8, fontWeight: 'bold' }]}>{vacanteExpandida.cupo_actual || 0} de {vacanteExpandida.cupo_total || 1} contratados</Text>
+                <TouchableOpacity style={[styles.botonPrincipal, { backgroundColor: COLOR.bloqueada, marginTop: 16 }]} onPress={() => eliminarVacante(vacanteExpandida.id)} disabled={procesando}>
+                  <Ionicons name="trash" size={16} color="#FFF" /><Text style={styles.botonPrincipalTexto}>Eliminar esta vacante</Text>
                 </TouchableOpacity>
               </ScrollView>
             </View>
@@ -764,115 +791,149 @@ export default function AdminDashboard() {
         </View>
       </Modal>
 
-      <Modal visible={!!fotoEvidencia} transparent animationType="fade">
-        <View style={styles.modalBgDark}>
-          <TouchableOpacity style={{position: 'absolute', top: 40, right: 20, zIndex: 10}} onPress={() => setFotoEvidencia(null)}>
-            <Ionicons name="close-circle" size={36} color="#FFF" />
-          </TouchableOpacity>
-          {fotoEvidencia && (
-            <Image source={{uri: fotoEvidencia}} style={{width: width - 40, height: '70%', borderRadius: 16}} resizeMode="contain" />
-          )}
-        </View>
-      </Modal>
-
-      <Modal visible={modalEditarAdmin} animationType="slide" transparent>
-        <View style={styles.modalBg}>
-          <View style={styles.modalContainer}>
-            <Text style={styles.modalTitle}>Editar Administrador</Text>
-            <Text style={styles.modalLabel}>Nombre Completo (Visible en soporte)</Text>
+      {/* EDITAR MI PERFIL */}
+      <Modal visible={modalEditarAdmin} animationType="slide" transparent onRequestClose={() => setModalEditarAdmin(false)}>
+        <KeyboardAvoidingView style={styles.modalFondo} behavior="padding">
+          <View style={styles.modalCaja}>
+            <Text style={styles.modalTitulo}>Editar mi perfil</Text>
+            <Text style={styles.modalEtiqueta}>Nombre completo</Text>
             <TextInput style={styles.modalInput} value={editAdminNombre} onChangeText={setEditAdminNombre} />
-            <Text style={styles.modalLabel}>Cargo Administrativo (Ej. Soporte, Director)</Text>
+            <Text style={styles.modalEtiqueta}>Cargo (ej. Soporte, Director)</Text>
             <TextInput style={styles.modalInput} value={editAdminCargo} onChangeText={setEditAdminCargo} />
-
-            <View style={styles.modalBtnRow}>
-              <TouchableOpacity style={styles.modalBtnCancel} onPress={() => setModalEditarAdmin(false)}><Text style={styles.modalBtnTextC}>Cancelar</Text></TouchableOpacity>
-              <TouchableOpacity style={[styles.modalBtnSave, {backgroundColor: '#D32F2F'}]} onPress={guardarPerfilAdmin} disabled={procesando}>
-                {procesando ? <ActivityIndicator color="#FFF" /> : <Text style={styles.modalBtnTextS}>Guardar Perfil</Text>}
-              </TouchableOpacity>
+            <View style={styles.modalBotones}>
+              <TouchableOpacity style={styles.modalCancelar} onPress={() => setModalEditarAdmin(false)}><Text style={styles.modalCancelarTexto}>Cancelar</Text></TouchableOpacity>
+              <TouchableOpacity style={[styles.modalGuardar, { backgroundColor: COLOR.marino }]} onPress={guardarPerfilAdmin} disabled={procesando}>{procesando ? <ActivityIndicator color="#FFF" /> : <Text style={styles.modalGuardarTexto}>Guardar</Text>}</TouchableOpacity>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
+      {/* AGREGAR PERSONAL DE MONITOREO */}
+      <Modal visible={modalCrear} animationType="slide" transparent onRequestClose={() => setModalCrear(false)}>
+        <KeyboardAvoidingView style={styles.modalFondo} behavior="padding">
+          <View style={[styles.modalCaja, { maxHeight: '90%' }]}>
+            <ScrollView showsVerticalScrollIndicator={false}>
+              <Text style={styles.modalTitulo}>Agregar personal de monitoreo</Text>
+              <Text style={styles.modalEtiqueta}>Puesto</Text>
+              <View style={styles.pickerCaja}>
+                <Picker selectedValue={nuevoRol} onValueChange={setNuevoRol}>
+                  <Picker.Item label="Soporte Técnico" value="Soporte Técnico" />
+                  <Picker.Item label="Auditor Legal" value="Auditor Legal" />
+                  <Picker.Item label="Moderador de Quejas" value="Moderador" />
+                </Picker>
+              </View>
+              <Text style={styles.modalEtiqueta}>Nombre</Text>
+              <TextInput style={styles.modalInput} placeholder="Ej. Ana Laura" value={nuevoNombre} onChangeText={setNuevoNombre} />
+              <Text style={styles.modalEtiqueta}>Correo</Text>
+              <TextInput style={styles.modalInput} placeholder="soporte@palantemx.com" value={nuevoCorreo} onChangeText={setNuevoCorreo} keyboardType="email-address" autoCapitalize="none" />
+              <View style={styles.modalBotones}>
+                <TouchableOpacity style={styles.modalCancelar} onPress={() => setModalCrear(false)}><Text style={styles.modalCancelarTexto}>Cancelar</Text></TouchableOpacity>
+                <TouchableOpacity style={[styles.modalGuardar, { backgroundColor: COLOR.resuelto }]} onPress={crearPersonalMonitoreo} disabled={procesando}>{procesando ? <ActivityIndicator color="#FFF" /> : <Text style={styles.modalGuardarTexto}>Agregar</Text>}</TouchableOpacity>
+              </View>
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <VisorFoto uri={fotoGrande} onClose={() => setFotoGrande(null)} />
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F3F4F6' },
-  loadingCenter: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  loadingText: { marginTop: 10, color: '#D32F2F', fontWeight: 'bold' },
-  header: { backgroundColor: '#D32F2F', paddingHorizontal: 20, paddingTop: 20, paddingBottom: 25, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderBottomLeftRadius: 20, borderBottomRightRadius: 20 },
-  headerTitle: { fontSize: 22, fontWeight: 'bold', color: '#FFF' },
-  headerSubtitle: { fontSize: 12, color: '#FCA5A5', fontWeight: 'bold', letterSpacing: 1 },
-  tabsContainer: { flexDirection: 'row', marginTop: 15, paddingHorizontal: 15 },
-  tabButton: { flex: 1, paddingVertical: 12, alignItems: 'center', borderBottomWidth: 3, borderColor: 'transparent', position: 'relative' },
-  tabButtonActive: { borderColor: '#D32F2F' },
-  tabText: { fontSize: 12, fontWeight: 'bold', color: '#9CA3AF' },
-  tabTextActive: { color: '#D32F2F' },
-  badge: { position: 'absolute', top: 0, right: 10, backgroundColor: '#D32F2F', borderRadius: 10, minWidth: 18, height: 18, justifyContent: 'center', alignItems: 'center' },
-  badgeText: { color: '#FFF', fontSize: 10, fontWeight: 'bold' },
-  subTabsContainer: { flexDirection: 'row', backgroundColor: '#E5E7EB', borderRadius: 10, padding: 4, marginBottom: 20 },
-  subTab: { flex: 1, paddingVertical: 8, alignItems: 'center', borderRadius: 8 },
-  subTabActive: { backgroundColor: '#FFF', elevation: 1 },
-  subTabText: { fontSize: 12, fontWeight: '600', color: '#6B7280' },
-  subTabTextActive: { color: '#0D2340', fontWeight: 'bold' },
-  sectionTitle: { fontSize: 16, fontWeight: 'bold', color: '#0D2340', marginBottom: 15 },
-  adminCard: { backgroundColor: '#FFF', borderRadius: 16, padding: 15, marginBottom: 15, elevation: 2, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 4 },
-  userCardHeader: { flexDirection: 'row', alignItems: 'center' },
-  userAvatar: { width: 50, height: 50, borderRadius: 25, marginRight: 15, backgroundColor: '#E5E7EB' },
-  userName: { fontSize: 16, fontWeight: 'bold', color: '#0D2340' },
-  userSub: { fontSize: 12, color: '#6B7280', marginTop: 2 },
-  userOficio: { fontSize: 12, color: '#9CA3AF', marginTop: 2, fontStyle: 'italic' },
-  actionButtonsRow: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 15, borderTopWidth: 1, borderColor: '#F3F4F6', paddingTop: 15 },
-  btnWarning: { backgroundColor: '#F59E0B', paddingHorizontal: 15, paddingVertical: 8, borderRadius: 8, marginRight: 10, justifyContent: 'center' },
-  btnDanger: { backgroundColor: '#DC2626', paddingHorizontal: 15, paddingVertical: 8, borderRadius: 8, justifyContent: 'center' },
-  btnTextWhite: { color: '#FFF', fontSize: 12, fontWeight: 'bold' },
-  statusTag: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, alignSelf: 'flex-start' },
-  statusTagText: { fontSize: 10, fontWeight: 'bold' },
-  dateText: { fontSize: 11, color: '#9CA3AF', fontWeight: 'bold' },
-  quejaDescBox: { backgroundColor: '#F9FAFB', padding: 10, borderRadius: 8, marginTop: 10, borderWidth: 1, borderColor: '#E5E7EB' },
-  btnVerEvidencia: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F3F4F6', alignSelf: 'flex-start', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, marginTop: 10, borderWidth: 1, borderColor: '#D1D5DB' },
-  emptyState: { alignItems: 'center', marginTop: 40 },
-  emptyStateTitle: { fontSize: 16, fontWeight: 'bold', color: '#0D2340', marginTop: 10 },
-  emptyText: { color: '#6B7280', textAlign: 'center', marginTop: 5, fontSize: 13 },
-  avatarContainer: { position: 'relative' },
-  avatarBig: { width: 120, height: 120, borderRadius: 60, borderWidth: 4, borderColor: '#FFF', backgroundColor: '#E5E7EB' },
-  editAvatarBadge: { position: 'absolute', bottom: 5, right: 5, backgroundColor: '#D32F2F', borderRadius: 20, padding: 8, borderWidth: 2, borderColor: '#FFF' },
-  settingsOption: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#FFF', padding: 18, borderRadius: 12, marginBottom: 10, elevation: 1 },
-  settingsText: { fontSize: 14, fontWeight: 'bold', color: '#1F2937', marginLeft: 15 },
-  modalBg: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', padding: 15 },
-  modalBgDark: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', alignItems: 'center', padding: 15 },
-  modalContainer: { backgroundColor: '#FFF', borderRadius: 20, padding: 25, elevation: 10 },
-  modalTitle: { fontSize: 20, fontWeight: 'bold', color: '#0D2340', marginBottom: 20 },
-  modalLabel: { fontSize: 12, fontWeight: 'bold', color: '#6B7280', marginBottom: 5, marginTop: 5 },
-  modalInput: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, padding: 12, marginBottom: 15, fontSize: 14, color: '#1F2937' },
-  modalBtnRow: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 10 },
-  modalBtnCancel: { padding: 12, marginRight: 10 },
-  modalBtnTextC: { color: '#6B7280', fontWeight: 'bold', fontSize: 14 },
-  modalBtnSave: { paddingVertical: 12, paddingHorizontal: 20, borderRadius: 10, minWidth: 100, alignItems: 'center' },
-  modalBtnTextS: { color: '#FFF', fontWeight: 'bold', fontSize: 14 },
-  imageTag: { position: 'absolute', bottom: 10, left: 10, backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
-  imageTagText: { color: '#FFF', fontSize: 10, fontWeight: 'bold' },
-  candBtnAccion: { flex: 1, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', padding: 14, borderRadius: 12, borderWidth: 1, marginHorizontal: 5 },
-  candBtnText: { fontWeight: 'bold', fontSize: 13, marginLeft: 5 },
-  feedJobCard: { backgroundColor: '#FFF', borderRadius: 16, padding: 20, marginBottom: 20 },
-  feedJobHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 15 },
-  feedContractorAvatar: { width: 50, height: 50, borderRadius: 25, backgroundColor: '#E5E7EB', marginRight: 15, borderWidth: 1, borderColor: '#D1D5DB' },
-  feedJobTitle: { fontSize: 16, fontWeight: 'bold', color: '#0D2340', marginBottom: 4 },
-  feedJobCompany: { fontSize: 13, color: '#6B7280', fontWeight: '500' },
-  feedJobImageContainer: { position: 'relative', marginBottom: 15 },
-  feedJobImage: { width: '100%', height: 180, borderRadius: 12, backgroundColor: '#E5E7EB' },
-  feedJobDetailsGrid: { backgroundColor: '#F9FAFB', borderRadius: 10, padding: 12, marginBottom: 15, borderWidth: 1, borderColor: '#E5E7EB' },
-  feedJobDetailRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 6 },
-  feedJobDetailText: { fontSize: 13, color: '#4B5563', marginLeft: 8 },
-  feedJobDesc: { fontSize: 14, color: '#4B5563', lineHeight: 20, marginBottom: 15 },
-  expandedProgressBox: { backgroundColor: '#F9FAFB', padding: 15, borderRadius: 12, borderWidth: 1, borderColor: '#E5E7EB', marginBottom: 15 },
-  progressBarBg: { height: 4, backgroundColor: '#E5E7EB', borderRadius: 2, overflow: 'hidden' },
-  progressBarFill: { height: '100%', backgroundColor: '#00D06C' },
-  pickerBox: { borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, backgroundColor: '#F9FAFB', marginBottom: 15, overflow: 'hidden' },
-  filaPersona: { flexDirection: 'row', alignItems: 'center', marginTop: 4, paddingVertical: 4 },
-  verPerfilTexto: { fontSize: 12, color: '#3B82F6', fontWeight: 'bold', marginLeft: 8 },
-  opcionDecision: { flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 12, padding: 12, marginBottom: 8 },
-  fab: { position: 'absolute', bottom: 30, right: 20, backgroundColor: '#00D06C', width: 60, height: 60, borderRadius: 30, justifyContent: 'center', alignItems: 'center', elevation: 5, shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 5 },
+  loadingCenter: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F3F4F6' },
+  loadingText: { marginTop: 10, color: COLOR.marino, fontWeight: 'bold' },
+
+  header: { flexDirection: 'row', alignItems: 'center', backgroundColor: COLOR.marino, paddingHorizontal: 16, paddingVertical: 14 },
+  headerFoto: { width: 42, height: 42, borderRadius: 21, backgroundColor: '#1E3A5F', borderWidth: 2, borderColor: '#FFF' },
+  headerTitulo: { color: '#FFF', fontSize: 17, fontWeight: 'bold' },
+  headerSub: { color: '#9CA3AF', fontSize: 12 },
+
+  seccion: { fontSize: 16, fontWeight: 'bold', color: COLOR.marino, marginTop: 6, marginBottom: 10 },
+  seccionChica: { fontSize: 11, fontWeight: 'bold', color: '#9CA3AF', letterSpacing: 0.5 },
+  cuadricula: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', marginBottom: 8 },
+  cuadro: { width: '48.5%', backgroundColor: '#FFF', borderRadius: 14, padding: 14, marginBottom: 10, borderTopWidth: 4, elevation: 1 },
+  cuadroIcono: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
+  cuadroNumero: { fontSize: 26, fontWeight: 'bold', marginTop: 6 },
+  cuadroTitulo: { fontSize: 12, color: '#4B5563', fontWeight: '600' },
+  filaTipo: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderColor: '#F3F4F6' },
+  puntoTipo: { width: 12, height: 12, borderRadius: 6, marginRight: 8 },
+  filaTipoTexto: { flex: 1, fontSize: 14, color: '#1F2937', fontWeight: '600' },
+  filaTipoNumero: { fontSize: 16, fontWeight: 'bold', marginRight: 6 },
+  leyenda: { flexDirection: 'row', alignItems: 'center', width: '50%', marginBottom: 6 },
+  leyendaTexto: { fontSize: 12, color: '#4B5563' },
+
+  segmentos: { flexDirection: 'row', backgroundColor: '#E5E7EB', borderRadius: 12, padding: 4, marginBottom: 12 },
+  segmento: { flex: 1, paddingVertical: 9, alignItems: 'center', borderRadius: 9 },
+  segmentoActivo: { backgroundColor: '#FFF', elevation: 1 },
+  segmentoTexto: { fontSize: 12, fontWeight: '600', color: '#6B7280' },
+  segmentoTextoActivo: { color: COLOR.marino, fontWeight: 'bold' },
+  chip: { borderWidth: 1.5, borderRadius: 16, paddingHorizontal: 12, paddingVertical: 6, marginRight: 8, backgroundColor: '#FFF' },
+  chipTexto: { fontSize: 12, fontWeight: 'bold' },
+  etiqueta: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, marginRight: 6, marginBottom: 4, alignSelf: 'flex-start' },
+  etiquetaTexto: { fontSize: 10, fontWeight: 'bold' },
+
+  tarjeta: { backgroundColor: '#FFF', borderRadius: 14, padding: 14, marginBottom: 12, elevation: 1, shadowColor: '#000', shadowOpacity: 0.04, shadowRadius: 4 },
+  filaEntre: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  tipoTexto: { fontSize: 12, fontWeight: 'bold', marginLeft: 6 },
+  fecha: { fontSize: 11, color: '#9CA3AF', marginTop: 4 },
+  tituloTarjeta: { fontSize: 15, fontWeight: 'bold', color: COLOR.marino, marginTop: 2 },
+  obraTexto: { fontSize: 12, color: '#B45309', fontWeight: 'bold', marginTop: 2 },
+  partes: { flexDirection: 'row', marginTop: 10 },
+  parte: { flex: 1, backgroundColor: '#F9FAFB', borderRadius: 10, padding: 8, borderWidth: 1, borderColor: '#E5E7EB' },
+  parteEtiqueta: { fontSize: 9, fontWeight: 'bold', color: '#9CA3AF', letterSpacing: 0.5 },
+  parteNombre: { fontSize: 13, fontWeight: 'bold', color: '#1F2937', marginTop: 2 },
+  parteRol: { fontSize: 11, fontWeight: 'bold', marginTop: 2 },
+  descripcion: { backgroundColor: '#F9FAFB', borderRadius: 10, padding: 10, marginTop: 10 },
+  descripcionTexto: { fontSize: 13, color: '#4B5563', lineHeight: 18 },
+  botonEvidencia: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', borderWidth: 1, borderColor: '#D1D5DB', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, marginTop: 8 },
+  botonEvidenciaTexto: { fontSize: 12, fontWeight: 'bold', color: COLOR.marino, marginLeft: 5 },
+  botonPrincipal: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', borderRadius: 10, paddingVertical: 12, marginTop: 12 },
+  botonPrincipalTexto: { color: '#FFF', fontWeight: 'bold', fontSize: 13, marginLeft: 6 },
+  resolucion: { backgroundColor: '#ECFDF5', borderRadius: 10, padding: 10, marginTop: 10, borderWidth: 1, borderColor: '#A7F3D0' },
+  resolucionTexto: { fontSize: 12, color: '#065F46', fontWeight: 'bold' },
+  resolucionNota: { fontSize: 12, color: '#047857', marginTop: 3 },
+  resolucionPie: { fontSize: 11, color: '#6B7280', marginTop: 6 },
+  vacio: { alignItems: 'center', marginTop: 40 },
+  vacioTitulo: { fontSize: 15, fontWeight: 'bold', color: COLOR.marino, marginTop: 10 },
+  vacioTexto: { color: '#9CA3AF', textAlign: 'center', marginVertical: 12 },
+
+  buscador: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF', borderRadius: 12, paddingHorizontal: 12, borderWidth: 1, borderColor: '#E5E7EB', marginBottom: 10 },
+  buscadorInput: { flex: 1, paddingVertical: 10, marginLeft: 8, fontSize: 14, color: '#1F2937' },
+  avatar: { width: 48, height: 48, borderRadius: 24, marginRight: 12, backgroundColor: '#E5E7EB' },
+  datoChico: { fontSize: 12, color: '#6B7280', marginTop: 2 },
+
+  fotoAdmin: { width: 96, height: 96, borderRadius: 48, backgroundColor: '#E5E7EB' },
+  camara: { position: 'absolute', bottom: 2, right: 2, backgroundColor: COLOR.marino, borderRadius: 14, padding: 6, borderWidth: 2, borderColor: '#FFF' },
+  nombreAdmin: { fontSize: 20, fontWeight: 'bold', color: COLOR.marino, marginTop: 8, textAlign: 'center' },
+  cargoAdmin: { fontSize: 13, color: '#6B7280', fontWeight: 'bold' },
+  botonChico: { flexDirection: 'row', alignItems: 'center', backgroundColor: COLOR.resuelto, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6 },
+  botonChicoTexto: { color: '#FFF', fontWeight: 'bold', fontSize: 12, marginLeft: 4 },
+  iconoEquipo: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#D1FAE5', alignItems: 'center', justifyContent: 'center', marginRight: 12 },
+  fotoVacante: { width: '100%', height: 170, borderRadius: 12, marginVertical: 10, backgroundColor: '#E5E7EB' },
+
+  barra: { flexDirection: 'row', backgroundColor: '#FFF', borderTopWidth: 1, borderColor: '#E5E7EB', paddingVertical: 10, elevation: 15 },
+  barraBoton: { flex: 1, alignItems: 'center' },
+  barraTexto: { fontSize: 11, color: '#9CA3AF', marginTop: 3, fontWeight: '600' },
+  globo: { position: 'absolute', top: -4, right: -10, backgroundColor: COLOR.pendiente, borderRadius: 10, minWidth: 18, height: 18, alignItems: 'center', justifyContent: 'center', borderWidth: 1.5, borderColor: '#FFF' },
+  globoTexto: { color: '#FFF', fontSize: 10, fontWeight: 'bold' },
+
+  modalFondo: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', padding: 16 },
+  modalFondoOscuro: { flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', paddingTop: 30 },
+  modalCaja: { backgroundColor: '#FFF', borderRadius: 20, padding: 22 },
+  modalTitulo: { fontSize: 19, fontWeight: 'bold', color: COLOR.marino, marginBottom: 14 },
+  modalEtiqueta: { fontSize: 12, fontWeight: 'bold', color: '#6B7280', marginBottom: 5 },
+  modalInput: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 14, color: '#1F2937' },
+  modalBotones: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 6 },
+  modalCancelar: { padding: 12, marginRight: 8 },
+  modalCancelarTexto: { color: '#6B7280', fontWeight: 'bold' },
+  modalGuardar: { borderRadius: 10, paddingVertical: 12, paddingHorizontal: 20, minWidth: 110, alignItems: 'center' },
+  modalGuardarTexto: { color: '#FFF', fontWeight: 'bold' },
+  opcion: { flexDirection: 'row', alignItems: 'center', borderWidth: 1.5, borderColor: '#E5E7EB', borderRadius: 12, padding: 12, marginBottom: 8 },
+  opcionTexto: { marginLeft: 8, fontWeight: 'bold', color: '#1F2937', flex: 1 },
+  pickerCaja: { borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, backgroundColor: '#F9FAFB', marginBottom: 12, overflow: 'hidden' },
+  panelCompleto: { flex: 1, backgroundColor: '#F3F4F6', borderTopLeftRadius: 20, borderTopRightRadius: 20, overflow: 'hidden' },
+  panelEncabezado: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16 },
+  panelTitulo: { color: '#FFF', fontWeight: 'bold', fontSize: 17 },
 });

@@ -5,7 +5,7 @@ import { useState } from 'react';
 import { Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { VisorFoto } from '@/components/visor-foto';
-import { estiloEstado } from '@/lib/contratos';
+import { estiloEstado, tieneReporteAbierto, totalDescuentos } from '@/lib/contratos';
 
 export type BotonContrato = {
   texto: string;
@@ -64,6 +64,22 @@ export function TarjetaContrato({ contrato, otraParte, aviso, botones, deshabili
 
       {aviso ? <Text style={[styles.aviso, { color: estado.color }]}>{aviso}</Text> : null}
 
+      {/* MIENTRAS EL ADMIN REVISA UN REPORTE DE ESTA OBRA, NO SE PUEDE TERMINAR */}
+      {tieneReporteAbierto(contrato) ? (
+        <View style={[styles.franja, { backgroundColor: '#FEF3C7', borderColor: '#FCD34D' }]}>
+          <Ionicons name="hourglass-outline" size={16} color="#B45309" />
+          <Text style={[styles.franjaTexto, { color: '#92400E' }]}>Hay un reporte en revisión por el administrador. La obra no se puede terminar hasta que lo resuelva; les avisaremos a los dos.</Text>
+        </View>
+      ) : null}
+      {totalDescuentos(contrato) > 0 ? (
+        <View style={[styles.franja, { backgroundColor: '#FEE2E2', borderColor: '#FCA5A5' }]}>
+          <Ionicons name="remove-circle-outline" size={16} color="#B91C1C" />
+          <Text style={[styles.franjaTexto, { color: '#991B1B' }]}>
+            Descuentos del administrador: {(contrato.descuentos || []).map((d: any) => `$${(d.monto || 0).toLocaleString('es-MX')} a ${d.a_cargo_de} (${d.motivo})`).join('; ')}
+          </Text>
+        </View>
+      ) : null}
+
       {botones.length > 0 && (
         <View style={styles.botones}>
           {botones.map((boton, i) => (
@@ -100,6 +116,8 @@ const styles = StyleSheet.create({
   fotoAviso: { position: 'absolute', bottom: 8, right: 8, flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 },
   fotoAvisoTexto: { color: '#FFF', fontSize: 10, fontWeight: 'bold', marginLeft: 4 },
   aviso: { fontSize: 12, fontWeight: 'bold', marginTop: 10 },
+  franja: { flexDirection: 'row', alignItems: 'flex-start', borderWidth: 1, borderRadius: 10, padding: 8, marginTop: 10 },
+  franjaTexto: { fontSize: 12, fontWeight: '600', marginLeft: 6, flex: 1 },
   botones: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 12, marginHorizontal: -4 },
   boton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderRadius: 10, paddingVertical: 9, paddingHorizontal: 10, margin: 4, flexGrow: 1 },
   botonTexto: { fontSize: 12, fontWeight: 'bold', marginLeft: 5 },
