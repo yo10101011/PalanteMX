@@ -107,11 +107,12 @@ export default function LoginScreen() {
 
   const entrarConSesionGuardada = async (usuario: User) => {
     try {
-      const hayHuella = (await LocalAuthentication.hasHardwareAsync()) && (await LocalAuthentication.isEnrolledAsync());
-      if (hayHuella) {
-        const resultado = await LocalAuthentication.authenticateAsync({ promptMessage: 'Acceso seguro a PalanteMX', cancelLabel: 'Usar contraseña' });
-        if (!resultado.success) return; // SI CANCELA, SE QUEDA EN EL LOGIN Y PUEDE ENTRAR CON CONTRASEÑA
-      }
+      // SIN NINGÚN BLOQUEO EN EL CELULAR (NI HUELLA, NI CARA, NI PIN/PATRÓN) NO HAY CÓMO SABER QUIÉN LO TIENE:
+      // NO SE ENTRA SOLO, HAY QUE ESCRIBIR LA CONTRASEÑA
+      const nivel = await LocalAuthentication.getEnrolledLevelAsync();
+      if (nivel === LocalAuthentication.SecurityLevel.NONE) return;
+      const resultado = await LocalAuthentication.authenticateAsync({ promptMessage: 'Acceso seguro a PalanteMX', cancelLabel: 'Usar contraseña' });
+      if (!resultado.success) return; // SI CANCELA O FALLA, SE QUEDA EN EL LOGIN Y PUEDE ENTRAR CON CONTRASEÑA
       setCargando(true);
       await redirigirSegunRol(usuario.uid);
     } catch (error) {

@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getApp, getApps, initializeApp } from 'firebase/app';
 import { getAuth, getReactNativePersistence, initializeAuth } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import { getFirestore, initializeFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage'; // <-- EL ARCHIVERO DE FOTOS
 
 const firebaseConfig = {
@@ -16,7 +16,15 @@ const firebaseConfig = {
 
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 
-export const db = getFirestore(app);
+// EN CELULARES, LA CONEXIÓN EN TIEMPO REAL DE FIRESTORE (WEBCHANNEL) SE CORTA CON DATOS MÓVILES O WIFI DÉBIL
+// ("Could not reach Cloud Firestore backend"). LONG POLLING ES MÁS ESTABLE EN REACT NATIVE.
+export const db = (() => {
+  try {
+    return initializeFirestore(app, { experimentalForceLongPolling: true });
+  } catch (error) {
+    return getFirestore(app); // AL RECARGAR LA APP YA ESTABA INICIALIZADO
+  }
+})();
 export const storage = getStorage(app); // <-- EXPORTAMOS EL STORAGE
 
 export const auth = (() => {
