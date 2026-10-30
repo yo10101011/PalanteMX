@@ -149,7 +149,7 @@ export default function LoginScreen() {
     }
     try {
       await sendPasswordResetEmail(auth, correoRecuperar.trim());
-      Alert.alert("✅ Correo Enviado", "Revisa tu bandeja de entrada o spam. Te hemos enviado un enlace para crear una nueva contraseña.");
+      Alert.alert("Correo Enviado", "Revisa tu bandeja de entrada o spam. Te hemos enviado un enlace para crear una nueva contraseña.");
       setModalRecuperarVisible(false);
       setCorreoRecuperar('');
     } catch (error: any) {
@@ -172,7 +172,7 @@ export default function LoginScreen() {
           
           <View style={styles.topSection}>
             <View style={styles.header}>
-              <Text style={styles.trabajoSeguro}>🛡️ SISTEMA DE ACCESO</Text>
+              <Text style={styles.trabajoSeguro}>SISTEMA DE ACCESO</Text>
               <Text style={styles.subtitle}>BIENVENIDO A</Text>
               <Text style={styles.title}>Palante<Text style={styles.titleAccent}>MX</Text></Text>
             </View>
@@ -207,7 +207,7 @@ export default function LoginScreen() {
               </View>
 
               <TouchableOpacity style={styles.biometricButton} onPress={handleBiometria}>
-                <Text style={styles.biometricText}>👆 Ingresar con Huella / FaceID</Text>
+                <Text style={styles.biometricText}>Ingresar con Huella / FaceID</Text>
                 <Text style={styles.biometricSub}>Rápido, privado y protegido</Text>
               </TouchableOpacity>
             </View>

@@ -73,7 +73,7 @@ export default function Mensajes() {
   const [reporteMotivo, setReporteMotivo] = useState('Spam / Fraude');
   const [reporteDesc, setReporteDesc] = useState('');
   const [fotosReporte, setFotosReporte] = useState<string[]>([]);
-  const [rapidasAbiertas, setRapidasAbiertas] = useState(false); // RESPUESTAS RÁPIDAS (BOTÓN ⚡)
+  const [rapidasAbiertas, setRapidasAbiertas] = useState(false); // RESPUESTAS RÁPIDAS (BOTÓN )
 
   // ESTADOS PARA BUSCADOR INTELIGENTE DE NUEVO CHAT
   const [modalNuevoChat, setModalNuevoChat] = useState(false);
@@ -311,7 +311,7 @@ export default function Mensajes() {
 
       let textoPortada = textoMensaje;
       if (!textoMensaje.trim() && urlArchivo) {
-        textoPortada = archivoEnviar?.tipo === 'imagen' ? '📸 Imagen enviada' : archivoEnviar?.tipo === 'audio' ? '🎤 Audio enviado' : '📄 Archivo enviado';
+        textoPortada = archivoEnviar?.tipo === 'imagen' ? 'Imagen enviada' : archivoEnviar?.tipo === 'audio' ? 'Audio enviado' : 'Archivo enviado';
       }
 
       await updateDoc(doc(db, 'Chats', chatActivo.id), {
@@ -484,8 +484,8 @@ export default function Mensajes() {
                 </View>
                 {trato.vacante?.pago ? <Text style={styles.tratoDato}>{trato.vacante.pago}{trato.vacante.ubicacion ? ` • ${trato.vacante.ubicacion}` : ''}</Text> : null}
                 <View style={{flexDirection: 'row', marginTop: 6}}>
-                  <Text style={[styles.tratoEstado, yoAcepte && styles.tratoEstadoSi]}>{yoAcepte ? '✅ Tú aceptaste' : '⏳ Tú: falta aceptar'}</Text>
-                  <Text style={[styles.tratoEstado, elAcepto && styles.tratoEstadoSi]} numberOfLines={1}>{elAcepto ? `✅ ${otroUsuarioData.nombre?.split(' ')[0]} aceptó` : `⏳ ${otroUsuarioData.nombre?.split(' ')[0]}: falta`}</Text>
+                  <Text style={[styles.tratoEstado, yoAcepte && styles.tratoEstadoSi]}>{yoAcepte ? 'Tú aceptaste' : 'Tú: falta aceptar'}</Text>
+                  <Text style={[styles.tratoEstado, elAcepto && styles.tratoEstadoSi]} numberOfLines={1}>{elAcepto ? `${otroUsuarioData.nombre?.split(' ')[0]} aceptó` : `${otroUsuarioData.nombre?.split(' ')[0]}: falta`}</Text>
                 </View>
                 {meToca ? (
                   <>
@@ -575,7 +575,7 @@ export default function Mensajes() {
             </View>
           ) : (
             <>
-            {/* RESPUESTAS RÁPIDAS: SE ABREN CON EL BOTÓN ⚡ Y SE ACOMODAN EN VARIAS LÍNEAS (YA NO SE CORTAN).
+            {/* RESPUESTAS RÁPIDAS: SE ABREN CON EL BOTÓN Y SE ACOMODAN EN VARIAS LÍNEAS (YA NO SE CORTAN).
                 AL TOCAR UNA SE ESCRIBE EN LA CAJA Y SE PUEDE CAMBIAR ANTES DE ENVIAR */}
             {rapidasAbiertas && !archivoSeleccionado && (
               <View style={styles.rapidasCaja}>

@@ -89,14 +89,14 @@ export const ajustesDePago = (contrato: any): any[] => contrato?.ajustes_pago ||
 
 // ---------------------------------------------------------------- CONDICIONES DE LA OBRA
 // LO QUE EL CONTRATISTA PROMETE AL PUBLICAR LA VACANTE. SE COPIA AL CONTRATO COMO EVIDENCIA DE LO ACORDADO.
-export const CONDICIONES: { clave: string; pregunta: string; icono: string; opciones: string[] }[] = [
-  { clave: 'material', pregunta: '¿Quién pone el material?', icono: '🧱', opciones: ['Lo pone el contratista', 'Lo pone el trabajador', 'Se reparte entre los dos', 'No se necesita'] },
-  { clave: 'herramienta', pregunta: '¿Quién pone la herramienta?', icono: '🔨', opciones: ['La pone el contratista', 'La pone el trabajador', 'Se reparte entre los dos'] },
-  { clave: 'comida', pregunta: '¿Se da comida?', icono: '🍽️', opciones: ['Sí, se da comida', 'No'] },
-  { clave: 'transporte', pregunta: '¿Se paga el pasaje o transporte?', icono: '🚌', opciones: ['Sí, se paga el pasaje', 'No'] },
-  { clave: 'seguridad', pregunta: '¿Se da equipo de seguridad (casco, guantes...)?', icono: '🦺', opciones: ['Sí', 'No', 'No se necesita'] },
-  { clave: 'forma_pago', pregunta: '¿Cómo se paga?', icono: '💵', opciones: ['Efectivo', 'Transferencia', 'Efectivo o transferencia'] },
-  { clave: 'cuando_pago', pregunta: '¿Cuándo se paga?', icono: '📅', opciones: ['Cada día', 'Cada semana', 'Al terminar la obra', 'Mitad al inicio y mitad al final'] },
+export const CONDICIONES: { clave: string; pregunta: string; opciones: string[] }[] = [
+  { clave: 'material', pregunta: '¿Quién pone el material?', opciones: ['Lo pone el contratista', 'Lo pone el trabajador', 'Se reparte entre los dos', 'No se necesita'] },
+  { clave: 'herramienta', pregunta: '¿Quién pone la herramienta?', opciones: ['La pone el contratista', 'La pone el trabajador', 'Se reparte entre los dos'] },
+  { clave: 'comida', pregunta: '¿Se da comida?', opciones: ['Sí, se da comida', 'No'] },
+  { clave: 'transporte', pregunta: '¿Se paga el pasaje o transporte?', opciones: ['Sí, se paga el pasaje', 'No'] },
+  { clave: 'seguridad', pregunta: '¿Se da equipo de seguridad (casco, guantes...)?', opciones: ['Sí', 'No', 'No se necesita'] },
+  { clave: 'forma_pago', pregunta: '¿Cómo se paga?', opciones: ['Efectivo', 'Transferencia', 'Efectivo o transferencia'] },
+  { clave: 'cuando_pago', pregunta: '¿Cuándo se paga?', opciones: ['Cada día', 'Cada semana', 'Al terminar la obra', 'Mitad al inicio y mitad al final'] },
 ];
 
 // LLAMA A UNA RUTA DEL SERVIDOR CON LA SESIÓN. SI NO SE PUEDE, LANZA UN ERROR CON EL MOTIVO (LISTO PARA UN Alert)

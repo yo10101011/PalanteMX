@@ -794,10 +794,10 @@ export default function DashboardContratista() {
               <Text style={styles.sectionTitle}>Mis Obras Asignadas</Text>
               <Text style={{fontSize: 14, color: '#6B7280', marginBottom: 15}}>A quién le asignaste cada obra, su bitácora diaria, y el cierre o la cancelación.</Text>
 
-              {seccionContratos('🏗️ Obras activas', [ESTADOS.ACTIVA])}
-              {seccionContratos('🏁 Esperando que el trabajador confirme el fin', [ESTADOS.POR_CONFIRMAR_FIN], 'Marcaste la obra como terminada. Falta que el trabajador lo confirme.')}
-              {seccionContratos('⚠️ Suspendidas', [ESTADOS.SUSPENDIDA], 'Se canceló y el administrador la está revisando.')}
-              {seccionContratos('📁 Historial', [ESTADOS.FINALIZADA, ESTADOS.CANCELADA])}
+              {seccionContratos('Obras activas', [ESTADOS.ACTIVA])}
+              {seccionContratos('Esperando que el trabajador confirme el fin', [ESTADOS.POR_CONFIRMAR_FIN], 'Marcaste la obra como terminada. Falta que el trabajador lo confirme.')}
+              {seccionContratos('Suspendidas', [ESTADOS.SUSPENDIDA], 'Se canceló y el administrador la está revisando.')}
+              {seccionContratos('Historial', [ESTADOS.FINALIZADA, ESTADOS.CANCELADA])}
 
               {!candidatos.some(c => [ESTADOS.ACTIVA, ESTADOS.POR_CONFIRMAR_FIN, ESTADOS.SUSPENDIDA, ESTADOS.FINALIZADA, ESTADOS.CANCELADA].includes(c.estado)) && (
                 <View style={styles.emptyState}>
@@ -844,7 +844,7 @@ export default function DashboardContratista() {
 
               {/* PROPUESTAS QUE YO ENVIÉ DESDE EXPLORAR Y QUE EL TRABAJADOR AÚN NO RESPONDE */}
               <View style={{marginTop: 20}}>
-                {seccionContratos('📤 Propuestas que enviaste', [ESTADOS.PROPUESTA], 'Esperando a que el trabajador acepte. Platiquen por chat.')}
+                {seccionContratos('Propuestas que enviaste', [ESTADOS.PROPUESTA], 'Esperando a que el trabajador acepte. Platiquen por chat.')}
               </View>
             </View>
           )}
@@ -950,7 +950,7 @@ export default function DashboardContratista() {
       <Modal visible={!!vacanteExpandida} animationType="slide" transparent>
         <View style={styles.modalBgDark}>
           <View style={[styles.modalContainer, {maxHeight: '90%', padding: 0, overflow: 'hidden'}]}>
-            <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#0D2340', padding: 15}}><Text style={{color: '#FFF', fontWeight: 'bold', fontSize: 17}}>👁️ Así la ven los trabajadores</Text><TouchableOpacity onPress={() => setVacanteExpandida(null)}><Ionicons name="close" size={24} color="#FFF"/></TouchableOpacity></View>
+            <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#0D2340', padding: 15}}><Text style={{color: '#FFF', fontWeight: 'bold', fontSize: 17}}>Así la ven los trabajadores</Text><TouchableOpacity onPress={() => setVacanteExpandida(null)}><Ionicons name="close" size={24} color="#FFF"/></TouchableOpacity></View>
             <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{padding: 20}}>
               <View style={[styles.feedJobCard, {elevation: 0, borderWidth: 1, borderColor: '#E5E7EB'}]}>
                 <View style={styles.feedJobHeader}><Image source={{ uri: vacanteExpandida?.foto_contratista || 'https://via.placeholder.com/150' }} style={styles.feedContractorAvatar} /><View style={{flex: 1}}><Text style={styles.feedJobTitle}>{vacanteExpandida?.titulo}</Text><Text style={styles.feedJobCompany}>{vacanteExpandida?.contratista} • {vacanteExpandida?.empresa}</Text></View></View>

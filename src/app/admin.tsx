@@ -526,7 +526,7 @@ export default function AdminDashboard() {
           <View style={styles.resolucion}>
             {queja.resolucion ? <Text style={styles.resolucionTexto}>Decisión: {queja.resolucion}</Text> : null}
             {queja.nota_admin ? <Text style={styles.resolucionNota}>Nota: "{queja.nota_admin}"</Text> : null}
-            <Text style={styles.resolucionPie}>🔒 Guardado para siempre · Lo resolvió: {queja.atendida_por || 'Admin'}</Text>
+            <Text style={styles.resolucionPie}>Guardado para siempre · Lo resolvió: {queja.atendida_por || 'Admin'}</Text>
           </View>
         )}
       </View>
@@ -655,7 +655,7 @@ export default function AdminDashboard() {
                       <TouchableOpacity onPress={() => verPerfilDe(c.id_contratista)}><Text style={styles.datoChico}><Text style={{ color: COLOR.contratista, fontWeight: 'bold' }}>Contratista:</Text> {c.contratista || c.vacante?.contratista || '—'} ›</Text></TouchableOpacity>
                       <Text style={styles.datoChico}>Pago acordado: {c.vacante?.pago || 'A convenir'}{c.fecha_inicio ? ` · Empezó: ${c.fecha_inicio}` : ''}{c.fecha_fin ? ` · Terminó: ${c.fecha_fin}` : ''}</Text>
                       <Text style={styles.datoChico}>Pagado y confirmado: ${totalRecibido(c).toLocaleString('es-MX')}{pagosPorConfirmar(c).length ? ` · ${pagosPorConfirmar(c).length} pago(s) sin confirmar` : ''}</Text>
-                      {ajustes.map((a: any, i: number) => <Text key={i} style={[styles.datoChico, { color: a.tipo === 'extra' ? '#047857' : '#B91C1C', fontWeight: 'bold' }]}>{a.tipo === 'extra' ? '➕' : '➖'} {a.texto}</Text>)}
+                      {ajustes.map((a: any, i: number) => <Text key={i} style={[styles.datoChico, { color: a.tipo === 'extra' ? '#047857' : '#B91C1C', fontWeight: 'bold' }]}>{a.tipo === 'extra' ? '+' : '−'} {a.texto}</Text>)}
                       {(c.reportes_abiertos || 0) > 0 && <View style={{ marginTop: 6 }}><Etiqueta texto={`${c.reportes_abiertos} reporte(s) por resolver`} color={COLOR.pendiente} fondo="#FEF3C7" /></View>}
                     </View>
                   );
@@ -726,7 +726,7 @@ export default function AdminDashboard() {
                       <Text style={styles.tituloTarjeta}>{s.nombre}</Text>
                       <Text style={styles.datoChico}>{s.rol_usuario} · {s.correo}</Text>
                       <Text style={[styles.datoChico, { fontWeight: 'bold', color: !s.con_cuenta ? '#6B7280' : activo ? COLOR.resuelto : '#B45309' }]}>
-                        {!s.con_cuenta ? 'Registro viejo, sin cuenta: quítalo y vuelve a agregarlo' : activo ? `✅ Ya entró${s.ultimo_acceso ? ` (último acceso: ${new Date(s.ultimo_acceso).toLocaleDateString('es-MX')})` : ''}` : '⏳ Falta que cree su contraseña con el correo'}
+                        {!s.con_cuenta ? 'Registro viejo, sin cuenta: quítalo y vuelve a agregarlo' : activo ? `Ya entró${s.ultimo_acceso ? ` (último acceso: ${new Date(s.ultimo_acceso).toLocaleDateString('es-MX')})` : ''}` : 'Falta que cree su contraseña con el correo'}
                       </Text>
                     </View>
                   </View>
@@ -846,7 +846,7 @@ export default function AdminDashboard() {
                   <Text style={styles.datoChico}>Correo: {usuarioExpandido.correo}</Text>
                   <Text style={styles.datoChico}>Teléfono: {usuarioExpandido.numero_telefono}</Text>
                   <Text style={styles.datoChico}>Usuario: {usuarioExpandido.nombre_usuario}</Text>
-                  <Text style={styles.datoChico}>Identidad (INE + rostro): {usuarioExpandido.kyc_aprobado ? '✅ Verificada' : '❌ No verificada'}</Text>
+                  <Text style={styles.datoChico}>Identidad (INE + rostro): {usuarioExpandido.kyc_aprobado ? 'Verificada' : 'No verificada'}</Text>
                 </View>
 
                 {usuarioExpandido.rol === 'Trabajador' ? (
@@ -945,10 +945,10 @@ export default function AdminDashboard() {
                 {vacanteExpandida.foto_trabajo ? (
                   <TouchableOpacity onPress={() => setFotoGrande(vacanteExpandida.foto_trabajo)}><Image source={{ uri: vacanteExpandida.foto_trabajo }} style={styles.fotoVacante} /></TouchableOpacity>
                 ) : null}
-                <Text style={styles.datoChico}>📍 {[vacanteExpandida.ubicacion, vacanteExpandida.estado_republica].filter(Boolean).join(', ')}</Text>
-                {vacanteExpandida.lugar_obra_texto ? <Text style={styles.datoChico}>📌 Lugar de la obra: {vacanteExpandida.lugar_obra_texto}</Text> : null}
-                <Text style={styles.datoChico}>💵 {vacanteExpandida.pago}</Text>
-                <Text style={styles.datoChico}>🕒 {vacanteExpandida.horario}</Text>
+                <Text style={styles.datoChico}>{[vacanteExpandida.ubicacion, vacanteExpandida.estado_republica].filter(Boolean).join(', ')}</Text>
+                {vacanteExpandida.lugar_obra_texto ? <Text style={styles.datoChico}>Lugar de la obra: {vacanteExpandida.lugar_obra_texto}</Text> : null}
+                <Text style={styles.datoChico}>{vacanteExpandida.pago}</Text>
+                <Text style={styles.datoChico}>{vacanteExpandida.horario}</Text>
                 <Text style={[styles.descripcionTexto, { marginTop: 8 }]}>{vacanteExpandida.descripcion}</Text>
                 <Text style={[styles.datoChico, { marginTop: 8, fontWeight: 'bold' }]}>{vacanteExpandida.cupo_actual || 0} de {vacanteExpandida.cupo_total || 1} contratados</Text>
                 <TouchableOpacity style={[styles.botonPrincipal, { backgroundColor: COLOR.bloqueada, marginTop: 16 }]} onPress={() => eliminarVacante(vacanteExpandida.id)} disabled={procesando}>

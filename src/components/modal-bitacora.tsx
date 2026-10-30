@@ -104,7 +104,7 @@ export function ModalBitacora({ contrato, rol, onClose }: Props) {
       if (!ubicacion) { Alert.alert("Bitácora actualizada", "Tu falta de hoy quedó registrada."); }
       else {
         const nivel = evaluarUbicacion(distancia, ubicacion.precision, ubicacion.simulada);
-        Alert.alert(nivel === 'en_obra' ? "✅ Bitácora actualizada" : "Bitácora actualizada", `${mensajeUbicacion(nivel, distancia, ubicacion.precision, 'trabajador').texto}${lugar ? `\n\n📍 ${lugar}` : ''}`);
+        Alert.alert("Bitácora actualizada", `${mensajeUbicacion(nivel, distancia, ubicacion.precision, 'trabajador').texto}${lugar ? `\n\nLugar registrado: ${lugar}` : ''}`);
       }
     } catch (error: any) { Alert.alert("No se pudo guardar", error?.message || "Intenta de nuevo."); }
     setGuardando(false);
@@ -196,7 +196,7 @@ export function ModalBitacora({ contrato, rol, onClose }: Props) {
                           <Text style={styles.fecha}>{dia.fecha}</Text>
                           <View style={[styles.etiqueta, { backgroundColor: estilo.color }]}><Text style={styles.etiquetaTexto}>{estilo.texto}</Text></View>
                         </View>
-                        <Text style={styles.asistencia}>{dia.asistio ? '✅ Asistió y trabajó' : '❌ No asistió'}</Text>
+                        <Text style={styles.asistencia}>{dia.asistio ? 'Asistió y trabajó' : 'No asistió'}</Text>
                         <Text style={styles.nota}>{dia.nota}</Text>
                         {dia.evidencia ? (
                           <TouchableOpacity onPress={() => setFotoGrande(dia.evidencia)}>
@@ -213,7 +213,7 @@ export function ModalBitacora({ contrato, rol, onClose }: Props) {
                                 <Ionicons name={check.icono} size={16} color={check.color} />
                                 <Text style={[styles.checkTexto, { color: check.color }]}>{check.texto}</Text>
                               </View>
-                              {dia.lugar_registro ? <Text style={styles.checkLugar}>📍 Estaba en: {dia.lugar_registro}</Text> : null}
+                              {dia.lugar_registro ? <Text style={styles.checkLugar}>Estaba en: {dia.lugar_registro}</Text> : null}
                               {latitud ? (
                                 <TouchableOpacity onPress={() => Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${latitud},${longitud}`)}>
                                   <Text style={styles.verMapa}>Ver en el mapa ›</Text>
@@ -255,7 +255,7 @@ export function ModalBitacora({ contrato, rol, onClose }: Props) {
                   })}
 
                   {escribirPermitido && yaRegistroHoy && (
-                    <Text style={styles.avisoHoy}>✅ Ya registraste tu avance de hoy. Mañana podrás agregar el siguiente.</Text>
+                    <Text style={styles.avisoHoy}>Ya registraste tu avance de hoy. Mañana podrás agregar el siguiente.</Text>
                   )}
                   {escribirPermitido && !yaRegistroHoy && (
                     <View style={styles.formulario}>
@@ -263,8 +263,8 @@ export function ModalBitacora({ contrato, rol, onClose }: Props) {
                       <Text style={styles.etiquetaForm}>¿Asististe a la obra hoy?</Text>
                       <View style={styles.pickerCaja}>
                         <Picker selectedValue={asistio} onValueChange={(v) => setAsistio(v)}>
-                          <Picker.Item label="✅ Sí asistí y trabajé" value={true} />
-                          <Picker.Item label="❌ No pude asistir" value={false} />
+                          <Picker.Item label="Sí asistí y trabajé" value={true} />
+                          <Picker.Item label="No pude asistir" value={false} />
                         </Picker>
                       </View>
                       <Text style={styles.etiquetaForm}>Notas y avances (obligatorio)</Text>
@@ -279,7 +279,7 @@ export function ModalBitacora({ contrato, rol, onClose }: Props) {
                           <Ionicons name="images-outline" size={24} color="#9CA3AF" /><Text style={styles.subirTexto}>De la galería</Text>
                         </TouchableOpacity>
                       </View>
-                      {asistio && <Text style={styles.avisoGps}>📍 Al guardar se registrará tu ubicación actual como comprobante de que estás en la obra.</Text>}
+                      {asistio && <Text style={styles.avisoGps}>Al guardar se registrará tu ubicación actual como comprobante de que estás en la obra.</Text>}
                       <TouchableOpacity style={styles.botonGuardar} onPress={guardar} disabled={guardando}>
                         {guardando ? <ActivityIndicator color="#FFF" /> : <Text style={styles.botonGuardarTexto}>Guardar y enviar al contratista</Text>}
                       </TouchableOpacity>
@@ -289,7 +289,7 @@ export function ModalBitacora({ contrato, rol, onClose }: Props) {
                     <Text style={styles.avisoSuspendida}>La obra está suspendida mientras el administrador revisa la cancelación. La bitácora no se puede modificar.</Text>
                   )}
                   {cerrada && (
-                    <Text style={[styles.avisoSuspendida, { color: '#6B7280' }]}>🔒 Esta obra ya está {contrato?.estado === ESTADOS.FINALIZADA ? 'terminada' : 'cancelada'}: la bitácora queda guardada como registro y ya no se puede modificar.</Text>
+                    <Text style={[styles.avisoSuspendida, { color: '#6B7280' }]}>Esta obra ya está {contrato?.estado === ESTADOS.FINALIZADA ? 'terminada' : 'cancelada'}: la bitácora queda guardada como registro y ya no se puede modificar.</Text>
                   )}
                 </>
               )}

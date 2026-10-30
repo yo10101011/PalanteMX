@@ -87,7 +87,7 @@ export function ModalPagos({ contrato, rol, onClose, onCambio }: Props) {
         <SafeAreaView style={styles.panel}>
           <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
             <View style={styles.encabezado}>
-              <Text style={styles.titulo} numberOfLines={1}>💵 Pagos: {contrato?.titulo_vacante}</Text>
+              <Text style={styles.titulo} numberOfLines={1}>Pagos: {contrato?.titulo_vacante}</Text>
               <TouchableOpacity onPress={onClose}><Ionicons name="close-circle" size={28} color="#FFF" /></TouchableOpacity>
             </View>
             <ScrollView contentContainerStyle={{ padding: 16 }} keyboardShouldPersistTaps="handled">
@@ -98,9 +98,9 @@ export function ModalPagos({ contrato, rol, onClose, onCambio }: Props) {
 
               {ajustes.length > 0 && (
                 <View style={styles.ajustes}>
-                  <Text style={styles.seccion}>⚖️ Ajustes ordenados por el administrador</Text>
+                  <Text style={styles.seccion}>Ajustes ordenados por el administrador</Text>
                   {ajustes.map((a, i) => (
-                    <Text key={i} style={[styles.ajuste, { color: a.tipo === 'extra' ? '#047857' : '#B91C1C' }]}>{a.tipo === 'extra' ? '➕' : '➖'} {a.texto} ({a.motivo}, {a.fecha})</Text>
+                    <Text key={i} style={[styles.ajuste, { color: a.tipo === 'extra' ? '#047857' : '#B91C1C' }]}>{a.tipo === 'extra' ? '+' : '−'} {a.texto} ({a.motivo}, {a.fecha})</Text>
                   ))}
                   {extras > 0 && <Text style={styles.ajusteTotal}>El contratista debe pagar {pesos(extras)} extra.</Text>}
                   {descuentos > 0 && <Text style={styles.ajusteTotal}>Se descuentan {pesos(descuentos)} del pago al trabajador.</Text>}
@@ -110,11 +110,11 @@ export function ModalPagos({ contrato, rol, onClose, onCambio }: Props) {
               {/* CALENDARIO DE PAGOS SEGÚN CADA CUÁNTO SE ACORDÓ (POR DÍA, POR SEMANA O POR OBRA) */}
               {resumenPlan && resumenPlan.monto > 0 && (
                 <View style={styles.calendario}>
-                  <Text style={styles.seccion}>📅 ¿Qué pagos tocan? ({resumenPlan.periodo})</Text>
+                  <Text style={styles.seccion}>¿Qué pagos tocan? ({resumenPlan.periodo})</Text>
                   {resumenPlan.pendienteHoy > 0 ? (
                     <Text style={styles.alerta}>{rol === 'contratista' ? `Ya te toca pagar ${pesos(resumenPlan.pendienteHoy)}.` : `El contratista ya debería haberte pagado ${pesos(resumenPlan.pendienteHoy)}.`}</Text>
                   ) : (
-                    <Text style={styles.alDia}>✅ Los pagos van al día.</Text>
+                    <Text style={styles.alDia}>Los pagos van al día.</Text>
                   )}
                   {resumenPlan.plan.length === 0 && <Text style={styles.vacio}>{resumenPlan.periodo === 'por día' ? 'Todavía no hay días trabajados en la bitácora.' : 'Todavía no toca ningún pago.'}</Text>}
                   {resumenPlan.plan.map((p, i) => (

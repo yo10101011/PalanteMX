@@ -11,7 +11,7 @@ export function FormCondiciones({ valores, onCambio }: { valores: Record<string,
     <View>
       {CONDICIONES.map(c => (
         <View key={c.clave}>
-          <Text style={styles.etiqueta}>{c.icono} {c.pregunta}</Text>
+          <Text style={styles.etiqueta}>{c.pregunta}</Text>
           <View style={styles.caja}>
             <Picker selectedValue={valores[c.clave] || ''} onValueChange={(v: string) => onCambio({ ...valores, [c.clave]: v })}>
               <Picker.Item label="Elige una opción..." value="" />
@@ -29,9 +29,9 @@ export function VistaCondiciones({ condiciones, titulo = 'Lo que se acordó' }: 
   if (lista.length === 0) return null;
   return (
     <View style={styles.vista}>
-      <Text style={styles.vistaTitulo}>📋 {titulo}</Text>
+      <Text style={styles.vistaTitulo}>{titulo}</Text>
       {lista.map(c => (
-        <Text key={c.clave} style={styles.vistaFila}>{c.icono} <Text style={{ fontWeight: 'bold' }}>{c.pregunta.replace(/[¿?]/g, '')}:</Text> {condiciones![c.clave]}</Text>
+        <Text key={c.clave} style={styles.vistaFila}><Text style={{ fontWeight: 'bold' }}>{c.pregunta.replace(/[¿?]/g, '')}:</Text> {condiciones![c.clave]}</Text>
       ))}
     </View>
   );

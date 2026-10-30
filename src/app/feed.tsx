@@ -294,7 +294,7 @@ export default function FeedTrabajador() {
                       </View>
 
                       <Text style={styles.jobDesc}>{item.descripcion}</Text>
-                      {item.lugar_obra_texto ? <Text style={[styles.jobDetailText, {marginLeft: 0, marginBottom: 8}]}>📌 Lugar de la obra: {item.lugar_obra_texto}</Text> : null}
+                      {item.lugar_obra_texto ? <Text style={[styles.jobDetailText, {marginLeft: 0, marginBottom: 8}]}>Lugar de la obra: {item.lugar_obra_texto}</Text> : null}
                       <VistaCondiciones condiciones={item.condiciones} titulo="Lo que ofrece el contratista" />
                       <View style={{height: 10}} />
 

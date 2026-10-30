@@ -207,7 +207,7 @@ export default function RegistroScreen() {
 
       setProcesando(false);
       // MENSAJE DE ÉXITO DIRECTO
-      mostrarAlerta("✅ Cuenta Creada", "Tu cuenta ha sido creada exitosamente. Ya puedes iniciar sesión.", 'success');
+      mostrarAlerta("Cuenta Creada", "Tu cuenta ha sido creada exitosamente. Ya puedes iniciar sesión.", 'success');
       setTimeout(() => { router.replace('/' as any); }, 4000);
 
     } catch (error: any) {

@@ -41,23 +41,27 @@ export function PerfilTrabajador({ trabajador: t, distancia, onEliminarObra, obr
         </TouchableOpacity>
         <Text style={styles.nombre}>{t?.nombre} {t?.apellidos}</Text>
         <Text style={styles.oficio}>{t?.oficio_principal || 'Trabajador General'}</Text>
-        <Text style={styles.precio}>{textoPrecio(t?.tarifa_monto, t?.tarifa_periodo)}</Text>
         <View style={[styles.estadoDisp, { backgroundColor: t?.disponibilidad === 'Ocupado' ? '#FEF3C7' : '#D1FAE5' }]}>
           <View style={[styles.punto, { backgroundColor: t?.disponibilidad === 'Ocupado' ? '#F59E0B' : '#059669' }]} />
           <Text style={{ color: t?.disponibilidad === 'Ocupado' ? '#B45309' : '#059669', fontWeight: 'bold', fontSize: 14 }}>{t?.disponibilidad === 'Ocupado' ? 'OCUPADO EN OTRA OBRA' : 'DISPONIBLE PARA TRABAJAR'}</Text>
         </View>
 
-        <View style={styles.fila}><Ionicons name="location" size={14} color="#0D2340" /><Text style={styles.filaTexto}>{ubicacion || 'Sin ubicación registrada'}{distancia ? ` • ${distancia}` : ''}</Text></View>
-        <View style={styles.fila}><Ionicons name="calendar" size={14} color="#0D2340" /><Text style={styles.filaTexto}>Disponible: {textoDias(t?.dias_disponibles)}</Text></View>
-        <View style={styles.dias}>
-          {DIAS_SEMANA.map(d => {
-            const si = t?.dias_disponibles?.includes(d);
-            return <View key={d} style={[styles.dia, si && styles.diaSi]}><Text style={[styles.diaTexto, si && { color: '#FFF' }]}>{d}</Text></View>;
-          })}
+        {/* DATOS EN FILAS ORDENADAS: ETIQUETA A LA IZQUIERDA, VALOR A LA DERECHA */}
+        <View style={styles.datos}>
+          {[
+            ['Ubicación', `${ubicacion || 'Sin ubicación'}${distancia ? ` (${distancia})` : ''}`],
+            ['Precio', textoPrecio(t?.tarifa_monto, t?.tarifa_periodo)],
+            ['Días disponibles', textoDias(t?.dias_disponibles)],
+          ].map(([etiqueta, valor], i) => (
+            <View key={etiqueta} style={[styles.filaDato, i > 0 && styles.filaDatoBorde]}>
+              <Text style={styles.datoEtiqueta}>{etiqueta}</Text>
+              <Text style={styles.datoValor} numberOfLines={2}>{valor}</Text>
+            </View>
+          ))}
         </View>
 
         <View style={styles.stats}>
-          <View style={styles.stat}><Text style={styles.statNumero}>{t?.calificacion || '0.0'} <Ionicons name="star" size={14} color="#F59E0B" /></Text><Text style={styles.statTexto}>Calificación</Text></View>
+          <View style={styles.stat}><Text style={styles.statNumero}>{t?.calificacion || '0.0'}</Text><Text style={styles.statTexto}>Calificación</Text></View>
           <View style={styles.stat}><Text style={styles.statNumero}>{t?.numero_resenas || 0}</Text><Text style={styles.statTexto}>Reseñas</Text></View>
           <View style={styles.stat}><Text style={styles.statNumero}>{obrasPalante.length + portafolio.length}</Text><Text style={styles.statTexto}>Obras</Text></View>
         </View>
@@ -65,7 +69,7 @@ export function PerfilTrabajador({ trabajador: t, distancia, onEliminarObra, obr
 
       {obrasEnCurso && (
         <>
-          <Text style={styles.seccion}>🏗️ Obras en proceso ({obrasEnCurso.length})</Text>
+          <Text style={styles.seccion}>Obras en proceso ({obrasEnCurso.length})</Text>
           {obrasEnCurso.length === 0 ? <Text style={styles.vacio}>No tiene obras en proceso ahorita.</Text> : obrasEnCurso.map(c => (
             <View key={c.id} style={[styles.tarjeta, { borderLeftWidth: 5, borderLeftColor: '#F59E0B' }]}>
               <Text style={styles.obraTitulo}>{c.titulo_vacante}</Text>
@@ -77,7 +81,7 @@ export function PerfilTrabajador({ trabajador: t, distancia, onEliminarObra, obr
       )}
 
       {/* OBRAS TERMINADAS DENTRO DE PALANTEMX (LAS AGREGA EL SERVIDOR AL FINALIZAR CADA CONTRATO) */}
-      <Text style={styles.seccion}>🤝 Obras terminadas en PalanteMX ({obrasPalante.length})</Text>
+      <Text style={styles.seccion}>Obras terminadas en PalanteMX ({obrasPalante.length})</Text>
       {obrasPalante.length === 0 ? <Text style={styles.vacio}>Todavía no termina obras dentro de PalanteMX.</Text> : obrasPalante.map((obra, i) => (
         <View key={i} style={[styles.tarjeta, { padding: 0, overflow: 'hidden' }]}>
           {onEliminarObraPalante && (
@@ -101,7 +105,7 @@ export function PerfilTrabajador({ trabajador: t, distancia, onEliminarObra, obr
       ))}
 
       {/* PORTAFOLIO QUE SUBIÓ EL TRABAJADOR (TRABAJOS DE ANTES O FUERA DE LA PLATAFORMA) */}
-      <Text style={styles.seccion}>🖼️ Portafolio ({portafolio.length})</Text>
+      <Text style={styles.seccion}>Portafolio ({portafolio.length})</Text>
       {portafolio.length === 0 ? <Text style={styles.vacio}>Todavía no sube fotos de trabajos anteriores.</Text> : portafolio.map((obra, i) => (
         <View key={i} style={[styles.tarjeta, { padding: 0, overflow: 'hidden' }]}>
           {onEliminarObra && (
@@ -121,7 +125,7 @@ export function PerfilTrabajador({ trabajador: t, distancia, onEliminarObra, obr
         </View>
       ))}
 
-      <Text style={styles.seccion}>⭐ Reseñas ({resenas.length})</Text>
+      <Text style={styles.seccion}>Reseñas ({resenas.length})</Text>
       {resenas.length === 0 ? <Text style={styles.vacio}>Todavía no tiene reseñas.</Text> : resenas.map((r, i) => (
         <View key={i} style={styles.tarjeta}>
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
@@ -160,6 +164,11 @@ const styles = StyleSheet.create({
   dia: { borderRadius: 8, paddingHorizontal: 6, paddingVertical: 4, marginHorizontal: 2, backgroundColor: '#F3F4F6' },
   diaSi: { backgroundColor: '#00A355' },
   diaTexto: { fontSize: 13, fontWeight: 'bold', color: '#9CA3AF' },
+  datos: { alignSelf: 'stretch', marginTop: 12, borderWidth: 1, borderColor: '#F3F4F6', borderRadius: 12, paddingHorizontal: 12 },
+  filaDato: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 9 },
+  filaDatoBorde: { borderTopWidth: 1, borderColor: '#F3F4F6' },
+  datoEtiqueta: { fontSize: 14, color: '#6B7280' },
+  datoValor: { fontSize: 15, color: '#0D2340', fontWeight: '600', flexShrink: 1, marginLeft: 12, textAlign: 'right' },
   stats: { flexDirection: 'row', marginTop: 12, backgroundColor: '#F9FAFB', borderRadius: 12, paddingVertical: 10, alignSelf: 'stretch' },
   stat: { flex: 1, alignItems: 'center' },
   statNumero: { fontSize: 17, fontWeight: 'bold', color: '#0D2340' },

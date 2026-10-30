@@ -459,28 +459,39 @@ export default function DashboardTrabajador() {
 
               <Text style={styles.userName}>{userData?.nombre} {userData?.apellidos}</Text>
               <Text style={styles.userRole}>{userData?.oficio_principal || userData?.rol_usuario}</Text>
-              <TouchableOpacity onPress={() => setModalEditar(true)}>
-                <Text style={{color: '#00A355', fontWeight: 'bold', marginTop: 4, textAlign: 'center'}}>{userData?.tarifa_monto ? textoPrecio(userData.tarifa_monto, userData.tarifa_periodo) : 'Pon tu precio para aparecer en los filtros ✏️'}</Text>
-                <Text style={{color: '#0D2340', fontSize: 14, marginTop: 2, textAlign: 'center'}}>📅 {userData?.dias_disponibles?.length ? `Disponible: ${textoDias(userData.dias_disponibles)}` : 'Marca los días que puedes trabajar ✏️'}</Text>
-              </TouchableOpacity>
-              
+
               <TouchableOpacity style={[styles.dispBadge, disponibilidad === 'Disponible' ? styles.dispDisponible : styles.dispOcupado]} onPress={toggleDisponibilidad} disabled={procesando}>
                 <View style={styles.dispDot} />
                 <Text style={styles.dispText}>{disponibilidad === 'Disponible' ? 'DISPONIBLE PARA TRABAJAR' : 'TRABAJANDO / OCUPADO'}</Text>
                 {procesando && <ActivityIndicator size="small" color="#FFF" style={{marginLeft: 5}} />}
               </TouchableOpacity>
-              
-              <View style={[styles.locationBadge, {marginTop: 15}]}><Ionicons name="location" size={12} color="#0D2340" /><Text style={styles.locationText}>{ubicacionLegible}</Text></View>
-              <View style={styles.contactBadge}><Ionicons name="logo-whatsapp" size={16} color="#FFF" /><Text style={styles.contactText}>{userData?.numero_telefono || "Sin teléfono"}</Text></View>
+
+              {/* DATOS DEL PERFIL EN UNA SOLA CAJA, ORDENADA (ANTES ERAN VARIAS ETIQUETAS AMONTONADAS) */}
+              <View style={styles.cajaDatos}>
+                {[
+                  ['Ubicación', ubicacionLegible],
+                  ['Teléfono', userData?.numero_telefono || 'Sin teléfono'],
+                  ['Precio', userData?.tarifa_monto ? textoPrecio(userData.tarifa_monto, userData.tarifa_periodo) : 'Sin definir'],
+                  ['Días disponibles', userData?.dias_disponibles?.length ? textoDias(userData.dias_disponibles) : 'Sin definir'],
+                ].map(([etiqueta, valor], i) => (
+                  <View key={etiqueta} style={[styles.filaDato, i > 0 && styles.filaDatoBorde]}>
+                    <Text style={styles.datoEtiqueta}>{etiqueta}</Text>
+                    <Text style={[styles.datoValor, valor === 'Sin definir' && { color: '#9CA3AF' }]} numberOfLines={1}>{valor}</Text>
+                  </View>
+                ))}
+                {(!userData?.tarifa_monto || !userData?.dias_disponibles?.length) && (
+                  <TouchableOpacity onPress={() => setModalEditar(true)} style={styles.completarPerfil}>
+                    <Text style={styles.completarPerfilTexto}>Completar mi perfil</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
 
               <View style={styles.statsRow}>
-                <View style={styles.statBox}><Text style={styles.statNumber}>{userData?.calificacion || '0.0'} <Ionicons name="star" size={14} color="#F59E0B" /></Text><Text style={styles.statLabel}>Calificación</Text></View>
+                <View style={styles.statBox}><Text style={styles.statNumber}>{userData?.calificacion || '0.0'}</Text><Text style={styles.statLabel}>Calificación</Text></View>
                 <View style={styles.statDivider} />
                 <View style={styles.statBox}><Text style={styles.statNumber}>{portafolio.length + contratos.filter(c => c.estado === ESTADOS.FINALIZADA).length}</Text><Text style={styles.statLabel}>Obras</Text></View>
                 <View style={styles.statDivider} />
                 <View style={styles.statBox}><Text style={styles.statNumber}>{userData?.numero_resenas || 0}</Text><Text style={styles.statLabel}>Reseñas</Text></View>
-                <View style={styles.statDivider} />
-                <View style={styles.statBox}><Text style={[styles.statNumber, {color: '#00D06C'}]}>{userData?.vistas_perfil || 0}</Text><Text style={styles.statLabel}>Vistas</Text></View>
               </View>
             </View>
 
@@ -503,7 +514,7 @@ export default function DashboardTrabajador() {
                   {/* OBRAS TERMINADAS CON CONTRATISTAS DE LA PLATAFORMA: SALEN SOLAS DE LOS CONTRATOS FINALIZADOS */}
                   {contratos.some(c => c.estado === ESTADOS.FINALIZADA) && (
                     <View style={{marginBottom: 20}}>
-                      <Text style={styles.categoryTitle}>🤝 Obras realizadas en PalanteMX</Text>
+                      <Text style={styles.categoryTitle}>Obras realizadas en PalanteMX</Text>
                       {contratos.filter(c => c.estado === ESTADOS.FINALIZADA).map(contrato => (
                         <TarjetaContrato
                           key={contrato.id}
@@ -525,7 +536,7 @@ export default function DashboardTrabajador() {
 
                   {obrasEnProceso.length > 0 && (
                     <View style={{marginBottom: 20}}>
-                      <Text style={styles.categoryTitle}>🏗️ Obras en Proceso</Text>
+                      <Text style={styles.categoryTitle}>Obras en Proceso</Text>
                       {obrasEnProceso.map((trabajo: any, index: number) => (
                         <View key={index} style={styles.projectCard}>
                           <View style={styles.statusBadgeProceso}><Text style={styles.statusBadgeText}>EN PROCESO</Text></View>
@@ -537,7 +548,7 @@ export default function DashboardTrabajador() {
                               <View style={styles.projectDetailsRow}><Ionicons name="location-outline" size={12} color="#6B7280" /><Text style={styles.projectSubtitle}>{trabajo.lugar}</Text></View>
                               <View style={[styles.projectDetailsRow, {marginTop: -5, marginBottom: 10}]}><Ionicons name="calendar-outline" size={12} color="#6B7280" /><Text style={styles.projectSubtitle}>Inició: {trabajo.fecha_inicio}</Text></View>
                               <Text style={styles.projectDesc} numberOfLines={2}><Text style={{fontWeight: 'bold'}}>Avance General:</Text> {trabajo.descripcion}</Text>
-                              <Text style={{color: '#00D06C', fontSize: 13, marginTop: 5, fontWeight: 'bold'}}>👁️ Toca la imagen o el título para expandir</Text>
+                              <Text style={{color: '#00D06C', fontSize: 13, marginTop: 5, fontWeight: 'bold'}}>Toca la imagen o el título para expandir</Text>
                             </View>
                           </TouchableOpacity>
                           <View style={{paddingHorizontal: 15, paddingBottom: 15}}>
@@ -552,7 +563,7 @@ export default function DashboardTrabajador() {
 
                   {obrasFinalizadas.length > 0 && (
                     <View>
-                      <Text style={styles.categoryTitle}>✅ Obras Finalizadas</Text>
+                      <Text style={styles.categoryTitle}>Obras Finalizadas</Text>
                       {obrasFinalizadas.map((trabajo: any, index: number) => (
                         <View key={index} style={styles.projectCard}>
                           <View style={styles.statusBadgeFinalizada}><Text style={styles.statusBadgeText}>FINALIZADA</Text></View>
@@ -566,7 +577,7 @@ export default function DashboardTrabajador() {
                               <View style={styles.projectDetailsRow}><Ionicons name="location-outline" size={12} color="#6B7280" /><Text style={styles.projectSubtitle}>{trabajo.lugar}</Text>{trabajo.precio !== 'No especificado' && (<><Text style={styles.dotSeparator}>•</Text><Ionicons name="cash-outline" size={12} color="#00D06C" /><Text style={[styles.projectSubtitle, {color: '#00D06C', fontWeight: 'bold'}]}>${trabajo.precio}</Text></>)}</View>
                               <View style={[styles.projectDetailsRow, {marginTop: -5, marginBottom: 10}]}><Ionicons name="calendar-outline" size={12} color="#6B7280" /><Text style={styles.projectSubtitle}>Trabajado del: {trabajo.fecha_inicio} al {trabajo.fecha_fin}</Text></View>
                               <Text style={styles.projectDesc} numberOfLines={2}><Text style={{fontWeight: 'bold', color: '#0D2340'}}>Obra:</Text> {trabajo.descripcion}</Text>
-                              <Text style={{color: '#00D06C', fontSize: 13, marginTop: 5, fontWeight: 'bold'}}>👁️ Toca para ver detalles expandidos</Text>
+                              <Text style={{color: '#00D06C', fontSize: 13, marginTop: 5, fontWeight: 'bold'}}>Toca para ver detalles expandidos</Text>
                             </View>
                           </TouchableOpacity>
                         </View>
@@ -635,11 +646,11 @@ export default function DashboardTrabajador() {
           <View style={{flex: 1}}>
             <View style={styles.contentSection}>
               <Text style={{fontSize: 15, color: '#6B7280', marginBottom: 12}}>Desliza hacia abajo para actualizar.</Text>
-              {seccionContratos('📩 Propuestas para ti', [ESTADOS.PROPUESTA], 'Un contratista te propone esta obra. Ve al chat, platiquen los detalles y, si están de acuerdo, acepta el trato ahí mismo.')}
-              {seccionContratos('🏗️ Obras activas', [ESTADOS.ACTIVA])}
-              {seccionContratos('🏁 Por confirmar que terminó', [ESTADOS.POR_CONFIRMAR_FIN], 'El contratista marcó la obra como terminada. ¿Confirmas?')}
-              {seccionContratos('⚠️ Suspendidas', [ESTADOS.SUSPENDIDA], 'Se canceló y el administrador la está revisando.')}
-              {seccionContratos('📁 Historial', [ESTADOS.FINALIZADA, ESTADOS.CANCELADA])}
+              {seccionContratos('Propuestas para ti', [ESTADOS.PROPUESTA], 'Un contratista te propone esta obra. Ve al chat, platiquen los detalles y, si están de acuerdo, acepta el trato ahí mismo.')}
+              {seccionContratos('Obras activas', [ESTADOS.ACTIVA])}
+              {seccionContratos('Por confirmar que terminó', [ESTADOS.POR_CONFIRMAR_FIN], 'El contratista marcó la obra como terminada. ¿Confirmas?')}
+              {seccionContratos('Suspendidas', [ESTADOS.SUSPENDIDA], 'Se canceló y el administrador la está revisando.')}
+              {seccionContratos('Historial', [ESTADOS.FINALIZADA, ESTADOS.CANCELADA])}
 
               {contratos.filter(c => c.estado !== ESTADOS.PENDIENTE && c.estado !== ESTADOS.RECHAZADA).length === 0 && (
                 <View style={styles.emptyState}>
@@ -692,7 +703,7 @@ export default function DashboardTrabajador() {
               </View>
 
               <View style={{padding: 20}}>
-                <View style={{flexDirection: 'row', alignItems: 'center', marginBottom: 15}}><View style={obraExpandida?.estado === 'Finalizada' ? styles.statusBadgeFinalizadaRel : styles.statusBadgeProcesoRel}><Text style={styles.statusBadgeText}>{obraExpandida?.estado?.toUpperCase()}</Text></View><Text style={styles.vistaClienteText}>👁️ Vista de Cliente</Text></View>
+                <View style={{flexDirection: 'row', alignItems: 'center', marginBottom: 15}}><View style={obraExpandida?.estado === 'Finalizada' ? styles.statusBadgeFinalizadaRel : styles.statusBadgeProcesoRel}><Text style={styles.statusBadgeText}>{obraExpandida?.estado?.toUpperCase()}</Text></View><Text style={styles.vistaClienteText}>Vista de Cliente</Text></View>
                 <Text style={styles.projectTitleBig}>{obraExpandida?.titulo}</Text>
                 <View style={[styles.projectDetailsRow, {marginBottom: 20}]}><Ionicons name="location-outline" size={14} color="#6B7280" /><Text style={styles.projectSubtitleBig}>{obraExpandida?.lugar}</Text>{obraExpandida?.precio !== 'No especificado' && (<><Text style={styles.dotSeparator}>•</Text><Ionicons name="cash-outline" size={14} color="#00D06C" /><Text style={[styles.projectSubtitleBig, {color: '#00D06C', fontWeight: 'bold'}]}>${obraExpandida?.precio}</Text></>)}</View>
 
@@ -719,7 +730,7 @@ export default function DashboardTrabajador() {
                       <View key={i} style={styles.trackerRow}>
                         <View style={styles.trackerTimeline}><View style={[styles.trackerDot, { backgroundColor: dia.asistio ? '#00D06C' : '#D32F2F' }]} />{i !== arr.length - 1 && <View style={styles.trackerLine} />}</View>
                         <View style={styles.trackerContent}>
-                          <Text style={styles.trackerDate}>{dia.fecha} - {dia.asistio ? '✅ Asistió' : '❌ Faltó'}</Text>
+                          <Text style={styles.trackerDate}>{dia.fecha} - {dia.asistio ? 'Asistió' : 'Faltó'}</Text>
                           <Text style={styles.trackerNote}>{dia.nota}</Text>
                         </View>
                       </View>
@@ -784,7 +795,7 @@ export default function DashboardTrabajador() {
             <Text style={styles.modalTitle}>{obraEditandoId ? 'Editar Obra' : 'Añadir Proyecto'}</Text>
             <ScrollView showsVerticalScrollIndicator={false}>
               <Text style={styles.modalLabel}>Estado de la Obra</Text>
-              <View style={styles.pickerBox}><Picker selectedValue={trabajoEstado} onValueChange={(itemValue) => setTrabajoEstado(itemValue)}><Picker.Item label="🏗️ Obra en Proceso" value="En Proceso" /><Picker.Item label="✅ Obra Finalizada" value="Finalizada" /></Picker></View>
+              <View style={styles.pickerBox}><Picker selectedValue={trabajoEstado} onValueChange={(itemValue) => setTrabajoEstado(itemValue)}><Picker.Item label="Obra en Proceso" value="En Proceso" /><Picker.Item label="Obra Finalizada" value="Finalizada" /></Picker></View>
               <Text style={styles.modalLabel}>Título del Trabajo</Text><TextInput style={styles.modalInput} placeholder="Ej. Instalación de tubería de cobre" value={trabajoTitulo} onChangeText={setTrabajoTitulo} />
               <View style={{flexDirection: 'row', justifyContent: 'space-between'}}>
                 <View style={{flex: 1, marginRight: 5}}><Text style={styles.modalLabel}>Lugar exacto</Text><TextInput style={styles.modalInput} placeholder="Ej. Toluca Centro" value={trabajoLugar} onChangeText={setTrabajoLugar} /></View>
@@ -969,7 +980,14 @@ const styles = StyleSheet.create({
   dispDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#FFF', marginRight: 6 },
   dispText: { color: '#FFF', fontSize: 13, fontWeight: 'bold', letterSpacing: 1 },
 
-  statsRow: { flexDirection: 'row', backgroundColor: '#FFF', borderRadius: 16, paddingVertical: 15, paddingHorizontal: 15, marginTop: 20, elevation: 2, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 5, width: '100%', justifyContent: 'space-between' },
+  cajaDatos: { backgroundColor: '#FFF', borderRadius: 16, paddingHorizontal: 16, paddingVertical: 6, marginTop: 16, width: '100%', borderWidth: 1, borderColor: '#E5E7EB' },
+  filaDato: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 10 },
+  filaDatoBorde: { borderTopWidth: 1, borderColor: '#F3F4F6' },
+  datoEtiqueta: { fontSize: 14, color: '#6B7280' },
+  datoValor: { fontSize: 15, color: '#0D2340', fontWeight: '600', flexShrink: 1, marginLeft: 12, textAlign: 'right' },
+  completarPerfil: { borderTopWidth: 1, borderColor: '#F3F4F6', paddingVertical: 10, alignItems: 'center' },
+  completarPerfilTexto: { fontSize: 15, color: '#2563EB', fontWeight: 'bold' },
+  statsRow: { flexDirection: 'row', backgroundColor: '#FFF', borderRadius: 16, paddingVertical: 15, paddingHorizontal: 15, marginTop: 12, elevation: 2, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 5, width: '100%', justifyContent: 'space-between' },
   statBox: { alignItems: 'center', flex: 1 },
   statNumber: { fontSize: 17, fontWeight: 'bold', color: '#0D2340' },
   statLabel: { fontSize: 13, color: '#9CA3AF', marginTop: 2, fontWeight: 'bold', textAlign: 'center' },
