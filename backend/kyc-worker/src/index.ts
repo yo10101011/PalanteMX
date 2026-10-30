@@ -211,7 +211,10 @@ const verificarIdentidad = async (request: Request, env: Env) => {
   // 3. VERIFICACIÓN. EL NOMBRE QUE SE REVISA EN LA INE ES EXACTAMENTE EL QUE SE VA A GUARDAR
   try {
     await validarNombreEnINE(env, urlINEFrente, `${perfil.nombre} ${perfil.apellidos}`);
-    await validarRostro(env, urlINEFrente, perfil.urlSelfie);
+    // ⚠️ KYC_MODO = "sin_rostro": LA COMPARACIÓN DE CARA ESTÁ PAUSADA A PROPÓSITO (SOLO PARA CREAR CUENTAS DE PRUEBA).
+    // EL NOMBRE SÍ SE SIGUE REVISANDO. HAY QUE VOLVER A ACTIVARLA ANTES DE USAR LA APP CON GENTE REAL.
+    if (env.KYC_MODO === 'sin_rostro') console.log('Comparación de rostro PAUSADA (KYC_MODO = sin_rostro)');
+    else await validarRostro(env, urlINEFrente, perfil.urlSelfie);
   } catch (error) {
     if (error instanceof ErrorKYC) return responder(200, { aprobado: false, motivo: error.message });
     console.log('Error interno de KYC', error);
