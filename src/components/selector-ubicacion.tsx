@@ -37,6 +37,6 @@ export function SelectorUbicacion({ estado, municipio, onEstado, onMunicipio }: 
 }
 
 const styles = StyleSheet.create({
-  etiqueta: { fontSize: 12, fontWeight: 'bold', color: '#6B7280', marginBottom: 5, marginTop: 5 },
+  etiqueta: { fontSize: 14, fontWeight: 'bold', color: '#6B7280', marginBottom: 5, marginTop: 5 },
   caja: { borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, backgroundColor: '#F9FAFB', marginBottom: 10, overflow: 'hidden' },
 });

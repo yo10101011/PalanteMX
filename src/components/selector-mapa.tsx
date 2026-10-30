@@ -1,4 +1,4 @@
-// MAPA PARA ELEGIR UN LUGAR (P. EJ. DÓNDE ESTÁ LA OBRA). ES GRATIS: USA MAPAS DE OPENSTREETMAP/CARTO DENTRO DE UN
+// MAPA PARA ELEGIR UN LUGAR (P. EJ. DÓNDE ESTÁ LA OBRA). ES GRATIS: USA MAPAS DE OPENSTREETMAP Y ESRI DENTRO DE UN
 // WebView (NO NECESITA LLAVE DE GOOGLE). SE PUEDE ARRASTRAR EL PIN, TOCAR EL MAPA, BUSCAR UNA DIRECCIÓN O USAR
 // "MI UBICACIÓN". ABAJO SE MUESTRA EL NOMBRE DEL LUGAR (LO CALCULA EL TELÉFONO, TAMBIÉN GRATIS).
 import { Ionicons } from '@expo/vector-icons';
@@ -28,7 +28,17 @@ const htmlMapa = (p: Punto, zoom: number) => `<!DOCTYPE html><html><head>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>html,body,#mapa{height:100%;margin:0;padding:0}</style></head><body><div id="mapa"></div><script>
 var mapa = L.map('mapa').setView([${p.latitud}, ${p.longitud}], ${zoom});
-L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', { attribution: '&copy; OpenStreetMap &copy; CARTO', subdomains: 'abcd', maxZoom: 20 }).addTo(mapa);
+// CALLES: OPENSTREETMAP (GRATIS, SIN LLAVE). SI SUS MOSAICOS FALLAN, SE CAMBIA SOLO A LAS CALLES DE ESRI (TAMBIÉN GRATIS).
+// SATÉLITE: FOTOS AÉREAS DE ESRI (GRATIS, SIN LLAVE). (CARTO YA PIDE LLAVE: POR ESO SE DEJÓ DE USAR)
+var esriCalles = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', { attribution: 'Tiles &copy; Esri', maxZoom: 19 });
+var satelite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { attribution: 'Imágenes &copy; Esri', maxZoom: 19 });
+var calles = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap', maxZoom: 19 }).addTo(mapa);
+var fallos = 0;
+calles.on('tileerror', function () { fallos++; if (fallos === 3 && mapa.hasLayer(calles)) { mapa.removeLayer(calles); calles = esriCalles.addTo(mapa); } });
+window.vista = function (tipo) {
+  if (tipo === 'satelite') { mapa.removeLayer(calles); satelite.addTo(mapa); }
+  else { mapa.removeLayer(satelite); calles.addTo(mapa); }
+};
 var pin = L.marker([${p.latitud}, ${p.longitud}], { draggable: true }).addTo(mapa);
 function avisar() { var q = pin.getLatLng(); window.ReactNativeWebView.postMessage(JSON.stringify({ lat: q.lat, lng: q.lng })); }
 pin.on('dragend', avisar);
@@ -44,6 +54,7 @@ export function SelectorMapa({ visible, inicial, titulo = 'Marca el lugar de la 
   const [nombre, setNombre] = useState('');
   const [buscando, setBuscando] = useState(false);
   const [busqueda, setBusqueda] = useState('');
+  const [vista, setVista] = useState<'calles' | 'satelite'>('calles');
   const temporizador = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // AL ABRIR: EMPIEZA EN EL LUGAR YA MARCADO, O EN DONDE ESTÁ EL TELÉFONO, O EN EL CENTRO DE MÉXICO
@@ -101,7 +112,13 @@ export function SelectorMapa({ visible, inicial, titulo = 'Marca el lugar de la 
           <TextInput style={styles.input} placeholder="Busca: pueblo o colonia, municipio" value={busqueda} onChangeText={setBusqueda} onSubmitEditing={buscarDireccion} returnKeyType="search" />
           <TouchableOpacity style={styles.botonBuscar} onPress={buscarDireccion}><Ionicons name="search" size={20} color="#FFF" /></TouchableOpacity>
         </View>
-        <Text style={styles.ayuda}>Arrastra el pin o toca el mapa donde está la obra.</Text>
+        <View style={styles.filaAyuda}>
+          <Text style={[styles.ayuda, { flex: 1 }]}>Arrastra el pin o toca el mapa donde está la obra.</Text>
+          <TouchableOpacity style={styles.botonVista} onPress={() => { const nueva = vista === 'calles' ? 'satelite' : 'calles'; setVista(nueva); webview.current?.injectJavaScript(`window.vista('${nueva}'); true;`); }}>
+            <Ionicons name={vista === 'calles' ? 'earth' : 'map'} size={16} color="#0D2340" />
+            <Text style={styles.botonVistaTexto}>{vista === 'calles' ? 'Satélite' : 'Calles'}</Text>
+          </TouchableOpacity>
+        </View>
 
         <View style={{ flex: 1 }}>
           {inicio ? (
@@ -138,14 +155,17 @@ export function SelectorMapa({ visible, inicial, titulo = 'Marca el lugar de la 
 const styles = StyleSheet.create({
   contenedor: { flex: 1, backgroundColor: '#F3F4F6' },
   encabezado: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#0D2340', padding: 14 },
-  titulo: { color: '#FFF', fontSize: 17, fontWeight: 'bold' },
+  titulo: { color: '#FFF', fontSize: 18, fontWeight: 'bold' },
   busqueda: { flexDirection: 'row', padding: 10, paddingBottom: 4 },
-  input: { flex: 1, backgroundColor: '#FFF', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14 },
+  input: { flex: 1, backgroundColor: '#FFF', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, fontSize: 16 },
   botonBuscar: { backgroundColor: '#0D2340', borderRadius: 10, paddingHorizontal: 14, justifyContent: 'center', marginLeft: 8 },
-  ayuda: { fontSize: 12, color: '#6B7280', paddingHorizontal: 12, paddingBottom: 6 },
+  ayuda: { fontSize: 14, color: '#6B7280', paddingHorizontal: 12, paddingBottom: 6 },
+  filaAyuda: { flexDirection: 'row', alignItems: 'center', paddingRight: 10 },
+  botonVista: { flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: '#0D2340', borderRadius: 16, paddingHorizontal: 10, paddingVertical: 5, marginBottom: 6 },
+  botonVistaTexto: { marginLeft: 4, fontWeight: 'bold', color: '#0D2340', fontSize: 14 },
   cargando: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(255,255,255,0.5)', justifyContent: 'center' },
   pie: { backgroundColor: '#FFF', padding: 14, borderTopWidth: 1, borderColor: '#E5E7EB' },
-  nombre: { marginLeft: 6, fontSize: 14, fontWeight: 'bold', color: '#1F2937', flex: 1 },
+  nombre: { marginLeft: 6, fontSize: 16, fontWeight: 'bold', color: '#1F2937', flex: 1 },
   boton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', borderRadius: 12, paddingVertical: 12 },
   botonTexto: { color: '#FFF', fontWeight: 'bold', marginLeft: 6 },
 });

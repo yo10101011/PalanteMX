@@ -48,8 +48,8 @@ export function BuscadorConSugerencias({ valor, onCambio, vocabulario, placehold
 const styles = StyleSheet.create({
   caja: { marginBottom: 12, zIndex: 10 },
   barra: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF', borderRadius: 12, paddingHorizontal: 12, borderWidth: 1, borderColor: '#E5E7EB' },
-  input: { flex: 1, fontSize: 14, color: '#1F2937', paddingVertical: 11, marginHorizontal: 8 },
+  input: { flex: 1, fontSize: 16, color: '#1F2937', paddingVertical: 11, marginHorizontal: 8 },
   lista: { backgroundColor: '#FFF', borderRadius: 12, borderWidth: 1, borderColor: '#E5E7EB', marginTop: 4, overflow: 'hidden' },
   sugerencia: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 10, borderBottomWidth: 1, borderColor: '#F3F4F6' },
-  sugerenciaTexto: { marginLeft: 8, fontSize: 14, color: '#1F2937', flex: 1 },
+  sugerenciaTexto: { marginLeft: 8, fontSize: 16, color: '#1F2937', flex: 1 },
 });

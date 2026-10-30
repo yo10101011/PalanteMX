@@ -50,11 +50,11 @@ export function SelectorFotos({ fotos, onCambio, maximo = 3, texto = 'Fotos de e
 }
 
 const styles = StyleSheet.create({
-  etiqueta: { fontSize: 12, fontWeight: 'bold', color: '#6B7280', marginBottom: 6 },
+  etiqueta: { fontSize: 14, fontWeight: 'bold', color: '#6B7280', marginBottom: 6 },
   fila: { flexDirection: 'row', flexWrap: 'wrap' },
   miniatura: { marginRight: 8, marginBottom: 8 },
   imagen: { width: 64, height: 64, borderRadius: 8, backgroundColor: '#E5E7EB' },
   quitar: { position: 'absolute', top: -8, right: -8, backgroundColor: '#FFF', borderRadius: 11 },
   agregar: { width: 64, height: 64, borderRadius: 8, borderWidth: 1, borderStyle: 'dashed', borderColor: '#9CA3AF', alignItems: 'center', justifyContent: 'center', marginRight: 8, marginBottom: 8 },
-  agregarTexto: { fontSize: 10, color: '#0D2340', fontWeight: 'bold' },
+  agregarTexto: { fontSize: 13, color: '#0D2340', fontWeight: 'bold' },
 });

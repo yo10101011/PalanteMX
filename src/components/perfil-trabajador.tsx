@@ -34,7 +34,7 @@ export function PerfilTrabajador({ trabajador: t, distancia, onEliminarObra, obr
         <Text style={styles.precio}>{textoPrecio(t?.tarifa_monto, t?.tarifa_periodo)}</Text>
         <View style={[styles.estadoDisp, { backgroundColor: t?.disponibilidad === 'Ocupado' ? '#FEF3C7' : '#D1FAE5' }]}>
           <View style={[styles.punto, { backgroundColor: t?.disponibilidad === 'Ocupado' ? '#F59E0B' : '#059669' }]} />
-          <Text style={{ color: t?.disponibilidad === 'Ocupado' ? '#B45309' : '#059669', fontWeight: 'bold', fontSize: 12 }}>{t?.disponibilidad === 'Ocupado' ? 'OCUPADO EN OTRA OBRA' : 'DISPONIBLE PARA TRABAJAR'}</Text>
+          <Text style={{ color: t?.disponibilidad === 'Ocupado' ? '#B45309' : '#059669', fontWeight: 'bold', fontSize: 14 }}>{t?.disponibilidad === 'Ocupado' ? 'OCUPADO EN OTRA OBRA' : 'DISPONIBLE PARA TRABAJAR'}</Text>
         </View>
 
         <View style={styles.fila}><Ionicons name="location" size={14} color="#0D2340" /><Text style={styles.filaTexto}>{ubicacion || 'Sin ubicación registrada'}{distancia ? ` • ${distancia}` : ''}</Text></View>
@@ -133,31 +133,31 @@ export function PerfilTrabajador({ trabajador: t, distancia, onEliminarObra, obr
 const styles = StyleSheet.create({
   tarjeta: { backgroundColor: '#FFF', borderRadius: 16, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: '#E5E7EB' },
   foto: { width: 96, height: 96, borderRadius: 48, backgroundColor: '#E5E7EB', borderWidth: 3, borderColor: '#F3F4F6' },
-  nombre: { fontSize: 20, fontWeight: 'bold', color: '#0D2340', marginTop: 8, textAlign: 'center' },
-  oficio: { fontSize: 14, color: '#6B7280', fontWeight: '600' },
-  precio: { fontSize: 15, color: '#00A355', fontWeight: 'bold', marginTop: 4 },
+  nombre: { fontSize: 21, fontWeight: 'bold', color: '#0D2340', marginTop: 8, textAlign: 'center' },
+  oficio: { fontSize: 16, color: '#6B7280', fontWeight: '600' },
+  precio: { fontSize: 17, color: '#00A355', fontWeight: 'bold', marginTop: 4 },
   estadoDisp: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12, marginTop: 8 },
   punto: { width: 8, height: 8, borderRadius: 4, marginRight: 6 },
   fila: { flexDirection: 'row', alignItems: 'center', marginTop: 8, alignSelf: 'stretch', justifyContent: 'center' },
-  filaTexto: { fontSize: 13, color: '#0D2340', marginLeft: 5, fontWeight: '600', flexShrink: 1 },
+  filaTexto: { fontSize: 15, color: '#0D2340', marginLeft: 5, fontWeight: '600', flexShrink: 1 },
   dias: { flexDirection: 'row', marginTop: 8 },
   dia: { borderRadius: 8, paddingHorizontal: 6, paddingVertical: 4, marginHorizontal: 2, backgroundColor: '#F3F4F6' },
   diaSi: { backgroundColor: '#00A355' },
-  diaTexto: { fontSize: 11, fontWeight: 'bold', color: '#9CA3AF' },
+  diaTexto: { fontSize: 13, fontWeight: 'bold', color: '#9CA3AF' },
   stats: { flexDirection: 'row', marginTop: 12, backgroundColor: '#F9FAFB', borderRadius: 12, paddingVertical: 10, alignSelf: 'stretch' },
   stat: { flex: 1, alignItems: 'center' },
-  statNumero: { fontSize: 16, fontWeight: 'bold', color: '#0D2340' },
-  statTexto: { fontSize: 10, color: '#9CA3AF', fontWeight: 'bold' },
-  seccion: { fontSize: 16, fontWeight: 'bold', color: '#0D2340', marginTop: 8, marginBottom: 10 },
+  statNumero: { fontSize: 17, fontWeight: 'bold', color: '#0D2340' },
+  statTexto: { fontSize: 13, color: '#9CA3AF', fontWeight: 'bold' },
+  seccion: { fontSize: 17, fontWeight: 'bold', color: '#0D2340', marginTop: 8, marginBottom: 10 },
   vacio: { color: '#9CA3AF', textAlign: 'center', marginBottom: 12 },
   fotoObra: { width: '100%', height: 150, backgroundColor: '#E5E7EB' },
-  obraTitulo: { fontSize: 15, fontWeight: 'bold', color: '#0D2340' },
-  obraDato: { fontSize: 12, color: '#6B7280', marginTop: 2 },
+  obraTitulo: { fontSize: 17, fontWeight: 'bold', color: '#0D2340' },
+  obraDato: { fontSize: 14, color: '#6B7280', marginTop: 2 },
   miniatura: { width: 70, height: 70, borderRadius: 8, marginRight: 8, backgroundColor: '#E5E7EB' },
   mitad: { width: '100%', height: '100%', backgroundColor: '#E5E7EB' },
   etiqueta: { position: 'absolute', bottom: 8, left: 8, backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
-  etiquetaTexto: { color: '#FFF', fontSize: 10, fontWeight: 'bold' },
+  etiquetaTexto: { color: '#FFF', fontSize: 13, fontWeight: 'bold' },
   borrar: { position: 'absolute', top: 8, right: 8, zIndex: 5, backgroundColor: 'rgba(220,38,38,0.9)', padding: 7, borderRadius: 16 },
   fotoResena: { width: 38, height: 38, borderRadius: 19, marginRight: 10, backgroundColor: '#E5E7EB' },
-  comentario: { fontSize: 13, color: '#4B5563', fontStyle: 'italic', marginTop: 8 },
+  comentario: { fontSize: 15, color: '#4B5563', fontStyle: 'italic', marginTop: 8 },
 });

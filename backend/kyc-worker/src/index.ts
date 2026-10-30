@@ -58,7 +58,50 @@ export default {
   // TAREA DIARIA (CRON DE wrangler.toml, GRATIS EN CLOUDFLARE): REVISA OBRAS TERMINADAS SIN PAGO CONFIRMADO
   async scheduled(_evento: unknown, env: Env, ctx: { waitUntil: (promesa: Promise<unknown>) => void }) {
     ctx.waitUntil(revisarPagosPendientes(env).catch(error => console.log('Error revisando pagos pendientes', error)));
+    ctx.waitUntil(recordarPagosVencidos(env).catch(error => console.log('Error recordando pagos', error)));
   },
+};
+
+// CUÁNTO DEBERÍA HABER PAGADO YA EL CONTRATISTA, SEGÚN CADA CUÁNTO SE PAGA (LA MISMA CUENTA QUE HACE LA APP EN lib/pagos.ts):
+//   POR DÍA     -> UN PAGO POR CADA DÍA TRABAJADO EN LA BITÁCORA (SIN LOS DESCONTADOS)
+//   POR SEMANA  -> UN PAGO POR CADA SEMANA COMPLETA DESDE QUE EMPEZÓ
+//   POR OBRA    -> AL TERMINAR (O LA MITAD AL INICIO SI ASÍ SE ACORDÓ)
+// MÁS LOS PAGOS EXTRA QUE ORDENÓ EL ADMIN.
+const deudaHastaHoy = (obra: DocumentoLeido, diasTrabajados: number) => {
+  const resumen = obra.fields.vacante?.mapValue?.fields || {};
+  const textoPago = texto(resumen.pago).toLowerCase();
+  const monto = numero(resumen.pago_monto) || Number(textoPago.replace(/[^0-9]/g, '')) || 0;
+  const periodo = texto(resumen.pago_periodo) || (textoPago.includes('día') || textoPago.includes('dia') ? 'por día' : textoPago.includes('semana') ? 'por semana' : 'por obra');
+  const inicio = numero(obra.fields.timestamp_inicio);
+  let debido = 0;
+  if (periodo === 'por día') debido = diasTrabajados * monto;
+  else if (periodo === 'por semana' && inicio) debido = Math.floor((Date.now() - inicio) / (7 * 24 * 60 * 60 * 1000)) * monto;
+  else if (texto(resumen.condiciones?.mapValue?.fields?.cuando_pago) === 'Mitad al inicio y mitad al final') debido = monto / 2;
+  const ajustes = (deFirestore(obra.fields.ajustes_pago) as any[]) || [];
+  return debido + ajustes.filter(a => a.tipo === 'extra').reduce((s, a) => s + (a.monto || 0), 0);
+};
+
+// RECORDATORIO DIARIO AL CONTRATISTA CUANDO YA LE TOCA PAGAR Y NO HA REGISTRADO EL PAGO (UNA VEZ AL DÍA COMO MÁXIMO)
+const recordarPagosVencidos = async (env: Env) => {
+  const nombreBase = `projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents`;
+  const hoy = new Date().toLocaleDateString('es-MX', { timeZone: 'America/Mexico_City' });
+  const enCurso = await consultarDocumentos(env, 'Postulaciones', [['estado', 'IN', [ESTADOS.ACTIVA, ESTADOS.POR_CONFIRMAR_FIN]]], 300);
+  for (const obra of enCurso) {
+    if (texto(obra.fields.ultimo_recordatorio_pago) === hoy) continue;
+    const dias = (await listarBitacora(env, `Postulaciones/${obra.id}`)).filter(d => d.fields.asistio?.booleanValue && texto(d.fields.revision) !== REVISION.DESCONTADA).length;
+    const debido = deudaHastaHoy(obra, dias);
+    const pagado = ((deFirestore(obra.fields.pagos) as any[]) || []).filter(p => p.estado !== ESTADO_PAGO.NO_RECIBIDO).reduce((s, p) => s + (p.monto || 0), 0);
+    if (debido <= pagado) continue;
+    const titulo = texto(obra.fields.titulo_vacante);
+    await confirmarEscrituras(env, [
+      {
+        update: { name: `${nombreBase}/Postulaciones/${obra.id}`, fields: aCamposFirestore({ ultimo_recordatorio_pago: hoy }) },
+        updateMask: { fieldPaths: ['ultimo_recordatorio_pago'] },
+        currentDocument: { updateTime: obra.updateTime },
+      },
+      nuevaNotificacion(env, texto(obra.fields.id_contratista), 'Ya te toca pagar', `En "${titulo}" ya toca pagar $${Math.round(debido - pagado).toLocaleString('es-MX')}. Cuando pagues, registra el pago con su comprobante en la obra → Pagos.`, { tipo: 'contrato', destino: { abrir: 'pagos', id_contrato: obra.id } }),
+    ]);
+  }
 };
 
 // SI A LOS 3 DÍAS DE TERMINAR UNA OBRA EL TRABAJADOR NO HA CONFIRMADO NINGÚN PAGO, SE LEVANTA UN REPORTE AUTOMÁTICO
@@ -99,8 +142,8 @@ const revisarPagosPendientes = async (env: Env) => {
         },
         currentDocument: { exists: false },
       },
-      nuevaNotificacion(env, idContratista, 'Falta el comprobante de pago', `Ya pasaron ${DIAS_PARA_PAGAR} días desde que terminó "${titulo}" y el trabajador no ha confirmado ningún pago. Sube tu comprobante en la obra → Pagos. El administrador ya fue avisado.`, { tipo: 'reporte', importante: true }),
-      nuevaNotificacion(env, idTrabajador, 'Revisamos tu pago', `Ya pasaron ${DIAS_PARA_PAGAR} días desde que terminó "${titulo}" y no tienes pagos confirmados. Avisamos al administrador. Si ya te pagaron, confírmalo en la obra → Pagos.`, { tipo: 'reporte' }),
+      nuevaNotificacion(env, idContratista, 'Falta el comprobante de pago', `Ya pasaron ${DIAS_PARA_PAGAR} días desde que terminó "${titulo}" y el trabajador no ha confirmado ningún pago. Sube tu comprobante en la obra → Pagos. El administrador ya fue avisado.`, { destino: { abrir: 'pagos', id_contrato: obra.id }, tipo: 'reporte', importante: true }),
+      nuevaNotificacion(env, idTrabajador, 'Revisamos tu pago', `Ya pasaron ${DIAS_PARA_PAGAR} días desde que terminó "${titulo}" y no tienes pagos confirmados. Avisamos al administrador. Si ya te pagaron, confírmalo en la obra → Pagos.`, { destino: { abrir: 'pagos', id_contrato: obra.id }, tipo: 'reporte' }),
     ]);
   }
 };
@@ -460,7 +503,7 @@ const crearResena = async (request: Request, env: Env) => {
           updateTransforms: [{ fieldPath: 'resenas', appendMissingElements: { values: [aValorFirestore(resena)] } }],
           currentDocument: { updateTime: evaluado.updateTime },
         },
-        nuevaNotificacion(env, idEvaluado, 'Te calificaron', `${nombreEvaluador} te calificó con ${'★'.repeat(estrellas)}${'☆'.repeat(5 - estrellas)}: "${comentario.trim()}"`, { tipo: 'resena' }),
+        nuevaNotificacion(env, idEvaluado, 'Te calificaron', `${nombreEvaluador} te calificó con ${'★'.repeat(estrellas)}${'☆'.repeat(5 - estrellas)}: "${comentario.trim()}"`, { destino: { abrir: 'resenas' }, tipo: 'resena' }),
       ]);
       if (guardado) return responder(200, { calificacion: nuevaCalif.toFixed(1) });
     }
@@ -626,6 +669,9 @@ const crearContrato = async (env: Env, uid: string, quienInicia: 'contratista' |
           contratista: texto(vacante.fields.contratista),
           ubicacion: texto(vacante.fields.ubicacion),
           pago: texto(vacante.fields.pago),
+          // MONTO Y CADA CUÁNTO (POR DÍA / POR SEMANA / POR OBRA): CON ESTO SE CALCULA CUÁNDO TOCA CADA PAGO
+          pago_monto: numero(vacante.fields.pago_monto) || null,
+          pago_periodo: texto(vacante.fields.pago_periodo),
           horario: texto(vacante.fields.horario),
           descripcion: texto(vacante.fields.descripcion),
           foto_trabajo: texto(vacante.fields.foto_trabajo),
@@ -755,9 +801,9 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
       }
 
       const cupoNuevo = cupoActual + 1;
-      return guardar([
+      const respuesta = await guardar([
         cambioContrato({ estado: ESTADOS.ACTIVA, aceptado_por: nuevosAceptados, id_contratista: c.idContratista, fecha_inicio: ahora.toLocaleDateString('es-MX', { timeZone: 'America/Mexico_City' }), timestamp_inicio: ahora.getTime() }),
-        nuevaNotificacion(env, otraParte, '¡Trato cerrado!', `${quienAcepta} (${rolQuienAcepta}) también aceptó "${tituloObra}". Los dos aceptaron: la obra ya está activa en tu pestaña Obras.`),
+        nuevaNotificacion(env, otraParte, '¡Trato cerrado!', `${quienAcepta} (${rolQuienAcepta}) también aceptó "${tituloObra}". Los dos aceptaron: la obra ya está activa en tu pestaña Obras.`, { destino: { abrir: 'obra', id_contrato: idContrato } }),
         // EL CUPO SOLO SE OCUPA CUANDO LOS DOS ACEPTARON. SI SE LLENA, LA VACANTE SE CIERRA
         {
           update: { name: `${nombreBase}/Vacantes/${c.idVacante}`, fields: aCamposFirestore({ cupo_actual: cupoNuevo, estado: cupoNuevo >= cupoTotal ? 'Cerrada' : 'Activa' }) },
@@ -765,6 +811,12 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
           currentDocument: { updateTime: c.vacante.updateTime },
         },
       ], ESTADOS.ACTIVA);
+      // SI CON ESTE TRATO SE LLENÓ LA VACANTE, LAS DEMÁS SOLICITUDES Y PROPUESTAS DE ESA VACANTE SE CIERRAN SOLAS
+      // Y SE LES AVISA (ASÍ NADIE SE QUEDA ESPERANDO UNA OBRA QUE YA NO TIENE LUGAR)
+      if (respuesta && cupoNuevo >= cupoTotal) {
+        await cerrarTratosDeVacanteLlena(env, c.idVacante, idContrato, tituloObra).catch(error => console.log('No se pudieron cerrar los demás tratos', error));
+      }
+      return respuesta;
     }
 
     // ---- CUALQUIERA DE LOS DOS RECHAZA (O RETIRA) ANTES DE QUE SE CIERRE EL TRATO ----
@@ -774,7 +826,7 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
       const quienRechaza = await nombreDe(c.soyTrabajador ? 'trabajador' : 'contratista');
       return guardar([
         cambioContrato({ estado: ESTADOS.RECHAZADA, rechazado_por: c.uid }),
-        nuevaNotificacion(env, otraParte, 'Trato no aceptado', `${quienRechaza} ya no siguió con "${tituloObra}".`),
+        nuevaNotificacion(env, otraParte, 'Trato no aceptado', `${quienRechaza} ya no siguió con "${tituloObra}".`, { destino: { abrir: 'obra', id_contrato: idContrato } }),
       ], ESTADOS.RECHAZADA);
     }
 
@@ -786,7 +838,7 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
       if (bloqueo) return bloqueo;
       return guardar([
         cambioContrato({ estado: ESTADOS.POR_CONFIRMAR_FIN }),
-        nuevaNotificacion(env, c.idTrabajador, 'Obra marcada como terminada', `${await nombreDe('contratista')} marcó "${tituloObra}" como terminada. Entra a Obras y confirma si de verdad ya terminó.`),
+        nuevaNotificacion(env, c.idTrabajador, 'Obra marcada como terminada', `${await nombreDe('contratista')} marcó "${tituloObra}" como terminada. Entra a Obras y confirma si de verdad ya terminó.`, { destino: { abrir: 'obra', id_contrato: idContrato } }),
       ], ESTADOS.POR_CONFIRMAR_FIN);
     }
     case 'confirmar_fin': {
@@ -797,7 +849,7 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
       const fechaFin = ahora.toLocaleDateString('es-MX', { timeZone: 'America/Mexico_City' });
       const writes: Record<string, unknown>[] = [
         cambioContrato({ estado: ESTADOS.FINALIZADA, fecha_fin: fechaFin, timestamp_fin: ahora.getTime() }),
-        nuevaNotificacion(env, c.idContratista, 'Obra finalizada', `${await nombreDe('trabajador')} confirmó que "${tituloObra}" terminó. Ya pueden calificarse.`),
+        nuevaNotificacion(env, c.idContratista, 'Obra finalizada', `${await nombreDe('trabajador')} confirmó que "${tituloObra}" terminó. Ya pueden calificarse.`, { destino: { abrir: 'obra', id_contrato: idContrato } }),
       ];
 
       // LA OBRA TERMINADA SE AGREGA AL PERFIL PÚBLICO DEL TRABAJADOR (obras_realizadas), PARA QUE CUALQUIER CONTRATISTA
@@ -830,7 +882,7 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
       if (c.estado !== ESTADOS.POR_CONFIRMAR_FIN) return noSePuede();
       return guardar([
         cambioContrato({ estado: ESTADOS.ACTIVA }),
-        nuevaNotificacion(env, c.idContratista, 'La obra aún no termina', `${await nombreDe('trabajador')} dice que "${tituloObra}" todavía no termina. La obra sigue activa; platiquen lo que falta.`),
+        nuevaNotificacion(env, c.idContratista, 'La obra aún no termina', `${await nombreDe('trabajador')} dice que "${tituloObra}" todavía no termina. La obra sigue activa; platiquen lo que falta.`, { destino: { abrir: 'obra', id_contrato: idContrato } }),
       ], ESTADOS.ACTIVA);
     }
 
@@ -848,7 +900,7 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
       return guardar([
         cambioContrato({ estado: ESTADOS.SUSPENDIDA, cancelado_por: c.uid, motivo_cancelacion: c.motivo.trim(), id_queja: idQueja, timestamp_cancelacion: ahora.getTime() }, [contadorReportes(1)]),
         nuevoReporte(idQueja, nombres, { tipo: 'cancelacion', motivo: 'Cancelación de obra', descripcion: c.motivo.trim(), fotos_evidencia: fotosValidas(env, c.datos.fotos) }),
-        nuevaNotificacion(env, otraParte, 'Obra suspendida', `${quienCancela} (${c.soyTrabajador ? 'trabajador' : 'contratista'}) canceló la obra "${tituloObra}". Queda suspendida mientras el administrador revisa el caso. Te avisaremos su decisión.`, { tipo: 'reporte', importante: true }),
+        nuevaNotificacion(env, otraParte, 'Obra suspendida', `${quienCancela} (${c.soyTrabajador ? 'trabajador' : 'contratista'}) canceló la obra "${tituloObra}". Queda suspendida mientras el administrador revisa el caso. Te avisaremos su decisión.`, { destino: { abrir: 'obra', id_contrato: idContrato }, tipo: 'reporte', importante: true }),
       ], ESTADOS.SUSPENDIDA);
     }
 
@@ -876,7 +928,7 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
       if (c.datos.veredicto === 'confirmar') {
         return guardar([
           cambioEntrada({ revision: REVISION.CONFIRMADA, fecha_revision: ahora.toISOString() }),
-          nuevaNotificacion(env, c.idTrabajador, 'Bitácora confirmada', `${await nombreDe('contratista')} confirmó tu avance del ${texto(entrada.fields.fecha)} en "${tituloObra}".`, { tipo: 'bitacora' }),
+          nuevaNotificacion(env, c.idTrabajador, 'Bitácora confirmada', `${await nombreDe('contratista')} confirmó tu avance del ${texto(entrada.fields.fecha)} en "${tituloObra}".`, { destino: { abrir: 'bitacora', id_contrato: idContrato }, tipo: 'bitacora' }),
         ], c.estado);
       }
       if (c.datos.veredicto !== 'rechazar') return responder(400, { error: 'Veredicto inválido.' });
@@ -896,7 +948,7 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
           id_entrada: idEntrada,
           fecha_dia: fechaDia,
         }),
-        nuevaNotificacion(env, c.idTrabajador, 'Bitácora rechazada', `${nombres.contratista} rechazó tu bitácora del ${fechaDia} en "${tituloObra}": "${c.motivo.trim()}". El administrador decidirá si ese día cuenta o se descuenta.`, { tipo: 'bitacora', importante: true }),
+        nuevaNotificacion(env, c.idTrabajador, 'Bitácora rechazada', `${nombres.contratista} rechazó tu bitácora del ${fechaDia} en "${tituloObra}": "${c.motivo.trim()}". El administrador decidirá si ese día cuenta o se descuenta.`, { destino: { abrir: 'bitacora', id_contrato: idContrato }, tipo: 'bitacora', importante: true }),
         cambioContrato({}, [contadorReportes(1)]),
       ], c.estado);
     }
@@ -912,7 +964,7 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
       const quienReporta = c.soyTrabajador ? nombres.trabajador : nombres.contratista;
       return guardar([
         nuevoReporte(crypto.randomUUID().replace(/-/g, ''), nombres, { tipo: 'incumplimiento', motivo: categoria, descripcion: c.motivo.trim(), fotos_evidencia: fotosValidas(env, c.datos.fotos) }),
-        nuevaNotificacion(env, otraParte, 'Te reportaron', `${quienReporta} (${c.soyTrabajador ? 'trabajador' : 'contratista'}) levantó un reporte en "${tituloObra}" (${categoria}): "${c.motivo.trim()}". El administrador lo revisará y te avisaremos. Mientras tanto la obra no se puede terminar.`, { tipo: 'reporte', importante: true }),
+        nuevaNotificacion(env, otraParte, 'Te reportaron', `${quienReporta} (${c.soyTrabajador ? 'trabajador' : 'contratista'}) levantó un reporte en "${tituloObra}" (${categoria}): "${c.motivo.trim()}". El administrador lo revisará y te avisaremos. Mientras tanto la obra no se puede terminar.`, { destino: { abrir: 'obra', id_contrato: idContrato }, tipo: 'reporte', importante: true }),
         cambioContrato({}, [contadorReportes(1)]),
       ], c.estado);
     }
@@ -930,7 +982,7 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
       const pago = { id: crypto.randomUUID().replace(/-/g, '').slice(0, 12), monto, concepto, comprobante, estado: ESTADO_PAGO.POR_CONFIRMAR, fecha: ahora.toLocaleDateString('es-MX', { timeZone: 'America/Mexico_City' }), timestamp: ahora.getTime() };
       return guardar([
         cambioContrato({}, [{ fieldPath: 'pagos', appendMissingElements: { values: [aValorFirestore(pago)] } }]),
-        nuevaNotificacion(env, c.idTrabajador, 'Te registraron un pago', `${await nombreDe('contratista')} (contratista) registró un pago de $${monto.toLocaleString('es-MX')} (${concepto}) en "${tituloObra}". Entra a la obra → Pagos y confirma si de verdad lo recibiste.`),
+        nuevaNotificacion(env, c.idTrabajador, 'Te registraron un pago', `${await nombreDe('contratista')} (contratista) registró un pago de $${monto.toLocaleString('es-MX')} (${concepto}) en "${tituloObra}". Entra a la obra → Pagos y confirma si de verdad lo recibiste.`, { destino: { abrir: 'pagos', id_contrato: idContrato } }),
       ], c.estado);
     }
 
@@ -950,7 +1002,7 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
       if (recibido) {
         return guardar([
           cambioContrato({ pagos: pagosNuevos }),
-          nuevaNotificacion(env, c.idContratista, 'Pago confirmado', `${nombres.trabajador} (trabajador) confirmó que recibió ${montoTexto} de "${tituloObra}".`),
+          nuevaNotificacion(env, c.idContratista, 'Pago confirmado', `${nombres.trabajador} (trabajador) confirmó que recibió ${montoTexto} de "${tituloObra}".`, { destino: { abrir: 'pagos', id_contrato: idContrato } }),
         ], c.estado);
       }
       // NO LE LLEGÓ: REPORTE AL ADMIN CON EL COMPROBANTE QUE SUBIÓ EL CONTRATISTA COMO EVIDENCIA
@@ -961,7 +1013,7 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
           descripcion: `El contratista registró un pago de ${montoTexto} (${pago.concepto}) el ${pago.fecha}, pero el trabajador dice que no lo recibió: "${String(c.motivo).trim()}"`,
           foto_evidencia: pago.comprobante,
         }),
-        nuevaNotificacion(env, c.idContratista, 'Pago no recibido', `${nombres.trabajador} (trabajador) dice que no recibió el pago de ${montoTexto} de "${tituloObra}". El administrador revisará el comprobante que subiste.`, { tipo: 'reporte', importante: true }),
+        nuevaNotificacion(env, c.idContratista, 'Pago no recibido', `${nombres.trabajador} (trabajador) dice que no recibió el pago de ${montoTexto} de "${tituloObra}". El administrador revisará el comprobante que subiste.`, { destino: { abrir: 'pagos', id_contrato: idContrato }, tipo: 'reporte', importante: true }),
       ], c.estado);
     }
 
@@ -976,8 +1028,8 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
       const aviso = `${cancelar ? `La obra "${tituloObra}" quedó cancelada definitivamente. Ya pueden calificarse.` : `La obra "${tituloObra}" fue reactivada: sigue en curso y ya se puede llenar la bitácora.`}${nota ? `\n\nNota del administrador: ${nota}` : ''}`;
       const writes: Record<string, unknown>[] = [
         cambioContrato({ estado: cancelar ? ESTADOS.CANCELADA : ESTADOS.ACTIVA, decidido_por_admin: c.uid }, [contadorReportes(-1)]),
-        nuevaNotificacion(env, c.idTrabajador, 'Decisión del administrador', aviso, { tipo: 'admin', importante: true }),
-        nuevaNotificacion(env, c.idContratista, 'Decisión del administrador', aviso, { tipo: 'admin', importante: true }),
+        nuevaNotificacion(env, c.idTrabajador, 'Decisión del administrador', aviso, { destino: { abrir: 'obra', id_contrato: idContrato }, tipo: 'admin', importante: true }),
+        nuevaNotificacion(env, c.idContratista, 'Decisión del administrador', aviso, { destino: { abrir: 'obra', id_contrato: idContrato }, tipo: 'admin', importante: true }),
       ];
       // AL CANCELAR DEFINITIVAMENTE, SE LIBERA EL LUGAR QUE OCUPABA EN LA VACANTE
       if (cancelar && c.vacante) {
@@ -1025,7 +1077,12 @@ const nombresDePartes = async (env: Env, idTrabajador: string, idContratista: st
 //   tipo: 'contrato' | 'bitacora' | 'reporte' | 'admin' | 'resena' (DEFINE EL ÍCONO Y EL COLOR)
 //   importante: SE ABRE SOLO EN CUANTO LLEGA (DECISIONES DEL ADMIN, OBRA SUSPENDIDA...)
 //   chat_con: AL TOCAR EL AVISO SE ABRE EL CHAT CON ESA PERSONA (P. EJ. UNA PROPUESTA NUEVA)
-type ExtraNotificacion = { tipo?: string; importante?: boolean; chat_con?: { id: string; nombre: string; rol: string } };
+//   destino: A DÓNDE LLEVA AL TOCARLO ('obra' | 'bitacora' | 'pagos' | 'resenas', Y DE QUÉ CONTRATO)
+type ExtraNotificacion = {
+  tipo?: string; importante?: boolean;
+  chat_con?: { id: string; nombre: string; rol: string };
+  destino?: { abrir: 'obra' | 'bitacora' | 'pagos' | 'resenas'; id_contrato?: string };
+};
 
 const nuevaNotificacion = (env: Env, idUsuario: string, titulo: string, mensaje: string, extra: ExtraNotificacion = {}) => ({
   update: {
@@ -1033,6 +1090,7 @@ const nuevaNotificacion = (env: Env, idUsuario: string, titulo: string, mensaje:
     fields: aCamposFirestore({
       id_usuario: idUsuario, titulo, mensaje, leida: false, fecha: new Date().toISOString(), timestamp: Date.now(),
       tipo: extra.tipo || 'contrato', importante: extra.importante || false, ...(extra.chat_con ? { chat_con: extra.chat_con } : {}),
+      ...(extra.destino ? { destino: extra.destino } : {}),
     }),
   },
   currentDocument: { exists: false },
@@ -1050,6 +1108,24 @@ const coordenadasDe = (valor: ValorFirestore | undefined) => {
 const reportesAbiertosDe = async (env: Env, idContrato: string) =>
   (await consultarDocumentos(env, 'Quejas_Soporte', [['id_contrato', 'EQUAL', idContrato]]))
     .filter(q => texto(q.fields.estado) !== 'Resuelta').length;
+
+// CIERRA LOS TRATOS QUE QUEDARON ABIERTOS EN UNA VACANTE QUE YA SE LLENÓ Y LES AVISA A LAS DOS PARTES
+const cerrarTratosDeVacanteLlena = async (env: Env, idVacante: string, idContratoAceptado: string, titulo: string) => {
+  const nombreBase = `projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents`;
+  const abiertos = (await consultarDocumentos(env, 'Postulaciones', [['id_vacante', 'EQUAL', idVacante], ['estado', 'IN', [ESTADOS.PENDIENTE, ESTADOS.PROPUESTA]]], 100))
+    .filter(t => t.id !== idContratoAceptado);
+  if (abiertos.length === 0) return;
+  const writes: Record<string, unknown>[] = [];
+  for (const t of abiertos) {
+    writes.push({
+      update: { name: `${nombreBase}/Postulaciones/${t.id}`, fields: aCamposFirestore({ estado: ESTADOS.RECHAZADA, rechazado_por: 'vacante_llena' }) },
+      updateMask: { fieldPaths: ['estado', 'rechazado_por'] },
+      currentDocument: { updateTime: t.updateTime },
+    });
+    writes.push(nuevaNotificacion(env, texto(t.fields.id_trabajador), 'La vacante ya se llenó', `"${titulo}" ya tiene a todos los trabajadores que necesitaba, así que tu solicitud se cerró. ¡Sigue buscando en la Bolsa de Trabajo!`, { destino: { abrir: 'obra', id_contrato: t.id } }));
+  }
+  await confirmarEscrituras(env, writes);
+};
 
 // TODOS LOS DÍAS DE LA BITÁCORA DE UN CONTRATO (SUBCOLECCIÓN Postulaciones/{id}/Bitacora)
 const listarBitacora = async (env: Env, rutaContrato: string) => {
@@ -1188,7 +1264,10 @@ const resolverReporte = async (request: Request, env: Env) => {
     // AVISO A LAS DOS PARTES (LOS REPORTES VIEJOS DEL CHAT PUEDEN TRAER 'Desconocido' EN LUGAR DE UN USUARIO)
     const motivo = texto(queja.fields.motivo);
     const obra = texto(queja.fields.titulo_obra) ? ` en "${texto(queja.fields.titulo_obra)}"` : '';
-    const extra = { tipo: 'admin', importante: true };
+    const extra: ExtraNotificacion = {
+      tipo: 'admin', importante: true,
+      destino: idContrato ? { abrir: tipo === 'bitacora' ? 'bitacora' : tipo === 'pago' ? 'pagos' : 'obra', id_contrato: idContrato } : undefined,
+    };
     if (esUsuario(reportante.id)) writes.push(nuevaNotificacion(env, reportante.id, 'Tu reporte fue resuelto', `Reporte "${motivo}"${obra}: ${resolucion}\n\nNota del administrador: ${nota}`, extra));
     if (esUsuario(acusado.id)) writes.push(nuevaNotificacion(env, acusado.id, 'Se resolvió un reporte sobre ti', `Reporte "${motivo}"${obra}, levantado por ${conRol(reportante)}: ${resolucion}\n\nNota del administrador: ${nota}`, extra));
 

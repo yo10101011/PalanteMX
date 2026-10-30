@@ -39,5 +39,5 @@ export function SelectorOficio({ valor, onCambio, textoVacio = 'Elige el oficio.
 
 const styles = StyleSheet.create({
   caja: { borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, backgroundColor: '#F9FAFB', marginBottom: 10, overflow: 'hidden' },
-  input: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#3B82F6', borderRadius: 10, padding: 12, marginBottom: 10, fontSize: 14, color: '#1F2937' },
+  input: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#3B82F6', borderRadius: 10, padding: 12, marginBottom: 10, fontSize: 16, color: '#1F2937' },
 });

@@ -5,6 +5,7 @@
 // - SI EL AVISO TRAE chat_con (P. EJ. UNA PROPUESTA NUEVA), AL TOCARLO SE ABRE EL CHAT CON ESA PERSONA.
 // - onNuevos: LA PANTALLA RECARGA SUS DATOS CUANDO LLEGA ALGO NUEVO (PUDO CAMBIAR UNA OBRA).
 import { Ionicons } from '@expo/vector-icons';
+import { router } from 'expo-router';
 import { collection, doc, onSnapshot, query, updateDoc, where } from 'firebase/firestore';
 import { useEffect, useRef, useState } from 'react';
 import { Modal, ScrollView, StyleProp, StyleSheet, Text, TouchableOpacity, View, ViewStyle } from 'react-native';
@@ -37,9 +38,10 @@ type Props = {
   colorIcono?: string;
   style?: StyleProp<ViewStyle>;
   variante?: 'campana' | 'fila'; // 'fila' = UNA OPCIÓN "NOTIFICACIONES" EN LA LISTA DE AJUSTES DEL PERFIL
+  rol: 'Trabajador' | 'Contratista'; // PARA SABER A QUÉ PANTALLA LLEVAR AL TOCAR UN AVISO
 };
 
-export function CampanaNotificaciones({ onNuevos, colorIcono = '#FFF', style, variante = 'campana' }: Props) {
+export function CampanaNotificaciones({ onNuevos, colorIcono = '#FFF', style, variante = 'campana', rol }: Props) {
   const [avisos, setAvisos] = useState<any[]>([]);
   const [abierto, setAbierto] = useState(false);
   const onNuevosRef = useRef(onNuevos);
@@ -68,10 +70,17 @@ export function CampanaNotificaciones({ onNuevos, colorIcono = '#FFF', style, va
 
   const cerrar = () => { marcarLeidas(); setAbierto(false); };
 
+  // AL TOCAR UN AVISO SE VA A LO QUE DICE: AL CHAT, A LA OBRA, A SU BITÁCORA, A SUS PAGOS O A LAS RESEÑAS
   const tocarAviso = (aviso: any) => {
-    if (!aviso.chat_con?.id) return;
     cerrar();
-    abrirChatCon(aviso.chat_con);
+    if (aviso.chat_con?.id) { abrirChatCon(aviso.chat_con); return; }
+    const abrir = aviso.destino?.abrir || (aviso.tipo === 'resena' ? 'resenas' : 'obra');
+    const esContratista = rol === 'Contratista';
+    const tab = abrir === 'resenas' ? (esContratista ? 'Perfil' : 'Reseñas') : (esContratista ? 'Obras' : 'Mis Trabajos');
+    router.replace({
+      pathname: esContratista ? '/dashboard-contratista' : '/dashboard-trabajador',
+      params: { tab, abrir, contrato: aviso.destino?.id_contrato || '', t: String(Date.now()) },
+    } as any);
   };
 
   return (
@@ -106,14 +115,14 @@ export function CampanaNotificaciones({ onNuevos, colorIcono = '#FFF', style, va
               ) : avisos.map(a => {
                 const estilo = ESTILO_TIPO[a.tipo] || ESTILO_TIPO.contrato;
                 return (
-                  <TouchableOpacity key={a.id} activeOpacity={a.chat_con ? 0.7 : 1} onPress={() => tocarAviso(a)} style={[styles.aviso, !a.leida && styles.avisoNuevo]}>
+                  <TouchableOpacity key={a.id} activeOpacity={0.7} onPress={() => tocarAviso(a)} style={[styles.aviso, !a.leida && styles.avisoNuevo]}>
                     <View style={[styles.icono, { backgroundColor: estilo.color }]}><Ionicons name={estilo.icono} size={18} color="#FFF" /></View>
                     <View style={{ flex: 1 }}>
                       <Text style={styles.avisoTitulo}>{a.titulo}</Text>
                       <Text style={styles.avisoTexto}>{a.mensaje}</Text>
                       <View style={styles.pie}>
                         <Text style={[styles.avisoFecha, !a.leida && { color: '#2563EB', fontWeight: 'bold' }]}>{hace(a.timestamp || 0)}</Text>
-                        {a.chat_con ? <Text style={styles.irChat}>Ir al chat ›</Text> : null}
+                        <Text style={styles.irChat}>{a.chat_con ? 'Ir al chat ›' : a.destino?.abrir === 'pagos' ? 'Ver pagos ›' : a.destino?.abrir === 'bitacora' ? 'Ver bitácora ›' : a.tipo === 'resena' ? 'Ver reseñas ›' : 'Ver obra ›'}</Text>
                       </View>
                     </View>
                     {!a.leida && <View style={styles.punto} />}
@@ -134,24 +143,24 @@ export function CampanaNotificaciones({ onNuevos, colorIcono = '#FFF', style, va
 const styles = StyleSheet.create({
   boton: { padding: 4 },
   globo: { position: 'absolute', top: -2, right: -4, backgroundColor: '#DC2626', borderRadius: 10, minWidth: 19, height: 19, alignItems: 'center', justifyContent: 'center', borderWidth: 1.5, borderColor: '#FFF', paddingHorizontal: 3 },
-  globoTexto: { color: '#FFF', fontSize: 10, fontWeight: 'bold' },
+  globoTexto: { color: '#FFF', fontSize: 13, fontWeight: 'bold' },
   fila: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF', padding: 18, borderRadius: 12, marginBottom: 10, elevation: 1 },
-  filaTexto: { flex: 1, fontSize: 14, fontWeight: 'bold', color: '#1F2937', marginLeft: 15 },
+  filaTexto: { flex: 1, fontSize: 16, fontWeight: 'bold', color: '#1F2937', marginLeft: 15 },
   globoFila: { backgroundColor: '#DC2626', borderRadius: 10, minWidth: 22, height: 22, alignItems: 'center', justifyContent: 'center', marginRight: 6, paddingHorizontal: 4 },
   fondo: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', paddingTop: 50 },
   panel: { flex: 1, backgroundColor: '#F3F4F6', borderTopLeftRadius: 20, borderTopRightRadius: 20, overflow: 'hidden' },
   encabezado: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#0D2340', padding: 16 },
-  titulo: { color: '#FFF', fontSize: 18, fontWeight: 'bold' },
+  titulo: { color: '#FFF', fontSize: 19, fontWeight: 'bold' },
   vacio: { alignItems: 'center', marginTop: 50 },
   vacioTexto: { color: '#6B7280', marginTop: 10 },
   aviso: { flexDirection: 'row', backgroundColor: '#FFF', borderRadius: 14, padding: 12, marginBottom: 8, alignItems: 'flex-start' },
   avisoNuevo: { backgroundColor: '#EFF6FF', borderWidth: 1, borderColor: '#BFDBFE' },
   icono: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center', marginRight: 10 },
-  avisoTitulo: { fontSize: 14, fontWeight: 'bold', color: '#0D2340' },
-  avisoTexto: { fontSize: 13, color: '#4B5563', marginTop: 2, lineHeight: 18 },
+  avisoTitulo: { fontSize: 16, fontWeight: 'bold', color: '#0D2340' },
+  avisoTexto: { fontSize: 15, color: '#4B5563', marginTop: 2, lineHeight: 18 },
   pie: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 5 },
-  avisoFecha: { fontSize: 11, color: '#9CA3AF' },
-  irChat: { fontSize: 12, color: '#2563EB', fontWeight: 'bold' },
+  avisoFecha: { fontSize: 13, color: '#9CA3AF' },
+  irChat: { fontSize: 14, color: '#2563EB', fontWeight: 'bold' },
   punto: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#2563EB', marginLeft: 6, marginTop: 4 },
   botonLeidas: { backgroundColor: '#0D2340', margin: 12, borderRadius: 12, padding: 14, alignItems: 'center' },
   botonLeidasTexto: { color: '#FFF', fontWeight: 'bold' },

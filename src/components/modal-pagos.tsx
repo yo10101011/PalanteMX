@@ -10,7 +10,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { SelectorFotos, subirFotos } from '@/components/selector-fotos';
 import { VisorFoto } from '@/components/visor-foto';
-import { accionContrato, ajustesDePago, COLOR_PAGO, CONCEPTOS_PAGO, ESTADO_PAGO, ESTADOS, totalRecibido } from '@/lib/contratos';
+import { accionContrato, ajustesDePago, COLOR_PAGO, CONCEPTOS_PAGO, ESTADO_PAGO, ESTADOS, leerBitacora, totalRecibido } from '@/lib/contratos';
+import { calcularPlanDePagos, ESTILO_PERIODO } from '@/lib/pagos';
 
 type Props = {
   contrato: any | null; // null = CERRADO
@@ -31,7 +32,22 @@ export function ModalPagos({ contrato, rol, onClose, onCambio }: Props) {
   const [rechazandoId, setRechazandoId] = useState<string | null>(null);
   const [motivo, setMotivo] = useState('');
 
+  const [bitacora, setBitacora] = useState<any[]>([]);
+
   useEffect(() => { setPagos(contrato?.pagos || []); setMonto(''); setComprobante([]); setRechazandoId(null); }, [contrato?.id, contrato?.pagos?.length]);
+
+  // LA BITÁCORA HACE FALTA PARA LOS PAGOS "POR DÍA" (SE PAGA CADA DÍA TRABAJADO)
+  useEffect(() => {
+    if (!contrato?.id) { setBitacora([]); return; }
+    leerBitacora(contrato.id).then(setBitacora).catch(() => setBitacora([]));
+  }, [contrato?.id]);
+
+  const resumenPlan = contrato ? calcularPlanDePagos(contrato, bitacora) : null;
+
+  // AL ABRIR, EL FORMULARIO YA TRAE EL PAGO QUE TOCA (P. EJ. "SEMANA 2" POR $3,000)
+  useEffect(() => {
+    if (resumenPlan?.siguiente) { setConcepto(resumenPlan.siguiente.etiqueta); setMonto(String(Math.round(resumenPlan.siguiente.monto))); }
+  }, [resumenPlan?.siguiente?.etiqueta]);
 
   const ajustes = ajustesDePago(contrato);
   const extras = ajustes.filter(a => a.tipo === 'extra').reduce((s, a) => s + a.monto, 0);
@@ -91,6 +107,28 @@ export function ModalPagos({ contrato, rol, onClose, onCambio }: Props) {
                 </View>
               )}
 
+              {/* CALENDARIO DE PAGOS SEGÚN CADA CUÁNTO SE ACORDÓ (POR DÍA, POR SEMANA O POR OBRA) */}
+              {resumenPlan && resumenPlan.monto > 0 && (
+                <View style={styles.calendario}>
+                  <Text style={styles.seccion}>📅 ¿Qué pagos tocan? ({resumenPlan.periodo})</Text>
+                  {resumenPlan.pendienteHoy > 0 ? (
+                    <Text style={styles.alerta}>{rol === 'contratista' ? `Ya te toca pagar ${pesos(resumenPlan.pendienteHoy)}.` : `El contratista ya debería haberte pagado ${pesos(resumenPlan.pendienteHoy)}.`}</Text>
+                  ) : (
+                    <Text style={styles.alDia}>✅ Los pagos van al día.</Text>
+                  )}
+                  {resumenPlan.plan.length === 0 && <Text style={styles.vacio}>{resumenPlan.periodo === 'por día' ? 'Todavía no hay días trabajados en la bitácora.' : 'Todavía no toca ningún pago.'}</Text>}
+                  {resumenPlan.plan.map((p, i) => (
+                    <View key={i} style={styles.periodo}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.periodoTexto}>{p.etiqueta}</Text>
+                        <Text style={styles.periodoMonto}>{pesos(Math.round(p.monto))}</Text>
+                      </View>
+                      <View style={[styles.etiqueta, { backgroundColor: ESTILO_PERIODO[p.estado].color, maxWidth: 140 }]}><Text style={styles.etiquetaTexto}>{ESTILO_PERIODO[p.estado].texto}</Text></View>
+                    </View>
+                  ))}
+                </View>
+              )}
+
               <Text style={styles.seccion}>Pagos registrados ({pagos.length})</Text>
               {pagos.length === 0 ? <Text style={styles.vacio}>{rol === 'contratista' ? 'Cuando pagues, regístralo aquí con la foto del comprobante.' : 'Cuando el contratista registre un pago, te llegará un aviso para confirmarlo.'}</Text>
                 : [...pagos].reverse().map(p => (
@@ -129,7 +167,8 @@ export function ModalPagos({ contrato, rol, onClose, onCambio }: Props) {
                   <Text style={styles.etiquetaForm}>¿De qué es el pago?</Text>
                   <View style={styles.pickerCaja}>
                     <Picker selectedValue={concepto} onValueChange={setConcepto}>
-                      {CONCEPTOS_PAGO.map(c => <Picker.Item key={c} label={c} value={c} />)}
+                      {/* PRIMERO LOS PAGOS QUE YA TOCAN SEGÚN EL CALENDARIO, LUEGO LOS GENERALES */}
+                      {[...(resumenPlan?.plan || []).filter(p => p.estado === 'toca_pagar').map(p => p.etiqueta), ...CONCEPTOS_PAGO].map(c => <Picker.Item key={c} label={c} value={c} />)}
                     </Picker>
                   </View>
                   <SelectorFotos fotos={comprobante} onCambio={setComprobante} maximo={1} texto="Foto del comprobante (obligatoria)" />
@@ -151,27 +190,33 @@ const styles = StyleSheet.create({
   fondo: { flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', paddingTop: 30 },
   panel: { flex: 1, backgroundColor: '#F3F4F6', borderTopLeftRadius: 20, borderTopRightRadius: 20, overflow: 'hidden' },
   encabezado: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#065F46', padding: 15 },
-  titulo: { color: '#FFF', fontWeight: 'bold', fontSize: 16, flex: 1, marginRight: 10 },
+  titulo: { color: '#FFF', fontWeight: 'bold', fontSize: 17, flex: 1, marginRight: 10 },
   resumen: { flexDirection: 'row', marginBottom: 12 },
   resumenCaja: { flex: 1, backgroundColor: '#FFF', borderRadius: 12, padding: 12, marginHorizontal: 4, borderWidth: 1, borderColor: '#E5E7EB' },
-  resumenTexto: { fontSize: 11, color: '#6B7280', fontWeight: 'bold' },
-  resumenNumero: { fontSize: 15, color: '#0D2340', fontWeight: 'bold', marginTop: 4 },
+  resumenTexto: { fontSize: 13, color: '#6B7280', fontWeight: 'bold' },
+  resumenNumero: { fontSize: 17, color: '#0D2340', fontWeight: 'bold', marginTop: 4 },
   ajustes: { backgroundColor: '#FFFBEB', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: '#FDE68A', marginBottom: 12 },
-  ajuste: { fontSize: 12, marginTop: 4, fontWeight: '600' },
-  ajusteTotal: { fontSize: 13, fontWeight: 'bold', color: '#92400E', marginTop: 8 },
-  seccion: { fontSize: 15, fontWeight: 'bold', color: '#0D2340', marginBottom: 8 },
+  ajuste: { fontSize: 14, marginTop: 4, fontWeight: '600' },
+  ajusteTotal: { fontSize: 15, fontWeight: 'bold', color: '#92400E', marginTop: 8 },
+  calendario: { backgroundColor: '#FFF', borderRadius: 12, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: '#E5E7EB' },
+  alerta: { fontSize: 16, fontWeight: 'bold', color: '#B91C1C', backgroundColor: '#FEE2E2', borderRadius: 8, padding: 8, marginBottom: 8 },
+  alDia: { fontSize: 16, fontWeight: 'bold', color: '#047857', marginBottom: 8 },
+  periodo: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8, borderTopWidth: 1, borderColor: '#F3F4F6' },
+  periodoTexto: { fontSize: 15, color: '#1F2937', fontWeight: '600' },
+  periodoMonto: { fontSize: 15, color: '#059669', fontWeight: 'bold' },
+  seccion: { fontSize: 17, fontWeight: 'bold', color: '#0D2340', marginBottom: 8 },
   vacio: { color: '#6B7280', textAlign: 'center', marginBottom: 12 },
   pago: { backgroundColor: '#FFF', borderRadius: 12, padding: 12, marginBottom: 10, borderLeftWidth: 5 },
   filaEntre: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  pagoMonto: { fontSize: 18, fontWeight: 'bold', color: '#0D2340' },
-  pagoDato: { fontSize: 12, color: '#6B7280', marginTop: 2 },
+  pagoMonto: { fontSize: 19, fontWeight: 'bold', color: '#0D2340' },
+  pagoDato: { fontSize: 14, color: '#6B7280', marginTop: 2 },
   etiqueta: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
-  etiquetaTexto: { color: '#FFF', fontSize: 10, fontWeight: 'bold' },
+  etiquetaTexto: { color: '#FFF', fontSize: 13, fontWeight: 'bold' },
   comprobante: { width: 110, height: 110, borderRadius: 8, marginTop: 8, backgroundColor: '#E5E7EB' },
   boton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', borderRadius: 10, paddingVertical: 11 },
   botonTexto: { color: '#FFF', fontWeight: 'bold' },
   formulario: { backgroundColor: '#FFF', borderRadius: 14, padding: 14, marginTop: 6, borderWidth: 1, borderColor: '#E5E7EB' },
-  etiquetaForm: { fontSize: 12, fontWeight: 'bold', color: '#6B7280', marginBottom: 5 },
-  input: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, padding: 12, marginBottom: 10, fontSize: 14, color: '#1F2937' },
+  etiquetaForm: { fontSize: 14, fontWeight: 'bold', color: '#6B7280', marginBottom: 5 },
+  input: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, padding: 12, marginBottom: 10, fontSize: 16, color: '#1F2937' },
   pickerCaja: { borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, backgroundColor: '#F9FAFB', marginBottom: 10, overflow: 'hidden' },
 });

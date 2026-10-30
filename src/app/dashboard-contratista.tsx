@@ -3,7 +3,7 @@ import { Picker } from '@react-native-picker/picker';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Dimensions, Image, LogBox, Modal, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -22,6 +22,7 @@ import { coincide } from '@/lib/busqueda';
 import { useMensajesSinLeer } from '@/lib/mensajes';
 import { distanciaKm, ESTADOS_MEXICO, nombreDeLugar, PERIODOS_PAGO, textoDias, textoDistancia, textoPrecio, ubicacionDesdeGPS, ubicacionPrecisa } from '@/lib/ubicacion';
 import { BuscadorConSugerencias } from '@/components/buscador-sugerencias';
+import { BarraSuperior } from '@/components/barra-superior';
 import { CampanaNotificaciones } from '@/components/campana-notificaciones';
 import { FiltrosBusqueda, TODOS_LOS_ESTADOS } from '@/components/filtros-busqueda';
 import { PerfilTrabajador } from '@/components/perfil-trabajador';
@@ -148,16 +149,22 @@ export default function DashboardContratista() {
         setEditApellidos(data.apellidos || '');
         setEditEmpresa(data.empresa || '');
 
-        // CIUDAD Y ESTADO: LOS QUE EL USUARIO ESCRIBIÓ, O LOS DEL GPS DEL REGISTRO. EL ESTADO SE GUARDA EN EL PERFIL
-        // (ubicacion_estado) PORQUE CON ÉL FILTRAN LOS DEMÁS USUARIOS.
-        const gps = await ubicacionDesdeGPS(data.ubicacion);
-        const estado = data.ubicacion_estado || gps?.estado || '';
-        if (estado && !data.ubicacion_estado) updateDoc(doc(db, userDoc.ref.path), { ubicacion_estado: estado }).catch(() => {});
-        const ciudad = data.ubicacion_texto || gps?.ciudad || '';
-        setUbicacionLegible([ciudad, estado].filter(Boolean).join(', ') || 'Sin ubicación');
-        setEditUbicacion(ciudad);
-        setEditEstado(estado);
-        setUserData({ id: userDoc.id, refPath: userDoc.ref.path, ...data, ubicacion_estado: estado });
+        // CIUDAD Y ESTADO: LOS QUE EL USUARIO ELIGIÓ. SI NO HAY, SE CALCULAN DEL GPS DEL REGISTRO SIN DETENER LA PANTALLA
+        // (SE GUARDA ubicacion_estado PORQUE CON ÉL FILTRAN LOS DEMÁS USUARIOS)
+        setUbicacionLegible([data.ubicacion_texto, data.ubicacion_estado].filter(Boolean).join(', ') || 'Sin ubicación');
+        setEditUbicacion(data.ubicacion_texto || '');
+        setEditEstado(data.ubicacion_estado || '');
+        if (!data.ubicacion_estado || !data.ubicacion_texto) {
+          ubicacionDesdeGPS(data.ubicacion).then(gps => {
+            const estado = data.ubicacion_estado || gps?.estado || '';
+            const ciudad = data.ubicacion_texto || gps?.ciudad || '';
+            if (estado && !data.ubicacion_estado) updateDoc(doc(db, userDoc.ref.path), { ubicacion_estado: estado }).catch(() => {});
+            setUbicacionLegible([ciudad, estado].filter(Boolean).join(', ') || 'Sin ubicación');
+            setEditUbicacion(ciudad);
+            setEditEstado(estado);
+            setUserData((u: any) => ({ ...u, ubicacion_estado: estado }));
+          });
+        }
 
         await cargarDirectorio();
 
@@ -202,7 +209,19 @@ export default function DashboardContratista() {
   // SI VENIMOS DE OTRA PANTALLA (P. EJ. LA BARRA DE MENSAJES), ABRIR LA PESTAÑA QUE PIDIÓ
   useEffect(() => {
     if (params.tab) { setPestañaActiva(params.tab as string); }
-  }, [params.tab]);
+    if (params.tab === 'Perfil' && params.abrir === 'resenas') setSeccionPerfil('Reseñas');
+  }, [params.tab, params.t]);
+
+  // SI SE TOCÓ UNA NOTIFICACIÓN: ABRIR LA BITÁCORA O LOS PAGOS DE ESA OBRA (CUANDO YA ESTÁN CARGADAS LAS OBRAS)
+  const avisoAtendidoRef = useRef(''); // PARA ABRIRLO UNA SOLA VEZ POR CADA TOQUE DE NOTIFICACIÓN
+  useEffect(() => {
+    if (!params.contrato || cargando || avisoAtendidoRef.current === params.t) return;
+    const contrato = candidatos.find(c => c.id === params.contrato);
+    if (!contrato) return;
+    avisoAtendidoRef.current = String(params.t);
+    if (params.abrir === 'bitacora') setContratoBitacora(contrato);
+    if (params.abrir === 'pagos') setIdContratoPagos(contrato.id);
+  }, [params.t, cargando, candidatos.length]);
 
 
   const seleccionarFoto = async (destino: 'perfil' | 'vacante' | 'queja') => {
@@ -553,7 +572,7 @@ export default function DashboardContratista() {
     if (lista.length === 0) return null;
     return (
       <View style={{ marginBottom: 10 }}>
-        <Text style={[styles.sectionTitle, { fontSize: 15 }]}>{titulo}</Text>
+        <Text style={[styles.sectionTitle, { fontSize: 17 }]}>{titulo}</Text>
         {lista.map(contrato => (
           <TarjetaContrato
             key={contrato.id}
@@ -592,30 +611,31 @@ export default function DashboardContratista() {
     ...(t.portafolio || []).filter((o: any) => o && typeof o === 'object').map((o: any) => o.foto_despues || o.foto_antes),
   ].filter(Boolean);
 
-  if (cargando) { return ( <View style={styles.loadingCenter}><ActivityIndicator size="large" color="#0D2340" /><Text style={styles.loadingText}>Cargando Panel Central...</Text></View> ); }
+  // BARRA DE ARRIBA FIJA CON EL TÍTULO Y LA CAMPANA: SIEMPRE A LA VISTA, DESDE EL PRIMER INSTANTE (AUNQUE ESTÉ CARGANDO)
+  const barra = (
+    <BarraSuperior
+      rol="Contratista"
+      onNuevos={cargarPerfil}
+      titulo={pestañaActiva === 'Perfil' ? 'Mi perfil' : TITULOS_PESTAÑA[pestañaActiva]?.titulo || 'PalanteMX'}
+      subtitulo={pestañaActiva === 'Perfil' ? 'Tus datos, reseñas y ajustes' : TITULOS_PESTAÑA[pestañaActiva]?.sub}
+    />
+  );
+
+  if (cargando) { return ( <SafeAreaView style={styles.container} edges={['top', 'bottom']}>{barra}<View style={styles.loadingCenter}><ActivityIndicator size="large" color="#0D2340" /><Text style={styles.loadingText}>Cargando Panel Central...</Text></View></SafeAreaView> ); }
 
   const solicitudesPendientes = candidatos.filter(c => c.estado === ESTADOS.PENDIENTE);
   const trabajadoresContratados = candidatos.filter(c => c.estado === ESTADOS.ACTIVA);
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+      {barra}
       <ScrollView style={{flex: 1}} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 20 }}
         refreshControl={<RefreshControl refreshing={refrescando} onRefresh={refrescar} colors={['#0D2340']} />}>
 
-        {/* ENCABEZADO: EL PERFIL COMPLETO SOLO EN LA PESTAÑA "PERFIL"; EN LAS DEMÁS, UNO CORTO CON SU TÍTULO */}
-        {pestañaActiva !== 'Perfil' ? (
-          <View style={styles.headerCorto}>
-            <View style={{flex: 1}}>
-              <Text style={styles.headerCortoTitulo}>{TITULOS_PESTAÑA[pestañaActiva]?.titulo}</Text>
-              <Text style={styles.headerCortoSub}>{TITULOS_PESTAÑA[pestañaActiva]?.sub}</Text>
-            </View>
-            <CampanaNotificaciones onNuevos={cargarPerfil} />
-          </View>
-        ) : (
+        {/* EN LA PESTAÑA "PERFIL" VA EL ENCABEZADO GRANDE CON LA FOTO; EN LAS DEMÁS BASTA LA BARRA DE ARRIBA */}
+        {pestañaActiva !== 'Perfil' ? null : (
         <>
-        <View style={styles.headerCover}>
-          <CampanaNotificaciones onNuevos={cargarPerfil} style={{position: 'absolute', top: 14, right: 16}} />
-        </View>
+        <View style={styles.headerCover} />
         <View style={styles.profileSection}>
           <TouchableOpacity style={styles.avatarContainer} onPress={() => seleccionarFoto('perfil')}>
             <Image source={{ uri: userData?.foto_rostro_url || 'https://via.placeholder.com/150' }} style={styles.avatar} />
@@ -667,7 +687,7 @@ export default function DashboardContratista() {
                 miEstado={userData?.ubicacion_estado}
                 dias={diasFiltro} onDias={setDiasFiltro}
               />
-              <Text style={{fontSize: 12, color: '#6B7280', marginBottom: 10}}>{directorioFiltrado.length} trabajador{directorioFiltrado.length === 1 ? '' : 'es'}</Text>
+              <Text style={{fontSize: 14, color: '#6B7280', marginBottom: 10}}>{directorioFiltrado.length} trabajador{directorioFiltrado.length === 1 ? '' : 'es'}</Text>
 
               {directorioFiltrado.length > 0 ? (
                 directorioFiltrado.map((trabajador, index) => (
@@ -772,7 +792,7 @@ export default function DashboardContratista() {
           {pestañaActiva === 'Obras' && (
             <View>
               <Text style={styles.sectionTitle}>Mis Obras Asignadas</Text>
-              <Text style={{fontSize: 12, color: '#6B7280', marginBottom: 15}}>A quién le asignaste cada obra, su bitácora diaria, y el cierre o la cancelación.</Text>
+              <Text style={{fontSize: 14, color: '#6B7280', marginBottom: 15}}>A quién le asignaste cada obra, su bitácora diaria, y el cierre o la cancelación.</Text>
 
               {seccionContratos('🏗️ Obras activas', [ESTADOS.ACTIVA])}
               {seccionContratos('🏁 Esperando que el trabajador confirme el fin', [ESTADOS.POR_CONFIRMAR_FIN], 'Marcaste la obra como terminada. Falta que el trabajador lo confirme.')}
@@ -793,7 +813,7 @@ export default function DashboardContratista() {
             <View>
               <Text style={styles.sectionTitle}>Nuevas Solicitudes</Text>
               {solicitudesPendientes.length > 0 && (
-                <Text style={{fontSize: 12, color: '#6B7280', marginBottom: 12}}>Ve al chat con el trabajador y platiquen los detalles. Cuando los dos estén de acuerdo, acepta el trato ahí mismo en el chat.</Text>
+                <Text style={{fontSize: 14, color: '#6B7280', marginBottom: 12}}>Ve al chat con el trabajador y platiquen los detalles. Cuando los dos estén de acuerdo, acepta el trato ahí mismo en el chat.</Text>
               )}
               {solicitudesPendientes.length > 0 ? (
                 solicitudesPendientes.map((cand, index) => (
@@ -864,7 +884,7 @@ export default function DashboardContratista() {
 
               {seccionPerfil === 'Ajustes' && (
               <View>
-              <CampanaNotificaciones variante="fila" onNuevos={cargarPerfil} />
+              <CampanaNotificaciones variante="fila" rol="Contratista" onNuevos={cargarPerfil} />
               <TouchableOpacity style={styles.settingsOption} onPress={() => setModalEditar(true)}><View style={styles.settingsRow}><Ionicons name="person-circle-outline" size={24} color="#0D2340" /><Text style={styles.settingsText}>Editar datos de la empresa</Text></View><Ionicons name="chevron-forward" size={20} color="#9CA3AF" /></TouchableOpacity>
               <TouchableOpacity style={styles.settingsOption} onPress={abrirModalEvaluar}><View style={styles.settingsRow}><Ionicons name="star-outline" size={24} color="#F59E0B" /><Text style={styles.settingsText}>Evaluar a un Trabajador contratado</Text></View><Ionicons name="chevron-forward" size={20} color="#9CA3AF" /></TouchableOpacity>
               <TouchableOpacity style={styles.settingsOption} onPress={abrirModalQueja}><View style={styles.settingsRow}><Ionicons name="shield-half-outline" size={24} color="#D32F2F" /><Text style={[styles.settingsText, {color: '#D32F2F'}]}>Levantar Reporte a Trabajador</Text></View><Ionicons name="chevron-forward" size={20} color="#9CA3AF" /></TouchableOpacity>
@@ -908,7 +928,7 @@ export default function DashboardContratista() {
         <View style={styles.modalBg}>
           <View style={[styles.modalContainer, {maxHeight: '90%'}]}>
             <Text style={styles.modalTitle}>Proponer una Obra</Text>
-            <Text style={{fontSize: 14, color: '#6B7280', marginBottom: 15}}>Elige la vacante que le quieres proponer a {trabajadorParaContratar?.nombre}. Le llegará como propuesta y se abrirá el chat para que platiquen; el trato se cierra cuando él acepte.</Text>
+            <Text style={{fontSize: 16, color: '#6B7280', marginBottom: 15}}>Elige la vacante que le quieres proponer a {trabajadorParaContratar?.nombre}. Le llegará como propuesta y se abrirá el chat para que platiquen; el trato se cierra cuando él acepte.</Text>
             
             <Text style={styles.modalLabel}>Mis Vacantes Activas</Text>
             <View style={styles.pickerBox}>
@@ -930,7 +950,7 @@ export default function DashboardContratista() {
       <Modal visible={!!vacanteExpandida} animationType="slide" transparent>
         <View style={styles.modalBgDark}>
           <View style={[styles.modalContainer, {maxHeight: '90%', padding: 0, overflow: 'hidden'}]}>
-            <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#0D2340', padding: 15}}><Text style={{color: '#FFF', fontWeight: 'bold', fontSize: 16}}>👁️ Así la ven los trabajadores</Text><TouchableOpacity onPress={() => setVacanteExpandida(null)}><Ionicons name="close" size={24} color="#FFF"/></TouchableOpacity></View>
+            <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#0D2340', padding: 15}}><Text style={{color: '#FFF', fontWeight: 'bold', fontSize: 17}}>👁️ Así la ven los trabajadores</Text><TouchableOpacity onPress={() => setVacanteExpandida(null)}><Ionicons name="close" size={24} color="#FFF"/></TouchableOpacity></View>
             <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{padding: 20}}>
               <View style={[styles.feedJobCard, {elevation: 0, borderWidth: 1, borderColor: '#E5E7EB'}]}>
                 <View style={styles.feedJobHeader}><Image source={{ uri: vacanteExpandida?.foto_contratista || 'https://via.placeholder.com/150' }} style={styles.feedContractorAvatar} /><View style={{flex: 1}}><Text style={styles.feedJobTitle}>{vacanteExpandida?.titulo}</Text><Text style={styles.feedJobCompany}>{vacanteExpandida?.contratista} • {vacanteExpandida?.empresa}</Text></View></View>
@@ -943,9 +963,9 @@ export default function DashboardContratista() {
                 <Text style={styles.feedJobDesc}>{vacanteExpandida?.descripcion}</Text>
               </View>
               <View style={styles.expandedProgressBox}>
-                <Text style={{fontSize: 12, fontWeight: 'bold', color: '#6B7280', marginBottom: 5}}>ESTADO DEL CUPO</Text>
+                <Text style={{fontSize: 14, fontWeight: 'bold', color: '#6B7280', marginBottom: 5}}>ESTADO DEL CUPO</Text>
                 <View style={[styles.progressBarBg, {height: 8}]}><View style={[styles.progressBarFill, {width: `${((vacanteExpandida?.cupo_actual || 0) / (vacanteExpandida?.cupo_total || 1)) * 100}%`}]} /></View>
-                <Text style={{fontSize: 14, fontWeight: 'bold', color: '#0D2340', marginTop: 5}}>{vacanteExpandida?.cupo_actual || 0} de {vacanteExpandida?.cupo_total || 1} contratados</Text>
+                <Text style={{fontSize: 16, fontWeight: 'bold', color: '#0D2340', marginTop: 5}}>{vacanteExpandida?.cupo_actual || 0} de {vacanteExpandida?.cupo_total || 1} contratados</Text>
               </View>
               <View style={{flexDirection: 'row', justifyContent: 'space-between', marginTop: 10}}>
                 {vacanteExpandida?.estado === 'Activa' && (<TouchableOpacity style={[styles.candBtnAccion, {backgroundColor: '#FEE2E2', borderColor: '#F87171'}]} onPress={() => cerrarVacante(vacanteExpandida.id)}><Ionicons name="power" size={20} color="#DC2626" /><Text style={[styles.candBtnText, {color: '#DC2626'}]}>Cerrar Oferta</Text></TouchableOpacity>)}
@@ -1003,7 +1023,7 @@ export default function DashboardContratista() {
                   {buscandoLugar ? <ActivityIndicator color="#0D2340" /> : <><Ionicons name="locate" size={18} color="#0D2340" /><Text style={styles.botonLugarTexto}>Estoy en la obra</Text></>}
                 </TouchableOpacity>
               </View>
-              <Text style={{fontSize: 11, color: '#6B7280', marginBottom: 10}}>Si no estás en la obra, elígela en el mapa. Con este punto comprobamos que el trabajador sí está ahí cuando llena su bitácora.</Text>
+              <Text style={{fontSize: 13, color: '#6B7280', marginBottom: 10}}>Si no estás en la obra, elígela en el mapa. Con este punto comprobamos que el trabajador sí está ahí cuando llena su bitácora.</Text>
               <View style={{flexDirection: 'row', justifyContent: 'space-between'}}>
                 <View style={{flex: 1, marginRight: 5}}><Text style={styles.modalLabel}>Pago ($, solo número)</Text><TextInput style={styles.modalInput} placeholder="Vacío = a convenir" keyboardType="numeric" value={vacantePago} onChangeText={t => setVacantePago(t.replace(/[^0-9]/g, ''))} /></View>
                 <View style={{flex: 1, marginLeft: 5}}>
@@ -1018,8 +1038,8 @@ export default function DashboardContratista() {
               <Text style={styles.modalLabel}>Horario / Días de Trabajo</Text><TextInput style={styles.modalInput} placeholder="Ej. Lunes a Sábado de 8 a 5" value={vacanteHorario} onChangeText={setVacanteHorario} />
               <Text style={styles.modalLabel}>Descripción del Trabajo (Sé específico)</Text><TextInput style={[styles.modalInput, {height: 80, textAlignVertical: 'top'}]} placeholder="Se requiere levantar muros..." multiline value={vacanteDesc} onChangeText={setVacanteDesc} />
               {/* CONDICIONES: QUEDAN COMO EVIDENCIA EN EL CONTRATO DE LO QUE PROMETISTE (MATERIAL, HERRAMIENTA...) */}
-              <Text style={[styles.modalLabel, {marginTop: 10, color: '#0D2340', fontSize: 14}]}>Condiciones de la obra</Text>
-              <Text style={{fontSize: 11, color: '#6B7280', marginBottom: 6}}>El trabajador las verá antes de aceptar y quedan guardadas en el contrato como lo que prometiste.</Text>
+              <Text style={[styles.modalLabel, {marginTop: 10, color: '#0D2340', fontSize: 16}]}>Condiciones de la obra</Text>
+              <Text style={{fontSize: 13, color: '#6B7280', marginBottom: 6}}>El trabajador las verá antes de aceptar y quedan guardadas en el contrato como lo que prometiste.</Text>
               <FormCondiciones valores={vacanteCondiciones} onCambio={setVacanteCondiciones} />
               <Text style={styles.modalLabel}>Foto de la Obra (Opcional pero Recomendado)</Text>
               <TouchableOpacity style={styles.uploadArea} onPress={() => seleccionarFoto('vacante')}>
@@ -1100,7 +1120,7 @@ export default function DashboardContratista() {
               <TouchableOpacity style={styles.verPortafolioBtn} onPress={() => { const trabajadorCompleto = candidatoSeleccionado.trabajador; setCandidatoSeleccionado(null); verPerfilTrabajador(trabajadorCompleto, true); }}>
                 <Ionicons name="images-outline" size={18} color="#0D2340" style={{marginRight: 8}}/><Text style={styles.verPortafolioText}>Ver Perfil Completo</Text>
               </TouchableOpacity>
-              <Text style={{fontSize: 12, color: '#6B7280', textAlign: 'center', marginTop: 14}}>El trato se acepta en el chat, después de platicar y ponerse de acuerdo.</Text>
+              <Text style={{fontSize: 14, color: '#6B7280', textAlign: 'center', marginTop: 14}}>El trato se acepta en el chat, después de platicar y ponerse de acuerdo.</Text>
               <View style={{flexDirection: 'row', justifyContent: 'space-between', marginTop: 12}}>
                 <TouchableOpacity style={[styles.candBtnAccion, {backgroundColor: '#FEE2E2', borderColor: '#F87171', flex: 1}]} onPress={() => responderSolicitud('rechazar')} disabled={procesando}><Ionicons name="close-circle-outline" size={20} color="#DC2626" /><Text style={[styles.candBtnText, {color: '#DC2626'}]}>Rechazar</Text></TouchableOpacity>
                 <TouchableOpacity style={[styles.candBtnAccion, {backgroundColor: '#00D06C', borderColor: '#00D06C', flex: 2}]} onPress={() => { const cand = candidatoSeleccionado; setCandidatoSeleccionado(null); irAlChatDeSolicitud(cand); }}><Ionicons name="chatbubbles" size={20} color="#FFF" /><Text style={[styles.candBtnText, {color: '#FFF'}]}>Ir al chat y aceptar</Text></TouchableOpacity>
@@ -1115,7 +1135,7 @@ export default function DashboardContratista() {
         <View style={styles.modalBgDark}>
           <SafeAreaView style={{flex: 1, backgroundColor: '#F3F4F6', borderRadius: 20, overflow: 'hidden'}}>
             <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#0D2340', padding: 15}}>
-              <View style={{flexDirection: 'row', alignItems: 'center'}}><Ionicons name="person-circle" size={28} color="#00D06C" style={{marginRight: 10}}/><Text style={{color: '#FFF', fontWeight: 'bold', fontSize: 16}}>Perfil de {perfilTrabajadorExpandido?.nombre}</Text></View>
+              <View style={{flexDirection: 'row', alignItems: 'center'}}><Ionicons name="person-circle" size={28} color="#00D06C" style={{marginRight: 10}}/><Text style={{color: '#FFF', fontWeight: 'bold', fontSize: 17}}>Perfil de {perfilTrabajadorExpandido?.nombre}</Text></View>
               <TouchableOpacity onPress={() => setPerfilTrabajadorExpandido(null)}><Ionicons name="close-circle" size={28} color="#FFF"/></TouchableOpacity>
             </View>
             <ScrollView contentContainerStyle={{padding: 16}}>
@@ -1129,7 +1149,7 @@ export default function DashboardContratista() {
 
               {!perfilTrabajadorExpandido?.yaContratado && (
                 <TouchableOpacity style={{backgroundColor: '#00D06C', flexDirection: 'row', justifyContent: 'center', alignItems: 'center', padding: 15, borderRadius: 12, marginTop: 20}} onPress={() => iniciarContratacionDirecta(perfilTrabajadorExpandido)}>
-                  <Ionicons name="briefcase" size={20} color="#FFF" style={{marginRight: 8}} /><Text style={{color: '#FFF', fontWeight: 'bold', fontSize: 16}}>Proponer obra y chatear</Text>
+                  <Ionicons name="briefcase" size={20} color="#FFF" style={{marginRight: 8}} /><Text style={{color: '#FFF', fontWeight: 'bold', fontSize: 17}}>Proponer obra y chatear</Text>
                 </TouchableOpacity>
               )}
             </ScrollView>
@@ -1215,63 +1235,63 @@ const styles = StyleSheet.create({
   lugarMarcado: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F0FDF4', borderWidth: 1, borderColor: '#BBF7D0', borderRadius: 10, padding: 10, marginBottom: 8 },
   lugarMarcadoTexto: { marginLeft: 8, color: '#166534', fontWeight: 'bold', flex: 1 },
   botonLugar: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#0D2340', borderRadius: 10, paddingVertical: 11 },
-  botonLugarTexto: { marginLeft: 6, color: '#0D2340', fontWeight: 'bold', fontSize: 13 },
+  botonLugarTexto: { marginLeft: 6, color: '#0D2340', fontWeight: 'bold', fontSize: 15 },
   headerCorto: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#0D2340', paddingHorizontal: 20, paddingTop: 18, paddingBottom: 22, borderBottomLeftRadius: 25, borderBottomRightRadius: 25 },
   headerCortoTitulo: { color: '#FFF', fontSize: 22, fontWeight: 'bold' },
-  headerCortoSub: { color: '#9CA3AF', fontSize: 12, marginTop: 2 },
+  headerCortoSub: { color: '#9CA3AF', fontSize: 14, marginTop: 2 },
   profileSection: { alignItems: 'center', marginTop: -60, paddingHorizontal: 20 },
   avatarContainer: { position: 'relative' },
   avatar: { width: 110, height: 110, borderRadius: 55, borderWidth: 4, borderColor: '#F3F4F6', backgroundColor: '#E5E7EB' },
   editAvatarBadge: { position: 'absolute', bottom: 10, left: -5, backgroundColor: '#0D2340', borderRadius: 15, padding: 5, borderWidth: 2, borderColor: '#FFF' },
   verifiedBadge: { position: 'absolute', bottom: 5, right: -5, borderRadius: 15, padding: 4, borderWidth: 2, borderColor: '#FFF' },
   userName: { fontSize: 22, fontWeight: 'bold', color: '#0D2340', marginTop: 10, textAlign: 'center' },
-  userRole: { fontSize: 11, color: '#00D06C', fontWeight: '900', letterSpacing: 1, marginTop: 4 },
-  empresaText: { fontSize: 15, color: '#6B7280', fontWeight: '600', marginTop: 2 },
+  userRole: { fontSize: 13, color: '#00D06C', fontWeight: '900', letterSpacing: 1, marginTop: 4 },
+  empresaText: { fontSize: 17, color: '#6B7280', fontWeight: '600', marginTop: 2 },
   locationBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#E5E7EB', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12, marginTop: 8 },
-  locationText: { fontSize: 12, color: '#0D2340', fontWeight: 'bold', marginLeft: 4 },
+  locationText: { fontSize: 14, color: '#0D2340', fontWeight: 'bold', marginLeft: 4 },
   
   dispDot: { width: 8, height: 8, borderRadius: 4 },
 
   statsRow: { flexDirection: 'row', backgroundColor: '#FFF', borderRadius: 16, paddingVertical: 15, paddingHorizontal: 15, marginTop: 20, elevation: 2, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 5, width: '100%', justifyContent: 'space-between' },
   statBox: { alignItems: 'center', flex: 1 },
-  statNumber: { fontSize: 18, fontWeight: 'bold', color: '#0D2340' },
-  statLabel: { fontSize: 11, color: '#9CA3AF', marginTop: 4, fontWeight: 'bold', textAlign: 'center' },
+  statNumber: { fontSize: 19, fontWeight: 'bold', color: '#0D2340' },
+  statLabel: { fontSize: 13, color: '#9CA3AF', marginTop: 4, fontWeight: 'bold', textAlign: 'center' },
   statDivider: { width: 1, backgroundColor: '#E5E7EB', height: '80%', alignSelf: 'center' },
   tabsContainer: { flexDirection: 'row', marginTop: 25, paddingHorizontal: 15 },
   tabButton: { flex: 1, paddingVertical: 10, alignItems: 'center', borderBottomWidth: 2, borderColor: 'transparent' },
   tabButtonActive: { borderColor: '#0D2340' },
-  tabText: { fontSize: 13, fontWeight: 'bold', color: '#9CA3AF' },
+  tabText: { fontSize: 15, fontWeight: 'bold', color: '#9CA3AF' },
   tabTextActive: { color: '#0D2340' },
   contentSection: { padding: 20, marginTop: 5 },
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 },
-  sectionTitle: { fontSize: 18, fontWeight: 'bold', color: '#0D2340', marginBottom: 15 },
+  sectionTitle: { fontSize: 19, fontWeight: 'bold', color: '#0D2340', marginBottom: 15 },
   addBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#0D2340', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8 },
-  addBtnText: { color: '#FFF', fontWeight: 'bold', fontSize: 12, marginLeft: 4 },
+  addBtnText: { color: '#FFF', fontWeight: 'bold', fontSize: 14, marginLeft: 4 },
   emptyState: { backgroundColor: '#FFF', borderRadius: 16, padding: 40, alignItems: 'center', borderStyle: 'dashed', borderWidth: 1, borderColor: '#D1D5DB' },
-  emptyStateTitle: { fontSize: 16, fontWeight: 'bold', color: '#0D2340', marginTop: 15, marginBottom: 5 },
-  emptyStateText: { fontSize: 13, color: '#6B7280', textAlign: 'center' },
+  emptyStateTitle: { fontSize: 17, fontWeight: 'bold', color: '#0D2340', marginTop: 15, marginBottom: 5 },
+  emptyStateText: { fontSize: 15, color: '#6B7280', textAlign: 'center' },
 
   workerFeedCard: { backgroundColor: '#FFF', borderRadius: 16, padding: 20, marginBottom: 20, elevation: 3, shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 6, position: 'relative' },
   workerFeedStatusBadge: { position: 'absolute', top: 15, right: 15, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, zIndex: 2 },
-  workerFeedStatusText: { color: '#FFF', fontSize: 10, fontWeight: 'bold', letterSpacing: 1 },
+  workerFeedStatusText: { color: '#FFF', fontSize: 13, fontWeight: 'bold', letterSpacing: 1 },
   workerFeedHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 15 },
   workerFeedAvatar: { width: 60, height: 60, borderRadius: 30, backgroundColor: '#E5E7EB', marginRight: 15, borderWidth: 2, borderColor: '#F3F4F6' },
-  workerFeedName: { fontSize: 18, fontWeight: 'bold', color: '#0D2340', marginBottom: 2 },
-  workerFeedOficio: { fontSize: 14, color: '#6B7280', fontWeight: '500' },
-  workerFeedPrecio: { fontSize: 13, color: '#00A355', fontWeight: 'bold', marginTop: 2 },
+  workerFeedName: { fontSize: 19, fontWeight: 'bold', color: '#0D2340', marginBottom: 2 },
+  workerFeedOficio: { fontSize: 16, color: '#6B7280', fontWeight: '500' },
+  workerFeedPrecio: { fontSize: 15, color: '#00A355', fontWeight: 'bold', marginTop: 2 },
   workerFeedDetailsGrid: { flexDirection: 'row', backgroundColor: '#F9FAFB', borderRadius: 10, padding: 12, marginBottom: 15, borderWidth: 1, borderColor: '#E5E7EB', justifyContent: 'space-around' },
   workerFeedDetailRow: { flexDirection: 'row', alignItems: 'center' },
-  workerFeedDetailText: { fontSize: 13, color: '#4B5563', marginLeft: 6 },
+  workerFeedDetailText: { fontSize: 15, color: '#4B5563', marginLeft: 6 },
   workerFeedPreviewRow: { flexDirection: 'row', marginBottom: 15, overflow: 'hidden' },
   workerFeedMiniImg: { width: 70, height: 70, borderRadius: 8, marginRight: 10, backgroundColor: '#E5E7EB' },
   workerFeedMiniImgOverlay: { width: 70, height: 70, borderRadius: 8, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', position: 'absolute', right: 0 },
-  workerFeedMiniImgText: { color: '#FFF', fontWeight: 'bold', fontSize: 16 },
+  workerFeedMiniImgText: { color: '#FFF', fontWeight: 'bold', fontSize: 17 },
   workerFeedBtn: { backgroundColor: '#00D06C', flexDirection: 'row', justifyContent: 'center', alignItems: 'center', paddingVertical: 12, borderRadius: 12 },
-  workerFeedBtnText: { color: '#FFF', fontSize: 14, fontWeight: 'bold' },
+  workerFeedBtnText: { color: '#FFF', fontSize: 16, fontWeight: 'bold' },
 
   filterChip: { backgroundColor: '#E5E7EB', paddingHorizontal: 15, paddingVertical: 8, borderRadius: 20, marginRight: 10 },
   filterChipActive: { backgroundColor: '#0D2340' },
-  filterChipText: { color: '#4B5563', fontSize: 13, fontWeight: 'bold' },
+  filterChipText: { color: '#4B5563', fontSize: 15, fontWeight: 'bold' },
   filterChipTextActive: { color: '#FFF' },
 
   catalogGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' },
@@ -1279,99 +1299,99 @@ const styles = StyleSheet.create({
   catalogImageWrapper: { position: 'relative', height: 120 },
   catalogImage: { width: '100%', height: '100%', backgroundColor: '#E5E7EB' },
   catalogStatusBadge: { position: 'absolute', top: 8, right: 8, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
-  catalogStatusText: { color: '#FFF', fontSize: 9, fontWeight: 'bold' },
+  catalogStatusText: { color: '#FFF', fontSize: 12, fontWeight: 'bold' },
   catalogInfo: { padding: 12 },
-  catalogTitle: { fontSize: 13, fontWeight: 'bold', color: '#0D2340', marginBottom: 4 },
-  catalogSubtitle: { fontSize: 11, color: '#6B7280', marginBottom: 8 },
+  catalogTitle: { fontSize: 15, fontWeight: 'bold', color: '#0D2340', marginBottom: 4 },
+  catalogSubtitle: { fontSize: 13, color: '#6B7280', marginBottom: 8 },
   progressBarBg: { height: 4, backgroundColor: '#E5E7EB', borderRadius: 2, overflow: 'hidden' },
   progressBarFill: { height: '100%', backgroundColor: '#00D06C' },
-  catalogCupoText: { fontSize: 10, color: '#0D2340', fontWeight: 'bold', marginTop: 4, textAlign: 'right' },
+  catalogCupoText: { fontSize: 13, color: '#0D2340', fontWeight: 'bold', marginTop: 4, textAlign: 'right' },
 
   candidatoCard: { backgroundColor: '#FFF', borderRadius: 16, padding: 15, marginBottom: 15, elevation: 2, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 4 },
   candidatoHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 15 },
   candidatoAvatar: { width: 50, height: 50, borderRadius: 25, marginRight: 12 },
-  candidatoName: { fontSize: 16, fontWeight: 'bold', color: '#0D2340' },
-  candidatoOficio: { fontSize: 13, color: '#6B7280', marginTop: 2 },
+  candidatoName: { fontSize: 17, fontWeight: 'bold', color: '#0D2340' },
+  candidatoOficio: { fontSize: 15, color: '#6B7280', marginTop: 2 },
   candidatoFooter: { borderTopWidth: 1, borderColor: '#F3F4F6', paddingTop: 10, flexDirection: 'row', justifyContent: 'space-between' },
-  candidatoFooterText: { fontSize: 11, color: '#4B5563', flex: 1 },
+  candidatoFooterText: { fontSize: 13, color: '#4B5563', flex: 1 },
   settingsOption: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#FFF', padding: 18, borderRadius: 12, marginBottom: 10, elevation: 1 },
   settingsRow: { flexDirection: 'row', alignItems: 'center' },
-  settingsText: { fontSize: 14, fontWeight: 'bold', color: '#1F2937', marginLeft: 15 },
+  settingsText: { fontSize: 16, fontWeight: 'bold', color: '#1F2937', marginLeft: 15 },
   bottomNavigation: { backgroundColor: '#FFF', flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', borderTopWidth: 1, borderColor: '#E5E7EB', elevation: 15, paddingVertical: 12 },
   navItem: { alignItems: 'center', justifyContent: 'center', flex: 1, position: 'relative' },
-  navText: { fontSize: 10, color: '#6B7280', marginTop: 4, fontWeight: '600' },
+  navText: { fontSize: 12, color: '#6B7280', marginTop: 4, fontWeight: '600' }, // 6 BOTONES: UN POCO MÁS CHICO PARA QUE QUEPAN
   
   badgeNotif: { position: 'absolute', top: -4, right: -8, backgroundColor: '#D32F2F', borderRadius: 10, minWidth: 18, height: 18, justifyContent: 'center', alignItems: 'center', borderWidth: 1.5, borderColor: '#FFF' },
-  badgeNotifText: { color: '#FFF', fontSize: 9, fontWeight: 'bold' },
+  badgeNotifText: { color: '#FFF', fontSize: 12, fontWeight: 'bold' },
 
   badge: { position: 'absolute', top: -5, right: '25%', backgroundColor: '#D32F2F', borderRadius: 10, minWidth: 18, height: 18, justifyContent: 'center', alignItems: 'center' },
-  badgeText: { color: '#FFF', fontSize: 10, fontWeight: 'bold' },
+  badgeText: { color: '#FFF', fontSize: 13, fontWeight: 'bold' },
   modalBg: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', padding: 15 },
   modalBgDark: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', padding: 15 },
   modalContainer: { backgroundColor: '#FFF', borderRadius: 20, padding: 25, elevation: 10 },
-  modalTitle: { fontSize: 20, fontWeight: 'bold', color: '#0D2340', marginBottom: 20 },
-  modalSubtitle: { fontSize: 14, color: '#6B7280', marginBottom: 15, fontStyle: 'italic' },
-  modalLabel: { fontSize: 12, fontWeight: 'bold', color: '#6B7280', marginBottom: 5, marginTop: 5 },
-  modalInput: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, padding: 12, marginBottom: 10, fontSize: 14, color: '#1F2937' },
+  modalTitle: { fontSize: 21, fontWeight: 'bold', color: '#0D2340', marginBottom: 20 },
+  modalSubtitle: { fontSize: 16, color: '#6B7280', marginBottom: 15, fontStyle: 'italic' },
+  modalLabel: { fontSize: 14, fontWeight: 'bold', color: '#6B7280', marginBottom: 5, marginTop: 5 },
+  modalInput: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, padding: 12, marginBottom: 10, fontSize: 16, color: '#1F2937' },
   pickerBox: { borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, backgroundColor: '#F9FAFB', marginBottom: 15, overflow: 'hidden' },
   uploadArea: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderStyle: 'dashed', borderRadius: 12, padding: 20, alignItems: 'center', marginBottom: 15 },
-  uploadText: { color: '#9CA3AF', marginTop: 5, fontSize: 12, fontWeight: 'bold', textAlign: 'center' },
+  uploadText: { color: '#9CA3AF', marginTop: 5, fontSize: 14, fontWeight: 'bold', textAlign: 'center' },
   uploadedImagePreview: { width: '100%', height: 120, borderRadius: 10 },
   modalBtnRow: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 10 },
   modalBtnCancel: { padding: 12, marginRight: 10 },
-  modalBtnTextC: { color: '#6B7280', fontWeight: 'bold', fontSize: 14 },
+  modalBtnTextC: { color: '#6B7280', fontWeight: 'bold', fontSize: 16 },
   modalBtnSave: { backgroundColor: '#00D06C', paddingVertical: 12, paddingHorizontal: 20, borderRadius: 10, minWidth: 100, alignItems: 'center' },
-  modalBtnTextS: { color: '#FFF', fontWeight: 'bold', fontSize: 14 },
+  modalBtnTextS: { color: '#FFF', fontWeight: 'bold', fontSize: 16 },
   candHeaderCover: { height: 100, backgroundColor: '#0D2340' },
   closeExpandedBtn: { position: 'absolute', top: 20, right: 20, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 20, padding: 8, zIndex: 10 },
   candAvatarBig: { width: 80, height: 80, borderRadius: 40, borderWidth: 4, borderColor: '#FFF', backgroundColor: '#E5E7EB' },
   candNameBig: { fontSize: 22, fontWeight: 'bold', color: '#0D2340', marginTop: 10 },
-  candOficioBig: { fontSize: 14, color: '#6B7280', fontWeight: '600' },
+  candOficioBig: { fontSize: 16, color: '#6B7280', fontWeight: '600' },
   candStatsRow: { flexDirection: 'row', marginTop: 15, backgroundColor: '#F9FAFB', padding: 10, borderRadius: 12, width: '80%', justifyContent: 'space-around' },
   candStatBox: { alignItems: 'center' },
-  candStatValue: { fontSize: 16, fontWeight: 'bold', color: '#0D2340' },
-  candStatLabel: { fontSize: 10, color: '#9CA3AF', fontWeight: 'bold' },
-  candInfoLabel: { fontSize: 11, color: '#9CA3AF', fontWeight: 'bold', textTransform: 'uppercase' },
-  candInfoValue: { fontSize: 15, color: '#1F2937', fontWeight: '600', marginBottom: 20 },
+  candStatValue: { fontSize: 17, fontWeight: 'bold', color: '#0D2340' },
+  candStatLabel: { fontSize: 13, color: '#9CA3AF', fontWeight: 'bold' },
+  candInfoLabel: { fontSize: 13, color: '#9CA3AF', fontWeight: 'bold', textTransform: 'uppercase' },
+  candInfoValue: { fontSize: 17, color: '#1F2937', fontWeight: '600', marginBottom: 20 },
   verPortafolioBtn: { backgroundColor: '#F3F4F6', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', padding: 12, borderRadius: 10, borderWidth: 1, borderColor: '#E5E7EB' },
-  verPortafolioText: { color: '#0D2340', fontWeight: 'bold', fontSize: 13 },
+  verPortafolioText: { color: '#0D2340', fontWeight: 'bold', fontSize: 15 },
   candBtnAccion: { flex: 1, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', padding: 14, borderRadius: 12, borderWidth: 1, marginHorizontal: 5 },
-  candBtnText: { fontWeight: 'bold', fontSize: 13, marginLeft: 5 },
+  candBtnText: { fontWeight: 'bold', fontSize: 15, marginLeft: 5 },
   feedJobCard: { backgroundColor: '#FFF', borderRadius: 16, padding: 20, marginBottom: 20 },
   feedJobHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 15 },
   feedContractorAvatar: { width: 50, height: 50, borderRadius: 25, backgroundColor: '#E5E7EB', marginRight: 15, borderWidth: 1, borderColor: '#D1D5DB' },
-  feedJobTitle: { fontSize: 16, fontWeight: 'bold', color: '#0D2340', marginBottom: 4 },
-  feedJobCompany: { fontSize: 13, color: '#6B7280', fontWeight: '500' },
+  feedJobTitle: { fontSize: 17, fontWeight: 'bold', color: '#0D2340', marginBottom: 4 },
+  feedJobCompany: { fontSize: 15, color: '#6B7280', fontWeight: '500' },
   feedJobImageContainer: { position: 'relative', marginBottom: 15 },
   feedJobImage: { width: '100%', height: 180, borderRadius: 12, backgroundColor: '#E5E7EB' },
   feedJobDetailsGrid: { backgroundColor: '#F9FAFB', borderRadius: 10, padding: 12, marginBottom: 15, borderWidth: 1, borderColor: '#E5E7EB' },
   feedJobDetailRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 6 },
-  feedJobDetailText: { fontSize: 13, color: '#4B5563', marginLeft: 8 },
-  feedJobDesc: { fontSize: 14, color: '#4B5563', lineHeight: 20, marginBottom: 15 },
+  feedJobDetailText: { fontSize: 15, color: '#4B5563', marginLeft: 8 },
+  feedJobDesc: { fontSize: 16, color: '#4B5563', lineHeight: 20, marginBottom: 15 },
   expandedProgressBox: { backgroundColor: '#F9FAFB', padding: 15, borderRadius: 12, borderWidth: 1, borderColor: '#E5E7EB', marginBottom: 15 },
   imageTag: { position: 'absolute', bottom: 10, left: 10, backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
-  imageTagText: { color: '#FFF', fontSize: 10, fontWeight: 'bold' },
+  imageTagText: { color: '#FFF', fontSize: 13, fontWeight: 'bold' },
 
   searchContainerInteligente: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 12, paddingHorizontal: 15 },
   searchIcon: { marginRight: 10 },
-  searchInput: { flex: 1, fontSize: 14, color: '#1F2937' },
+  searchInput: { flex: 1, fontSize: 16, color: '#1F2937' },
   searchResultsBox: { maxHeight: 150, backgroundColor: '#F9FAFB', borderRadius: 10, borderWidth: 1, borderColor: '#E5E7EB', marginBottom: 15, marginTop: 5, overflow: 'hidden' },
   searchResultItem: { flexDirection: 'row', alignItems: 'center', padding: 12, borderBottomWidth: 1, borderColor: '#E5E7EB' },
   searchResultAvatar: { width: 36, height: 36, borderRadius: 18, marginRight: 12, backgroundColor: '#E5E7EB' },
-  searchResultName: { fontSize: 14, fontWeight: 'bold', color: '#0D2340' },
-  searchResultRole: { fontSize: 11, color: '#6B7280', marginTop: 2 },
+  searchResultName: { fontSize: 16, fontWeight: 'bold', color: '#0D2340' },
+  searchResultRole: { fontSize: 13, color: '#6B7280', marginTop: 2 },
   selectedUserBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F0FDF4', padding: 12, borderRadius: 12, borderWidth: 1, borderColor: '#BBEFD3', marginBottom: 15, justifyContent: 'space-between' },
   selectedUserAvatar: { width: 44, height: 44, borderRadius: 22, marginRight: 12, backgroundColor: '#E5E7EB' },
-  selectedUserName: { fontSize: 15, fontWeight: 'bold', color: '#005530' },
-  selectedUserRole: { fontSize: 11, color: '#059669', marginTop: 2, fontWeight: 'bold' },
+  selectedUserName: { fontSize: 17, fontWeight: 'bold', color: '#005530' },
+  selectedUserRole: { fontSize: 13, color: '#059669', marginTop: 2, fontWeight: 'bold' },
 
   reviewCard: { backgroundColor: '#FFF', borderRadius: 12, padding: 15, marginBottom: 15, borderWidth: 1, borderColor: '#E5E7EB' },
   reviewHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
   reviewAvatar: { width: 40, height: 40, borderRadius: 20, marginRight: 10, backgroundColor: '#E5E7EB' },
-  reviewName: { fontSize: 14, fontWeight: 'bold', color: '#0D2340' },
-  reviewDate: { fontSize: 11, color: '#9CA3AF' },
+  reviewName: { fontSize: 16, fontWeight: 'bold', color: '#0D2340' },
+  reviewDate: { fontSize: 13, color: '#9CA3AF' },
   reviewStarsRow: { flexDirection: 'row', alignItems: 'center', marginTop: 2 },
-  reviewComment: { fontSize: 13, color: '#4B5563', fontStyle: 'italic', lineHeight: 18 },
+  reviewComment: { fontSize: 15, color: '#4B5563', fontStyle: 'italic', lineHeight: 18 },
 
   // ESTILOS DE LA BITÁCORA DIARIA Y EVIDENCIA
   trackerRow: { flexDirection: 'row', marginBottom: 15 },
@@ -1379,6 +1399,6 @@ const styles = StyleSheet.create({
   trackerDot: { width: 14, height: 14, borderRadius: 7, zIndex: 2 },
   trackerLine: { width: 2, height: '100%', backgroundColor: '#E5E7EB', position: 'absolute', top: 14, zIndex: 1 },
   trackerContent: { flex: 1, paddingBottom: 5 },
-  trackerDate: { fontSize: 13, fontWeight: 'bold', color: '#1F2937' },
-  trackerNote: { fontSize: 13, color: '#4B5563', marginTop: 4 },
+  trackerDate: { fontSize: 15, fontWeight: 'bold', color: '#1F2937' },
+  trackerNote: { fontSize: 15, color: '#4B5563', marginTop: 4 },
 });

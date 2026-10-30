@@ -38,9 +38,9 @@ export function VistaCondiciones({ condiciones, titulo = 'Lo que se acordó' }: 
 }
 
 const styles = StyleSheet.create({
-  etiqueta: { fontSize: 12, fontWeight: 'bold', color: '#6B7280', marginBottom: 5, marginTop: 5 },
+  etiqueta: { fontSize: 14, fontWeight: 'bold', color: '#6B7280', marginBottom: 5, marginTop: 5 },
   caja: { borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, backgroundColor: '#F9FAFB', marginBottom: 8, overflow: 'hidden' },
   vista: { backgroundColor: '#F0F9FF', borderRadius: 10, padding: 10, marginTop: 10, borderWidth: 1, borderColor: '#BAE6FD' },
-  vistaTitulo: { fontSize: 12, fontWeight: 'bold', color: '#075985', marginBottom: 4 },
-  vistaFila: { fontSize: 12, color: '#0C4A6E', marginTop: 2 },
+  vistaTitulo: { fontSize: 14, fontWeight: 'bold', color: '#075985', marginBottom: 4 },
+  vistaFila: { fontSize: 14, color: '#0C4A6E', marginTop: 2 },
 });

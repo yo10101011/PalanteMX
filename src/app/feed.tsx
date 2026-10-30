@@ -184,7 +184,7 @@ export default function FeedTrabajador() {
           <TouchableOpacity style={styles.headerIcon} onPress={onRefresh} disabled={refreshing}>
             {refreshing ? <ActivityIndicator size="small" color="#0D2340" /> : <Ionicons name="refresh" size={24} color="#0D2340" />}
           </TouchableOpacity>
-          <CampanaNotificaciones onNuevos={cargarDatos} colorIcono="#0D2340" style={{marginLeft: 10}} />
+          <CampanaNotificaciones rol="Trabajador" onNuevos={cargarDatos} colorIcono="#0D2340" style={{marginLeft: 10}} />
         </View>
       </View>
 
@@ -437,82 +437,82 @@ const styles = StyleSheet.create({
   
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingTop: 20, paddingBottom: 10, backgroundColor: '#F3F4F6' },
   headerTitle: { fontSize: 26, fontWeight: 'bold', color: '#0D2340' },
-  headerSubtitle: { fontSize: 13, color: '#6B7280', marginTop: 2 },
+  headerSubtitle: { fontSize: 15, color: '#6B7280', marginTop: 2 },
   headerIcon: { backgroundColor: '#FFF', padding: 10, borderRadius: 12, elevation: 2, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 3 },
 
   mainTabsContainer: { flexDirection: 'row', marginHorizontal: 20, marginTop: 10, backgroundColor: '#E5E7EB', borderRadius: 12, padding: 4 },
   mainTab: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 8 },
   mainTabActive: { backgroundColor: '#FFF', elevation: 2, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 3 },
-  mainTabText: { fontSize: 13, fontWeight: '600', color: '#6B7280' },
+  mainTabText: { fontSize: 15, fontWeight: '600', color: '#6B7280' },
   mainTabTextActive: { color: '#0D2340', fontWeight: 'bold' },
 
   searchContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF', marginHorizontal: 20, marginTop: 15, borderRadius: 12, paddingHorizontal: 15, borderWidth: 1, borderColor: '#E5E7EB' },
   searchIcon: { marginRight: 10 },
-  searchInput: { flex: 1, paddingVertical: 14, fontSize: 15, color: '#1F2937' },
+  searchInput: { flex: 1, paddingVertical: 14, fontSize: 17, color: '#1F2937' },
 
   filtersContainer: { paddingHorizontal: 20, marginTop: 15, paddingBottom: 10 },
   filterChip: { backgroundColor: '#FFF', paddingHorizontal: 18, paddingVertical: 8, borderRadius: 20, marginRight: 10, borderWidth: 1, borderColor: '#E5E7EB' },
   filterChipActive: { backgroundColor: '#0D2340', borderColor: '#0D2340' },
-  filterText: { fontSize: 13, color: '#6B7280', fontWeight: '600' },
+  filterText: { fontSize: 15, color: '#6B7280', fontWeight: '600' },
   filterTextActive: { color: '#FFF' },
 
   feedContainer: { paddingHorizontal: 20, paddingBottom: 100, paddingTop: 10 },
-  feedResultsText: { fontSize: 12, color: '#9CA3AF', fontWeight: 'bold', marginBottom: 15, textTransform: 'uppercase', letterSpacing: 1 },
+  feedResultsText: { fontSize: 14, color: '#9CA3AF', fontWeight: 'bold', marginBottom: 15, textTransform: 'uppercase', letterSpacing: 1 },
 
   jobCard: { backgroundColor: '#FFF', borderRadius: 16, padding: 20, marginBottom: 20, elevation: 3, shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 6 },
   jobHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 15 },
   contractorAvatar: { width: 50, height: 50, borderRadius: 25, backgroundColor: '#E5E7EB', marginRight: 15, borderWidth: 1, borderColor: '#D1D5DB' },
-  jobTitle: { fontSize: 16, fontWeight: 'bold', color: '#0D2340', marginBottom: 4 },
-  jobCompany: { fontSize: 13, color: '#6B7280', fontWeight: '500' },
+  jobTitle: { fontSize: 17, fontWeight: 'bold', color: '#0D2340', marginBottom: 4 },
+  jobCompany: { fontSize: 15, color: '#6B7280', fontWeight: '500' },
   puntoRojo: { position: 'absolute', top: -4, right: -8, backgroundColor: '#D32F2F', borderRadius: 10, minWidth: 18, height: 18, justifyContent: 'center', alignItems: 'center', borderWidth: 1.5, borderColor: '#FFF' },
-  puntoRojoTexto: { color: '#FFF', fontSize: 9, fontWeight: 'bold' },
-  jobRating: { fontSize: 12, color: '#B45309', fontWeight: 'bold', marginTop: 2 },
+  puntoRojoTexto: { color: '#FFF', fontSize: 12, fontWeight: 'bold' },
+  jobRating: { fontSize: 14, color: '#B45309', fontWeight: 'bold', marginTop: 2 },
   
   jobImageContainer: { position: 'relative', marginBottom: 15 },
   jobImage: { width: '100%', height: 180, borderRadius: 12, backgroundColor: '#E5E7EB' },
   jobImageTag: { position: 'absolute', bottom: 10, left: 10, backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
-  jobImageTagText: { color: '#FFF', fontSize: 10, fontWeight: 'bold' },
+  jobImageTagText: { color: '#FFF', fontSize: 13, fontWeight: 'bold' },
 
   jobDetailsGrid: { backgroundColor: '#F9FAFB', borderRadius: 10, padding: 12, marginBottom: 15, borderWidth: 1, borderColor: '#E5E7EB' },
   jobDetailRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 6 },
-  jobDetailText: { fontSize: 13, color: '#4B5563', marginLeft: 8 },
+  jobDetailText: { fontSize: 15, color: '#4B5563', marginLeft: 8 },
 
-  jobDesc: { fontSize: 14, color: '#4B5563', lineHeight: 20, marginBottom: 15 },
+  jobDesc: { fontSize: 16, color: '#4B5563', lineHeight: 20, marginBottom: 15 },
 
   tagsContainer: { flexDirection: 'row', flexWrap: 'wrap', marginBottom: 20 },
   tagBadge: { backgroundColor: '#F0FDF4', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, marginRight: 8, marginBottom: 8, borderWidth: 1, borderColor: '#BBEFD3' },
-  tagText: { color: '#005530', fontSize: 11, fontWeight: 'bold' },
+  tagText: { color: '#005530', fontSize: 13, fontWeight: 'bold' },
 
   applyBtn: { backgroundColor: '#00D06C', flexDirection: 'row', justifyContent: 'center', alignItems: 'center', paddingVertical: 14, borderRadius: 12 },
-  applyBtnText: { color: '#FFF', fontSize: 14, fontWeight: 'bold' },
+  applyBtnText: { color: '#FFF', fontSize: 16, fontWeight: 'bold' },
 
   postulacionCard: { backgroundColor: '#FFF', borderRadius: 16, padding: 20, marginBottom: 15, borderWidth: 1, borderColor: '#E5E7EB' },
   postulacionHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
   postulacionAvatar: { width: 40, height: 40, borderRadius: 20, marginRight: 12, backgroundColor: '#E5E7EB' },
-  postulacionTitle: { fontSize: 15, fontWeight: 'bold', color: '#0D2340' },
-  postulacionCompany: { fontSize: 12, color: '#6B7280' },
+  postulacionTitle: { fontSize: 17, fontWeight: 'bold', color: '#0D2340' },
+  postulacionCompany: { fontSize: 14, color: '#6B7280' },
   postulacionInfoRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 15 },
-  postulacionInfoText: { fontSize: 12, color: '#6B7280', marginLeft: 4 },
-  dotSeparator: { marginHorizontal: 8, color: '#D1D5DB', fontSize: 12 },
+  postulacionInfoText: { fontSize: 14, color: '#6B7280', marginLeft: 4 },
+  dotSeparator: { marginHorizontal: 8, color: '#D1D5DB', fontSize: 14 },
   
   estadoContainer: { backgroundColor: '#F9FAFB', borderRadius: 10, padding: 12 },
   estadoLinea: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 },
-  estadoLabel: { fontSize: 12, color: '#4B5563', fontWeight: 'bold' },
+  estadoLabel: { fontSize: 14, color: '#4B5563', fontWeight: 'bold' },
   estadoBadge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
-  estadoBadgeText: { color: '#FFF', fontSize: 10, fontWeight: 'bold' },
-  fechaPostulacion: { fontSize: 11, color: '#9CA3AF' },
+  estadoBadgeText: { color: '#FFF', fontSize: 13, fontWeight: 'bold' },
+  fechaPostulacion: { fontSize: 13, color: '#9CA3AF' },
   
   accionesPostulacion: { flexDirection: 'row', marginTop: 10, marginHorizontal: -4 },
   botonPostulacion: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderRadius: 10, paddingVertical: 9, marginHorizontal: 4 },
-  botonPostulacionTexto: { fontSize: 12, fontWeight: 'bold', marginLeft: 5 },
+  botonPostulacionTexto: { fontSize: 14, fontWeight: 'bold', marginLeft: 5 },
   mensajeAceptado: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F0FDF4', padding: 10, borderRadius: 8, marginTop: 10, borderWidth: 1, borderColor: '#BBEFD3' },
-  mensajeAceptadoText: { flex: 1, fontSize: 11, color: '#005530', fontWeight: 'bold' },
+  mensajeAceptadoText: { flex: 1, fontSize: 13, color: '#005530', fontWeight: 'bold' },
 
   emptyState: { alignItems: 'center', marginTop: 50, paddingHorizontal: 30 },
-  emptyStateTitle: { fontSize: 18, fontWeight: 'bold', color: '#0D2340', marginTop: 15, marginBottom: 5 },
-  emptyStateText: { fontSize: 14, color: '#6B7280', textAlign: 'center' },
+  emptyStateTitle: { fontSize: 19, fontWeight: 'bold', color: '#0D2340', marginTop: 15, marginBottom: 5 },
+  emptyStateText: { fontSize: 16, color: '#6B7280', textAlign: 'center' },
 
   bottomNavigation: { backgroundColor: '#FFF', flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', borderTopWidth: 1, borderColor: '#E5E7EB', elevation: 15, shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 5, paddingVertical: 12 },
   navItem: { alignItems: 'center', justifyContent: 'center', flex: 1, position: 'relative' },
-  navText: { fontSize: 10, color: '#6B7280', marginTop: 4, fontWeight: '600' }
+  navText: { fontSize: 13, color: '#6B7280', marginTop: 4, fontWeight: '600' }
 });

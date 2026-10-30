@@ -3,7 +3,7 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { Picker } from '@react-native-picker/picker';
 import * as ImagePicker from 'expo-image-picker';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Dimensions, Image, Modal, Platform, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -17,6 +17,7 @@ import { eliminarCuentaEnServidor } from '@/lib/cuenta';
 import { abrirChatCon, accionContrato, AccionContrato, ESTADOS, MENSAJES_INICIALES, pagosPorConfirmar, sePuedeCalificar, tieneReporteAbierto } from '@/lib/contratos';
 import { useMensajesSinLeer } from '@/lib/mensajes';
 import { DIAS_SEMANA, PERIODOS_PAGO, textoDias, textoPrecio, ubicacionDesdeGPS } from '@/lib/ubicacion';
+import { BarraSuperior } from '@/components/barra-superior';
 import { CampanaNotificaciones } from '@/components/campana-notificaciones';
 import { ModalPagos } from '@/components/modal-pagos';
 import { SelectorOficio } from '@/components/selector-oficio';
@@ -93,7 +94,18 @@ export default function DashboardTrabajador() {
   // MAGIA: SI VENIMOS DE OTRA PANTALLA, ABRIR LA PESTAÑA CORRECTA
   useEffect(() => {
     if (params.tab) { setPestañaActiva(params.tab as string); }
-  }, [params.tab]);
+  }, [params.tab, params.t]);
+
+  // SI SE TOCÓ UNA NOTIFICACIÓN: ABRIR LA BITÁCORA O LOS PAGOS DE ESA OBRA (CUANDO YA ESTÁN CARGADAS LAS OBRAS)
+  const avisoAtendidoRef = useRef(''); // PARA ABRIRLO UNA SOLA VEZ POR CADA TOQUE DE NOTIFICACIÓN
+  useEffect(() => {
+    if (!params.contrato || cargando || avisoAtendidoRef.current === params.t) return;
+    const contrato = contratos.find(c => c.id === params.contrato);
+    if (!contrato) return;
+    avisoAtendidoRef.current = String(params.t);
+    if (params.abrir === 'bitacora') setContratoBitacora(contrato);
+    if (params.abrir === 'pagos') setIdContratoPagos(contrato.id);
+  }, [params.t, cargando, contratos.length]);
 
   const cargarPerfil = async () => {
     try {
@@ -114,15 +126,21 @@ export default function DashboardTrabajador() {
         setEditPeriodo(data.tarifa_periodo || 'por día');
         setEditDias(Array.isArray(data.dias_disponibles) ? data.dias_disponibles : []);
 
-        // CIUDAD Y ESTADO: LOS QUE EL USUARIO ESCRIBIÓ, O LOS DEL GPS DEL REGISTRO. EL ESTADO SE GUARDA EN EL PERFIL
-        // (ubicacion_estado) PORQUE CON ÉL LOS CONTRATISTAS FILTRAN A LOS TRABAJADORES.
-        const gps = await ubicacionDesdeGPS(data.ubicacion);
-        const estado = data.ubicacion_estado || gps?.estado || '';
-        if (estado && !data.ubicacion_estado) updateDoc(doc(db, userDoc.ref.path), { ubicacion_estado: estado }).catch(() => {});
-        const ciudad = data.ubicacion_texto || gps?.ciudad || '';
-        setUbicacionLegible([ciudad, estado].filter(Boolean).join(', ') || 'Sin ubicación');
-        setEditUbicacion(ciudad);
-        setEditEstado(estado);
+        // CIUDAD Y ESTADO: LOS QUE EL USUARIO ELIGIÓ. SI NO HAY, SE CALCULAN DEL GPS DEL REGISTRO SIN DETENER LA PANTALLA
+        // (SE GUARDA ubicacion_estado PORQUE CON ÉL LOS CONTRATISTAS FILTRAN A LOS TRABAJADORES)
+        setUbicacionLegible([data.ubicacion_texto, data.ubicacion_estado].filter(Boolean).join(', ') || 'Sin ubicación');
+        setEditUbicacion(data.ubicacion_texto || '');
+        setEditEstado(data.ubicacion_estado || '');
+        if (!data.ubicacion_estado || !data.ubicacion_texto) {
+          ubicacionDesdeGPS(data.ubicacion).then(gps => {
+            const estado = data.ubicacion_estado || gps?.estado || '';
+            const ciudad = data.ubicacion_texto || gps?.ciudad || '';
+            if (estado && !data.ubicacion_estado) updateDoc(doc(db, userDoc.ref.path), { ubicacion_estado: estado }).catch(() => {});
+            setUbicacionLegible([ciudad, estado].filter(Boolean).join(', ') || 'Sin ubicación');
+            setEditUbicacion(ciudad);
+            setEditEstado(estado);
+          });
+        }
 
         // TODOS MIS CONTRATOS, CON LOS DATOS DE CADA CONTRATISTA (UNA SOLA LECTURA POR CONTRATISTA)
         const snapContratos = await getDocs(query(collection(db, 'Postulaciones'), where('id_trabajador', '==', usuarioActual.uid)));
@@ -402,7 +420,17 @@ export default function DashboardTrabajador() {
     );
   };
 
-  if (cargando) { return ( <View style={styles.loadingCenter}><ActivityIndicator size="large" color="#00D06C" /><Text style={styles.loadingText}>Cargando perfil...</Text></View> ); }
+  // LA BARRA DE ARRIBA (CON LA CAMPANA) APARECE DESDE EL PRIMER INSTANTE, AUNQUE EL PERFIL TODAVÍA ESTÉ CARGANDO
+  const barra = (
+    <BarraSuperior
+      rol="Trabajador"
+      onNuevos={cargarPerfil}
+      titulo={pestañaActiva === 'Mis Trabajos' ? 'Mis obras' : 'Mi perfil'}
+      subtitulo={pestañaActiva === 'Mis Trabajos' ? 'Propuestas, obras activas, bitácora y pagos' : `${userData?.nombre || ''} ${userData?.apellidos || ''}`.trim()}
+    />
+  );
+
+  if (cargando) { return ( <SafeAreaView style={styles.container} edges={['top', 'bottom']}>{barra}<View style={styles.loadingCenter}><ActivityIndicator size="large" color="#00D06C" /><Text style={styles.loadingText}>Cargando perfil...</Text></View></SafeAreaView> ); }
 
   const portafolio = (userData?.portafolio || []).filter((obra: any) => obra && typeof obra === 'object');
   const obrasEnProceso = portafolio.filter((obra: any) => obra.estado === 'En Proceso');
@@ -410,8 +438,8 @@ export default function DashboardTrabajador() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-      
-      <ScrollView 
+      {barra}
+      <ScrollView
         style={{flex: 1}} 
         showsVerticalScrollIndicator={false} 
         contentContainerStyle={{ paddingBottom: 20 }}
@@ -420,9 +448,7 @@ export default function DashboardTrabajador() {
         
         {(pestañaActiva === 'Portafolio' || pestañaActiva === 'Reseñas' || pestañaActiva === 'Ajustes') && (
           <View>
-            <View style={styles.headerCover}>
-              <CampanaNotificaciones onNuevos={cargarPerfil} style={{position: 'absolute', top: 14, right: 16}} />
-            </View>
+            <View style={styles.headerCover} />
             <View style={styles.profileSection}>
               <TouchableOpacity style={styles.avatarContainer} onPress={() => seleccionarFoto('perfil')}>
                 <Image source={{ uri: userData?.foto_rostro_url || 'https://via.placeholder.com/150' }} style={styles.avatar} />
@@ -434,7 +460,7 @@ export default function DashboardTrabajador() {
               <Text style={styles.userRole}>{userData?.oficio_principal || userData?.rol_usuario}</Text>
               <TouchableOpacity onPress={() => setModalEditar(true)}>
                 <Text style={{color: '#00A355', fontWeight: 'bold', marginTop: 4, textAlign: 'center'}}>{userData?.tarifa_monto ? textoPrecio(userData.tarifa_monto, userData.tarifa_periodo) : 'Pon tu precio para aparecer en los filtros ✏️'}</Text>
-                <Text style={{color: '#0D2340', fontSize: 12, marginTop: 2, textAlign: 'center'}}>📅 {userData?.dias_disponibles?.length ? `Disponible: ${textoDias(userData.dias_disponibles)}` : 'Marca los días que puedes trabajar ✏️'}</Text>
+                <Text style={{color: '#0D2340', fontSize: 14, marginTop: 2, textAlign: 'center'}}>📅 {userData?.dias_disponibles?.length ? `Disponible: ${textoDias(userData.dias_disponibles)}` : 'Marca los días que puedes trabajar ✏️'}</Text>
               </TouchableOpacity>
               
               <TouchableOpacity style={[styles.dispBadge, disponibilidad === 'Disponible' ? styles.dispDisponible : styles.dispOcupado]} onPress={toggleDisponibilidad} disabled={procesando}>
@@ -510,7 +536,7 @@ export default function DashboardTrabajador() {
                               <View style={styles.projectDetailsRow}><Ionicons name="location-outline" size={12} color="#6B7280" /><Text style={styles.projectSubtitle}>{trabajo.lugar}</Text></View>
                               <View style={[styles.projectDetailsRow, {marginTop: -5, marginBottom: 10}]}><Ionicons name="calendar-outline" size={12} color="#6B7280" /><Text style={styles.projectSubtitle}>Inició: {trabajo.fecha_inicio}</Text></View>
                               <Text style={styles.projectDesc} numberOfLines={2}><Text style={{fontWeight: 'bold'}}>Avance General:</Text> {trabajo.descripcion}</Text>
-                              <Text style={{color: '#00D06C', fontSize: 11, marginTop: 5, fontWeight: 'bold'}}>👁️ Toca la imagen o el título para expandir</Text>
+                              <Text style={{color: '#00D06C', fontSize: 13, marginTop: 5, fontWeight: 'bold'}}>👁️ Toca la imagen o el título para expandir</Text>
                             </View>
                           </TouchableOpacity>
                           <View style={{paddingHorizontal: 15, paddingBottom: 15}}>
@@ -539,7 +565,7 @@ export default function DashboardTrabajador() {
                               <View style={styles.projectDetailsRow}><Ionicons name="location-outline" size={12} color="#6B7280" /><Text style={styles.projectSubtitle}>{trabajo.lugar}</Text>{trabajo.precio !== 'No especificado' && (<><Text style={styles.dotSeparator}>•</Text><Ionicons name="cash-outline" size={12} color="#00D06C" /><Text style={[styles.projectSubtitle, {color: '#00D06C', fontWeight: 'bold'}]}>${trabajo.precio}</Text></>)}</View>
                               <View style={[styles.projectDetailsRow, {marginTop: -5, marginBottom: 10}]}><Ionicons name="calendar-outline" size={12} color="#6B7280" /><Text style={styles.projectSubtitle}>Trabajado del: {trabajo.fecha_inicio} al {trabajo.fecha_fin}</Text></View>
                               <Text style={styles.projectDesc} numberOfLines={2}><Text style={{fontWeight: 'bold', color: '#0D2340'}}>Obra:</Text> {trabajo.descripcion}</Text>
-                              <Text style={{color: '#00D06C', fontSize: 11, marginTop: 5, fontWeight: 'bold'}}>👁️ Toca para ver detalles expandidos</Text>
+                              <Text style={{color: '#00D06C', fontSize: 13, marginTop: 5, fontWeight: 'bold'}}>👁️ Toca para ver detalles expandidos</Text>
                             </View>
                           </TouchableOpacity>
                         </View>
@@ -587,7 +613,7 @@ export default function DashboardTrabajador() {
               {pestañaActiva === 'Ajustes' && (
                 <View>
                   <Text style={styles.sectionTitle}>Configuración y Soporte</Text>
-                  <CampanaNotificaciones variante="fila" onNuevos={cargarPerfil} />
+                  <CampanaNotificaciones variante="fila" rol="Trabajador" onNuevos={cargarPerfil} />
 
                   <TouchableOpacity style={styles.settingsOption} onPress={onRefresh}>
                     <View style={styles.settingsRow}><Ionicons name="refresh-outline" size={24} color="#00D06C" /><Text style={[styles.settingsText, {color: '#00D06C'}]}>Refrescar Base de Datos</Text></View>
@@ -606,18 +632,8 @@ export default function DashboardTrabajador() {
 
         {pestañaActiva === 'Mis Trabajos' && (
           <View style={{flex: 1}}>
-            <View style={styles.headerDark}>
-              <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center'}}>
-                <Text style={styles.headerDarkTitle}>Mis Obras</Text>
-                <View style={{flexDirection: 'row', alignItems: 'center'}}>
-                  {refreshing ? <ActivityIndicator color="#00D06C" /> : <TouchableOpacity onPress={onRefresh}><Ionicons name="refresh" size={24} color="#00D06C" /></TouchableOpacity>}
-                  <CampanaNotificaciones onNuevos={cargarPerfil} style={{marginLeft: 16}} />
-                </View>
-              </View>
-              <Text style={styles.headerDarkSub}>Acepta propuestas, lleva tu bitácora y cierra tus obras con el contratista.</Text>
-            </View>
-
             <View style={styles.contentSection}>
+              <Text style={{fontSize: 15, color: '#6B7280', marginBottom: 12}}>Desliza hacia abajo para actualizar.</Text>
               {seccionContratos('📩 Propuestas para ti', [ESTADOS.PROPUESTA], 'Un contratista te propone esta obra. Ve al chat, platiquen los detalles y, si están de acuerdo, acepta el trato ahí mismo.')}
               {seccionContratos('🏗️ Obras activas', [ESTADOS.ACTIVA])}
               {seccionContratos('🏁 Por confirmar que terminó', [ESTADOS.POR_CONFIRMAR_FIN], 'El contratista marcó la obra como terminada. ¿Confirmas?')}
@@ -711,7 +727,7 @@ export default function DashboardTrabajador() {
                 </View>
 
                 <TouchableOpacity style={{flexDirection: 'row', justifyContent: 'center', alignItems: 'center', backgroundColor: '#FEE2E2', padding: 15, borderRadius: 12, marginTop: 20, borderWidth: 1, borderColor: '#FCA5A5'}} onPress={() => eliminarObraPortafolio(obraExpandida.id_obra)} disabled={procesando}>
-                  <Ionicons name="trash" size={20} color="#DC2626" style={{marginRight: 8}}/><Text style={{color: '#DC2626', fontWeight: 'bold', fontSize: 14}}>Eliminar esta Obra del Portafolio</Text>
+                  <Ionicons name="trash" size={20} color="#DC2626" style={{marginRight: 8}}/><Text style={{color: '#DC2626', fontWeight: 'bold', fontSize: 16}}>Eliminar esta Obra del Portafolio</Text>
                 </TouchableOpacity>
 
               </View>
@@ -745,7 +761,7 @@ export default function DashboardTrabajador() {
                   return (
                     <TouchableOpacity key={d} onPress={() => setEditDias(marcado ? editDias.filter(x => x !== d) : [...editDias, d])}
                       style={{borderWidth: 1, borderColor: marcado ? '#00A355' : '#D1D5DB', backgroundColor: marcado ? '#00A355' : '#FFF', borderRadius: 10, paddingHorizontal: 11, paddingVertical: 8, marginRight: 6, marginBottom: 6}}>
-                      <Text style={{fontWeight: 'bold', fontSize: 12, color: marcado ? '#FFF' : '#4B5563'}}>{d}</Text>
+                      <Text style={{fontWeight: 'bold', fontSize: 14, color: marcado ? '#FFF' : '#4B5563'}}>{d}</Text>
                     </TouchableOpacity>
                   );
                 })}
@@ -789,10 +805,10 @@ export default function DashboardTrabajador() {
               <Text style={styles.modalLabel}>Evidencias Fotográficas</Text>
               <View style={{flexDirection: 'row', justifyContent: 'space-between', marginBottom: 20}}>
                 <TouchableOpacity style={[styles.uploadArea, {flex: 1, marginRight: 5, padding: 10}]} onPress={() => seleccionarFoto('antes')}>
-                  {fotoAntes ? <Image source={{uri: fotoAntes}} style={styles.uploadedImagePreview} /> : <><Ionicons name="camera-outline" size={24} color="#9CA3AF"/><Text style={[styles.uploadText, {fontSize: 10}]}>Foto de Inicio</Text></>}
+                  {fotoAntes ? <Image source={{uri: fotoAntes}} style={styles.uploadedImagePreview} /> : <><Ionicons name="camera-outline" size={24} color="#9CA3AF"/><Text style={[styles.uploadText, {fontSize: 13}]}>Foto de Inicio</Text></>}
                 </TouchableOpacity>
                 <TouchableOpacity style={[styles.uploadArea, {flex: 1, marginLeft: 5, padding: 10}]} onPress={() => seleccionarFoto('despues')}>
-                  {fotoDespues ? <Image source={{uri: fotoDespues}} style={styles.uploadedImagePreview} /> : <><Ionicons name="checkmark-circle-outline" size={24} color="#9CA3AF"/><Text style={[styles.uploadText, {fontSize: 10}]}>Foto {trabajoEstado === 'En Proceso' ? 'Actual' : 'Final'}</Text></>}
+                  {fotoDespues ? <Image source={{uri: fotoDespues}} style={styles.uploadedImagePreview} /> : <><Ionicons name="checkmark-circle-outline" size={24} color="#9CA3AF"/><Text style={[styles.uploadText, {fontSize: 13}]}>Foto {trabajoEstado === 'En Proceso' ? 'Actual' : 'Final'}</Text></>}
                 </TouchableOpacity>
               </View>
               <View style={styles.modalBtnRow}>
@@ -930,7 +946,7 @@ const styles = StyleSheet.create({
   
   headerDark: { backgroundColor: '#0D2340', padding: 20, paddingTop: 30, borderBottomLeftRadius: 20, borderBottomRightRadius: 20 },
   headerDarkTitle: { color: '#FFF', fontSize: 24, fontWeight: 'bold' },
-  headerDarkSub: { color: '#9CA3AF', fontSize: 13, marginTop: 5 },
+  headerDarkSub: { color: '#9CA3AF', fontSize: 15, marginTop: 5 },
 
   headerCover: { height: 120, backgroundColor: '#0D2340', borderBottomLeftRadius: 20, borderBottomRightRadius: 20 },
   profileSection: { alignItems: 'center', marginTop: -50, paddingHorizontal: 20 },
@@ -939,137 +955,137 @@ const styles = StyleSheet.create({
   editAvatarBadge: { position: 'absolute', bottom: 10, left: -5, backgroundColor: '#0D2340', borderRadius: 15, padding: 5, borderWidth: 2, borderColor: '#FFF' },
   verifiedBadge: { position: 'absolute', bottom: 5, right: -5, backgroundColor: '#FFF', borderRadius: 12, padding: 2 },
   userName: { fontSize: 22, fontWeight: 'bold', color: '#0D2340', marginTop: 10, textAlign: 'center' },
-  userRole: { fontSize: 14, color: '#6B7280', fontWeight: '600', marginTop: 2 },
+  userRole: { fontSize: 16, color: '#6B7280', fontWeight: '600', marginTop: 2 },
   locationBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#E5E7EB', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12, marginTop: 8 },
-  locationText: { fontSize: 12, color: '#0D2340', fontWeight: 'bold', marginLeft: 4 },
+  locationText: { fontSize: 14, color: '#0D2340', fontWeight: 'bold', marginLeft: 4 },
   
   contactBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#25D366', paddingHorizontal: 15, paddingVertical: 8, borderRadius: 20, marginTop: 12, elevation: 3, shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 3 },
-  contactText: { fontSize: 14, color: '#FFF', fontWeight: 'bold', marginLeft: 6 },
+  contactText: { fontSize: 16, color: '#FFF', fontWeight: 'bold', marginLeft: 6 },
 
   dispBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 15, paddingVertical: 6, borderRadius: 20, marginTop: 10, elevation: 2 },
   dispDisponible: { backgroundColor: '#00D06C' },
   dispOcupado: { backgroundColor: '#F59E0B' },
   dispDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#FFF', marginRight: 6 },
-  dispText: { color: '#FFF', fontSize: 11, fontWeight: 'bold', letterSpacing: 1 },
+  dispText: { color: '#FFF', fontSize: 13, fontWeight: 'bold', letterSpacing: 1 },
 
   statsRow: { flexDirection: 'row', backgroundColor: '#FFF', borderRadius: 16, paddingVertical: 15, paddingHorizontal: 15, marginTop: 20, elevation: 2, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 5, width: '100%', justifyContent: 'space-between' },
   statBox: { alignItems: 'center', flex: 1 },
-  statNumber: { fontSize: 16, fontWeight: 'bold', color: '#0D2340' },
-  statLabel: { fontSize: 10, color: '#9CA3AF', marginTop: 2, fontWeight: 'bold', textAlign: 'center' },
+  statNumber: { fontSize: 17, fontWeight: 'bold', color: '#0D2340' },
+  statLabel: { fontSize: 13, color: '#9CA3AF', marginTop: 2, fontWeight: 'bold', textAlign: 'center' },
   statDivider: { width: 1, backgroundColor: '#E5E7EB', height: '80%', alignSelf: 'center' },
   tabsContainer: { flexDirection: 'row', marginTop: 25, paddingHorizontal: 15 },
   tabButton: { flex: 1, paddingVertical: 10, alignItems: 'center', borderBottomWidth: 2, borderColor: 'transparent' },
   tabButtonActive: { borderColor: '#00D06C' },
-  tabText: { fontSize: 12, fontWeight: 'bold', color: '#9CA3AF' },
+  tabText: { fontSize: 14, fontWeight: 'bold', color: '#9CA3AF' },
   tabTextActive: { color: '#0D2340' },
   contentSection: { padding: 20, marginTop: 5 },
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 },
-  sectionTitle: { fontSize: 18, fontWeight: 'bold', color: '#0D2340', marginBottom: 15 },
+  sectionTitle: { fontSize: 19, fontWeight: 'bold', color: '#0D2340', marginBottom: 15 },
   addBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#00D06C', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8 },
-  addBtnText: { color: '#FFF', fontWeight: 'bold', fontSize: 12, marginLeft: 4 },
+  addBtnText: { color: '#FFF', fontWeight: 'bold', fontSize: 14, marginLeft: 4 },
   emptyState: { backgroundColor: '#FFF', borderRadius: 16, padding: 40, alignItems: 'center', borderStyle: 'dashed', borderWidth: 1, borderColor: '#D1D5DB' },
-  emptyStateText: { fontSize: 14, fontWeight: 'bold', color: '#6B7280', marginTop: 15, textAlign: 'center' },
-  emptyStateSub: { fontSize: 12, color: '#9CA3AF', marginTop: 5, textAlign: 'center' },
+  emptyStateText: { fontSize: 16, fontWeight: 'bold', color: '#6B7280', marginTop: 15, textAlign: 'center' },
+  emptyStateSub: { fontSize: 14, color: '#9CA3AF', marginTop: 5, textAlign: 'center' },
   
-  categoryTitle: { fontSize: 16, fontWeight: 'bold', color: '#0D2340', marginBottom: 15, marginTop: 10 },
+  categoryTitle: { fontSize: 17, fontWeight: 'bold', color: '#0D2340', marginBottom: 15, marginTop: 10 },
   projectCard: { backgroundColor: '#FFF', borderRadius: 16, overflow: 'hidden', marginBottom: 20, elevation: 2, shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 5, position: 'relative' },
   
   statusBadgeProceso: { position: 'absolute', top: 10, right: 10, backgroundColor: '#F59E0B', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, zIndex: 10, elevation: 2 },
   statusBadgeFinalizada: { position: 'absolute', top: 10, right: 10, backgroundColor: '#00D06C', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, zIndex: 10, elevation: 2 },
-  statusBadgeText: { color: '#FFF', fontSize: 10, fontWeight: 'bold', letterSpacing: 1 },
+  statusBadgeText: { color: '#FFF', fontSize: 13, fontWeight: 'bold', letterSpacing: 1 },
 
   imagesRow: { flexDirection: 'row', height: 200 },
   imageHalfContainer: { flex: 1, position: 'relative', borderRightWidth: 1, borderColor: '#FFF' },
   projectImageHalf: { width: '100%', height: '100%' },
   imageTag: { position: 'absolute', bottom: 10, left: 10, backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
-  imageTagText: { color: '#FFF', fontSize: 10, fontWeight: 'bold' },
+  imageTagText: { color: '#FFF', fontSize: 13, fontWeight: 'bold' },
   projectInfo: { padding: 15 },
-  projectTitle: { fontSize: 18, fontWeight: 'bold', color: '#0D2340', marginBottom: 5 },
+  projectTitle: { fontSize: 19, fontWeight: 'bold', color: '#0D2340', marginBottom: 5 },
   projectDetailsRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
-  projectSubtitle: { fontSize: 12, color: '#6B7280', marginLeft: 4 },
-  dotSeparator: { marginHorizontal: 8, color: '#D1D5DB', fontSize: 14 },
-  projectDesc: { fontSize: 13, color: '#4B5563', marginTop: 8, lineHeight: 18, backgroundColor: '#F9FAFB', padding: 10, borderRadius: 8 },
+  projectSubtitle: { fontSize: 14, color: '#6B7280', marginLeft: 4 },
+  dotSeparator: { marginHorizontal: 8, color: '#D1D5DB', fontSize: 16 },
+  projectDesc: { fontSize: 15, color: '#4B5563', marginTop: 8, lineHeight: 18, backgroundColor: '#F9FAFB', padding: 10, borderRadius: 8 },
   
   trackerContainer: { marginTop: 15, padding: 15, backgroundColor: '#F9FAFB', borderRadius: 12, borderWidth: 1, borderColor: '#E5E7EB' },
-  trackerTitle: { fontSize: 13, fontWeight: 'bold', color: '#0D2340', marginBottom: 10 },
+  trackerTitle: { fontSize: 15, fontWeight: 'bold', color: '#0D2340', marginBottom: 10 },
   trackerRow: { flexDirection: 'row', marginBottom: 15 },
   trackerTimeline: { alignItems: 'center', width: 20, marginRight: 15 },
   trackerDot: { width: 14, height: 14, borderRadius: 7, zIndex: 2 },
   trackerLine: { width: 2, height: '100%', backgroundColor: '#E5E7EB', position: 'absolute', top: 14, zIndex: 1 },
   trackerContent: { flex: 1, paddingBottom: 5 },
-  trackerDate: { fontSize: 13, fontWeight: 'bold', color: '#1F2937' },
-  trackerNote: { fontSize: 13, color: '#6B7280', marginTop: 4 },
-  trackerEmpty: { fontSize: 12, color: '#9CA3AF', fontStyle: 'italic', marginBottom: 10 },
+  trackerDate: { fontSize: 15, fontWeight: 'bold', color: '#1F2937' },
+  trackerNote: { fontSize: 15, color: '#6B7280', marginTop: 4 },
+  trackerEmpty: { fontSize: 14, color: '#9CA3AF', fontStyle: 'italic', marginBottom: 10 },
   btnAvance: { backgroundColor: '#E5E7EB', flexDirection: 'row', justifyContent: 'center', alignItems: 'center', padding: 10, borderRadius: 8, marginTop: 5 },
-  btnAvanceText: { color: '#0D2340', fontWeight: 'bold', fontSize: 12, marginLeft: 5 },
+  btnAvanceText: { color: '#0D2340', fontWeight: 'bold', fontSize: 14, marginLeft: 5 },
 
   settingsOption: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#FFF', padding: 18, borderRadius: 12, marginBottom: 10, elevation: 1 },
   settingsRow: { flexDirection: 'row', alignItems: 'center' },
-  settingsText: { fontSize: 14, fontWeight: 'bold', color: '#1F2937', marginLeft: 15 },
+  settingsText: { fontSize: 16, fontWeight: 'bold', color: '#1F2937', marginLeft: 15 },
   
   bottomNavigation: { backgroundColor: '#FFF', flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', borderTopWidth: 1, borderColor: '#E5E7EB', elevation: 15, shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 5, paddingVertical: 12 },
   navItem: { alignItems: 'center', justifyContent: 'center', flex: 1, position: 'relative' },
-  navText: { fontSize: 10, color: '#6B7280', marginTop: 4, fontWeight: '600' },
+  navText: { fontSize: 13, color: '#6B7280', marginTop: 4, fontWeight: '600' },
   puntoRojo: { position: 'absolute', top: -4, right: -8, backgroundColor: '#D32F2F', borderRadius: 10, minWidth: 18, height: 18, justifyContent: 'center', alignItems: 'center', borderWidth: 1.5, borderColor: '#FFF' },
-  puntoRojoTexto: { color: '#FFF', fontSize: 9, fontWeight: 'bold' },
+  puntoRojoTexto: { color: '#FFF', fontSize: 12, fontWeight: 'bold' },
   
   modalBg: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', padding: 15 },
   modalBgDark: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', padding: 15 },
   modalContainer: { backgroundColor: '#FFF', borderRadius: 20, padding: 25, elevation: 10 },
-  modalTitle: { fontSize: 20, fontWeight: 'bold', color: '#0D2340', marginBottom: 20 },
-  modalSubtitle: { fontSize: 14, color: '#6B7280', marginBottom: 15, fontStyle: 'italic' },
-  modalLabel: { fontSize: 12, fontWeight: 'bold', color: '#6B7280', marginBottom: 5, marginTop: 5 },
-  modalInput: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, padding: 12, marginBottom: 10, fontSize: 14, color: '#1F2937' },
+  modalTitle: { fontSize: 21, fontWeight: 'bold', color: '#0D2340', marginBottom: 20 },
+  modalSubtitle: { fontSize: 16, color: '#6B7280', marginBottom: 15, fontStyle: 'italic' },
+  modalLabel: { fontSize: 14, fontWeight: 'bold', color: '#6B7280', marginBottom: 5, marginTop: 5 },
+  modalInput: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, padding: 12, marginBottom: 10, fontSize: 16, color: '#1F2937' },
   datePickerBtn: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, padding: 12, marginBottom: 10, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   pickerBox: { borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, backgroundColor: '#F9FAFB', marginBottom: 15, overflow: 'hidden' },
   uploadArea: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderStyle: 'dashed', borderRadius: 12, padding: 20, alignItems: 'center', marginBottom: 15 },
-  uploadText: { color: '#9CA3AF', marginTop: 5, fontSize: 12, fontWeight: 'bold', textAlign: 'center' },
+  uploadText: { color: '#9CA3AF', marginTop: 5, fontSize: 14, fontWeight: 'bold', textAlign: 'center' },
   uploadedImagePreview: { width: '100%', height: 120, borderRadius: 10 },
   modalBtnRow: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 10 },
   modalBtnCancel: { padding: 12, marginRight: 10 },
-  modalBtnTextC: { color: '#6B7280', fontWeight: 'bold', fontSize: 14 },
+  modalBtnTextC: { color: '#6B7280', fontWeight: 'bold', fontSize: 16 },
   modalBtnSave: { backgroundColor: '#00D06C', paddingVertical: 12, paddingHorizontal: 20, borderRadius: 10, minWidth: 100, alignItems: 'center' },
-  modalBtnTextS: { color: '#FFF', fontWeight: 'bold', fontSize: 14 },
+  modalBtnTextS: { color: '#FFF', fontWeight: 'bold', fontSize: 16 },
 
   expandedImagesRow: { flexDirection: 'row', height: 250, position: 'relative' },
   expandedImageHalf: { flex: 1, position: 'relative', borderRightWidth: 1, borderColor: '#FFF' },
   closeExpandedBtn: { position: 'absolute', top: 20, right: 20, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 20, padding: 8, zIndex: 10 },
   statusBadgeProcesoRel: { backgroundColor: '#F59E0B', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
   statusBadgeFinalizadaRel: { backgroundColor: '#00D06C', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
-  vistaClienteText: { fontSize: 12, color: '#9CA3AF', fontStyle: 'italic', marginLeft: 10 },
+  vistaClienteText: { fontSize: 14, color: '#9CA3AF', fontStyle: 'italic', marginLeft: 10 },
   projectTitleBig: { fontSize: 24, fontWeight: 'bold', color: '#0D2340', marginBottom: 5 },
-  projectSubtitleBig: { fontSize: 14, color: '#6B7280', marginLeft: 4 },
+  projectSubtitleBig: { fontSize: 16, color: '#6B7280', marginLeft: 4 },
   
   threeDotsContainer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginVertical: 20, paddingHorizontal: 10 },
   dotWrapper: { alignItems: 'center', flex: 1 },
   dotBig: { width: 28, height: 28, borderRadius: 14, justifyContent: 'center', alignItems: 'center', elevation: 2, zIndex: 2 },
-  dotLabel: { fontSize: 10, fontWeight: 'bold', color: '#6B7280', marginTop: 5 },
+  dotLabel: { fontSize: 13, fontWeight: 'bold', color: '#6B7280', marginTop: 5 },
   dotLine: { height: 3, flex: 1, marginHorizontal: -20, marginTop: -15, zIndex: 1 },
 
   expandedFechasBox: { flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', backgroundColor: '#F9FAFB', padding: 15, borderRadius: 12, marginBottom: 20 },
-  expandedFechasLabel: { fontSize: 11, color: '#9CA3AF', fontWeight: 'bold', marginBottom: 2 },
-  expandedFechasValue: { fontSize: 14, color: '#0D2340', fontWeight: 'bold' },
-  expandedSectionTitle: { fontSize: 16, fontWeight: 'bold', color: '#0D2340', marginBottom: 10 },
-  expandedDesc: { fontSize: 14, color: '#4B5563', lineHeight: 20, marginBottom: 20 },
+  expandedFechasLabel: { fontSize: 13, color: '#9CA3AF', fontWeight: 'bold', marginBottom: 2 },
+  expandedFechasValue: { fontSize: 16, color: '#0D2340', fontWeight: 'bold' },
+  expandedSectionTitle: { fontSize: 17, fontWeight: 'bold', color: '#0D2340', marginBottom: 10 },
+  expandedDesc: { fontSize: 16, color: '#4B5563', lineHeight: 20, marginBottom: 20 },
 
   searchContainerInteligente: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 12, paddingHorizontal: 15 },
   searchIcon: { marginRight: 10 },
-  searchInput: { flex: 1, fontSize: 14, color: '#1F2937' },
+  searchInput: { flex: 1, fontSize: 16, color: '#1F2937' },
   searchResultsBox: { maxHeight: 150, backgroundColor: '#F9FAFB', borderRadius: 10, borderWidth: 1, borderColor: '#E5E7EB', marginBottom: 15, marginTop: 5, overflow: 'hidden' },
   searchResultItem: { flexDirection: 'row', alignItems: 'center', padding: 12, borderBottomWidth: 1, borderColor: '#E5E7EB' },
   searchResultAvatar: { width: 36, height: 36, borderRadius: 18, marginRight: 12, backgroundColor: '#E5E7EB' },
-  searchResultName: { fontSize: 14, fontWeight: 'bold', color: '#0D2340' },
-  searchResultRole: { fontSize: 11, color: '#6B7280', marginTop: 2 },
+  searchResultName: { fontSize: 16, fontWeight: 'bold', color: '#0D2340' },
+  searchResultRole: { fontSize: 13, color: '#6B7280', marginTop: 2 },
   selectedUserBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F0FDF4', padding: 12, borderRadius: 12, borderWidth: 1, borderColor: '#BBEFD3', marginBottom: 15, justifyContent: 'space-between' },
   selectedUserAvatar: { width: 44, height: 44, borderRadius: 22, marginRight: 12, backgroundColor: '#E5E7EB' },
-  selectedUserName: { fontSize: 15, fontWeight: 'bold', color: '#005530' },
-  selectedUserRole: { fontSize: 11, color: '#059669', marginTop: 2, fontWeight: 'bold' },
+  selectedUserName: { fontSize: 17, fontWeight: 'bold', color: '#005530' },
+  selectedUserRole: { fontSize: 13, color: '#059669', marginTop: 2, fontWeight: 'bold' },
 
   reviewCard: { backgroundColor: '#FFF', borderRadius: 12, padding: 15, marginBottom: 15, borderWidth: 1, borderColor: '#E5E7EB' },
   reviewHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
   reviewAvatar: { width: 40, height: 40, borderRadius: 20, marginRight: 10, backgroundColor: '#E5E7EB' },
-  reviewName: { fontSize: 14, fontWeight: 'bold', color: '#0D2340' },
-  reviewDate: { fontSize: 11, color: '#9CA3AF' },
+  reviewName: { fontSize: 16, fontWeight: 'bold', color: '#0D2340' },
+  reviewDate: { fontSize: 13, color: '#9CA3AF' },
   reviewStarsRow: { flexDirection: 'row', alignItems: 'center', marginTop: 2 },
-  reviewComment: { fontSize: 13, color: '#4B5563', fontStyle: 'italic', lineHeight: 18 }
+  reviewComment: { fontSize: 15, color: '#4B5563', fontStyle: 'italic', lineHeight: 18 }
 });

@@ -73,6 +73,7 @@ export default function Mensajes() {
   const [reporteMotivo, setReporteMotivo] = useState('Spam / Fraude');
   const [reporteDesc, setReporteDesc] = useState('');
   const [fotosReporte, setFotosReporte] = useState<string[]>([]);
+  const [rapidasAbiertas, setRapidasAbiertas] = useState(false); // RESPUESTAS RÁPIDAS (BOTÓN ⚡)
 
   // ESTADOS PARA BUSCADOR INTELIGENTE DE NUEVO CHAT
   const [modalNuevoChat, setModalNuevoChat] = useState(false);
@@ -231,7 +232,8 @@ export default function Mensajes() {
     setTratos([]);
     cargarTratos(chat.usuarios_ids?.find((id: string) => id !== miPerfil.id));
     // MENSAJE LISTO PARA EMPEZAR LA PLÁTICA (P. EJ. "HOLA, VI TU PERFIL..."), SOLO SI VIENE DE OTRA PANTALLA CON UNO.
-    // SE PONE HASTA SABER LOS MENSAJES DEL CHAT: SI YO YA ESCRIBÍ AQUÍ ANTES, YA NO SE PONE (PARA NO TENER QUE BORRARLO)
+    // SE PONE HASTA SABER LOS MENSAJES DEL CHAT: SI YA MANDÉ ESE MISMO MENSAJE (LA MISMA OBRA), YA NO SE PONE.
+    // SI ES DE OTRA OBRA, EL TEXTO ES DISTINTO Y SÍ SE PONE.
     const listo = String(params.autoOpenMensaje || '');
     let mensajePendiente = listo && mensajeAplicadoRef.current !== listo && chat.usuarios_ids?.includes(String(params.autoOpenId)) ? listo : '';
     if (mensajePendiente) mensajeAplicadoRef.current = listo;
@@ -244,7 +246,7 @@ export default function Mensajes() {
       listaMensajes.sort((a: any, b: any) => (a.timestamp || 0) - (b.timestamp || 0));
       setMensajes(listaMensajes);
       if (mensajePendiente) {
-        if (!listaMensajes.some(m => m.emisor_id === miPerfil.id)) setNuevoMensaje(texto => texto || mensajePendiente);
+        if (!listaMensajes.some(m => m.emisor_id === miPerfil.id && m.texto === mensajePendiente)) setNuevoMensaje(texto => texto || mensajePendiente);
         mensajePendiente = '';
       }
       setTimeout(() => { if (flatListRef.current) flatListRef.current.scrollToEnd({ animated: true }); }, 200);
@@ -573,17 +575,21 @@ export default function Mensajes() {
             </View>
           ) : (
             <>
-            {/* RESPUESTAS RÁPIDAS: SE TOCAN PARA ESCRIBIRLAS EN LA CAJA (SE PUEDEN CAMBIAR ANTES DE ENVIAR) */}
-            {!nuevoMensaje.trim() && !archivoSeleccionado && (
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" style={styles.rapidasFila} contentContainerStyle={{paddingHorizontal: 10}}>
+            {/* RESPUESTAS RÁPIDAS: SE ABREN CON EL BOTÓN ⚡ Y SE ACOMODAN EN VARIAS LÍNEAS (YA NO SE CORTAN).
+                AL TOCAR UNA SE ESCRIBE EN LA CAJA Y SE PUEDE CAMBIAR ANTES DE ENVIAR */}
+            {rapidasAbiertas && !archivoSeleccionado && (
+              <View style={styles.rapidasCaja}>
                 {(RESPUESTAS_RAPIDAS[miPerfil.rol] || RESPUESTAS_RAPIDAS.Trabajador).map(r => (
-                  <TouchableOpacity key={r} style={styles.rapida} onPress={() => setNuevoMensaje(r)}><Text style={styles.rapidaTexto}>{r}</Text></TouchableOpacity>
+                  <TouchableOpacity key={r} style={styles.rapida} onPress={() => { setNuevoMensaje(r); setRapidasAbiertas(false); }}><Text style={styles.rapidaTexto}>{r}</Text></TouchableOpacity>
                 ))}
-              </ScrollView>
+              </View>
             )}
             <View style={[styles.inputContainer, { paddingBottom: tecladoVisible ? 10 : Math.max(insets.bottom, 0) + 10 }]}>
               <TouchableOpacity style={styles.attachBtn} onPress={() => setModalAdjuntos(true)}>
                 <Ionicons name="add-circle" size={28} color="#0D2340" />
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.attachBtn} onPress={() => setRapidasAbiertas(!rapidasAbiertas)}>
+                <Ionicons name={rapidasAbiertas ? 'flash' : 'flash-outline'} size={26} color="#F59E0B" />
               </TouchableOpacity>
               
               <TextInput style={styles.textInput} placeholder="Escribe un mensaje..." value={nuevoMensaje} onChangeText={setNuevoMensaje} multiline />
@@ -758,7 +764,7 @@ export default function Mensajes() {
       <Modal visible={modalNuevoChat} animationType="slide" transparent>
         <View style={styles.modalBgDark}>
           <SafeAreaView style={{flex: 1, backgroundColor: '#F3F4F6', borderRadius: 20, overflow: 'hidden', marginTop: 50}}>
-            <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#0D2340', padding: 15}}><Text style={{color: '#FFF', fontWeight: 'bold', fontSize: 16}}>Nuevo Mensaje</Text><TouchableOpacity onPress={() => setModalNuevoChat(false)}><Ionicons name="close" size={28} color="#FFF"/></TouchableOpacity></View>
+            <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#0D2340', padding: 15}}><Text style={{color: '#FFF', fontWeight: 'bold', fontSize: 17}}>Nuevo Mensaje</Text><TouchableOpacity onPress={() => setModalNuevoChat(false)}><Ionicons name="close" size={28} color="#FFF"/></TouchableOpacity></View>
             <View style={{padding: 20, flex: 1}}>
               <View style={styles.searchContainerInteligente}>
                 <Ionicons name="search" size={20} color="#9CA3AF" style={styles.searchIcon} />
@@ -793,38 +799,38 @@ const styles = StyleSheet.create({
   loadingText: { marginTop: 10, color: '#0D2340', fontWeight: 'bold' },
   inboxHeader: { backgroundColor: '#0D2340', paddingHorizontal: 20, paddingTop: 15, paddingBottom: 25, borderBottomLeftRadius: 20, borderBottomRightRadius: 20 },
   inboxTitle: { fontSize: 26, fontWeight: 'bold', color: '#FFF' },
-  inboxSubtitle: { fontSize: 13, color: '#9CA3AF', marginTop: 2 },
+  inboxSubtitle: { fontSize: 15, color: '#9CA3AF', marginTop: 2 },
   chatListItem: { flexDirection: 'row', backgroundColor: '#FFF', padding: 15, borderRadius: 16, marginBottom: 15, elevation: 1, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 3, borderWidth: 1, borderColor: '#F9FAFB' },
   chatListItemUnread: { backgroundColor: '#F0FDF4', borderColor: '#BBEFD3' },
   chatListAvatar: { width: 56, height: 56, borderRadius: 28, marginRight: 15, backgroundColor: '#E5E7EB', borderWidth: 1, borderColor: '#E5E7EB' },
   chatListTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 },
-  chatListName: { fontSize: 16, fontWeight: 'bold', color: '#0D2340', flex: 1, marginRight: 10 },
-  chatListDate: { fontSize: 11, color: '#9CA3AF', fontWeight: 'bold' },
-  chatListRole: { fontSize: 11, color: '#00D06C', fontWeight: 'bold', marginBottom: 4 },
-  chatListLastMsg: { fontSize: 14, color: '#4B5563', flex: 1 },
+  chatListName: { fontSize: 17, fontWeight: 'bold', color: '#0D2340', flex: 1, marginRight: 10 },
+  chatListDate: { fontSize: 13, color: '#9CA3AF', fontWeight: 'bold' },
+  chatListRole: { fontSize: 13, color: '#00D06C', fontWeight: 'bold', marginBottom: 4 },
+  chatListLastMsg: { fontSize: 16, color: '#4B5563', flex: 1 },
   unreadDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#00D06C', marginLeft: 10 },
   emptyInbox: { alignItems: 'center', marginTop: 60, paddingHorizontal: 30 },
-  emptyInboxTitle: { fontSize: 18, fontWeight: 'bold', color: '#0D2340', marginTop: 15, marginBottom: 5 },
-  emptyInboxText: { fontSize: 14, color: '#6B7280', textAlign: 'center' },
+  emptyInboxTitle: { fontSize: 19, fontWeight: 'bold', color: '#0D2340', marginTop: 15, marginBottom: 5 },
+  emptyInboxText: { fontSize: 16, color: '#6B7280', textAlign: 'center' },
   fab: { position: 'absolute', bottom: 20, right: 20, backgroundColor: '#00D06C', width: 60, height: 60, borderRadius: 30, justifyContent: 'center', alignItems: 'center', elevation: 5, shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 5 },
   chatHeader: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#0D2340', paddingHorizontal: 15, paddingVertical: 15, borderBottomLeftRadius: 15, borderBottomRightRadius: 15 },
   backBtn: { padding: 5, marginRight: 10 },
   chatAvatar: { width: 40, height: 40, borderRadius: 20, marginRight: 12, backgroundColor: '#E5E7EB', borderWidth: 1, borderColor: '#FFF' },
-  chatName: { fontSize: 16, fontWeight: 'bold', color: '#FFF' },
-  chatRole: { fontSize: 11, color: '#00D06C', fontWeight: 'bold' },
+  chatName: { fontSize: 17, fontWeight: 'bold', color: '#FFF' },
+  chatRole: { fontSize: 13, color: '#00D06C', fontWeight: 'bold' },
   privacyBanner: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FEF3C7', paddingHorizontal: 15, paddingVertical: 10, borderBottomWidth: 1, borderColor: '#FDE68A' },
-  privacyText: { flex: 1, fontSize: 11, color: '#B45309', fontWeight: 'bold' },
+  privacyText: { flex: 1, fontSize: 13, color: '#B45309', fontWeight: 'bold' },
   tratoBanner: { backgroundColor: '#EFF6FF', borderBottomWidth: 1, borderColor: '#BFDBFE', padding: 12 },
-  tratoTitulo: { fontSize: 14, fontWeight: 'bold', color: '#1E3A8A', marginLeft: 6, flex: 1 },
-  tratoDato: { fontSize: 12, color: '#00A355', fontWeight: 'bold', marginTop: 2 },
-  tratoAyuda: { fontSize: 12, color: '#1E40AF', marginTop: 4 },
-  tratoEstado: { flex: 1, fontSize: 11, fontWeight: 'bold', color: '#B45309', backgroundColor: '#FEF3C7', borderRadius: 8, paddingHorizontal: 6, paddingVertical: 3, marginRight: 6, overflow: 'hidden' },
+  tratoTitulo: { fontSize: 16, fontWeight: 'bold', color: '#1E3A8A', marginLeft: 6, flex: 1 },
+  tratoDato: { fontSize: 14, color: '#00A355', fontWeight: 'bold', marginTop: 2 },
+  tratoAyuda: { fontSize: 14, color: '#1E40AF', marginTop: 4 },
+  tratoEstado: { flex: 1, fontSize: 13, fontWeight: 'bold', color: '#B45309', backgroundColor: '#FEF3C7', borderRadius: 8, paddingHorizontal: 6, paddingVertical: 3, marginRight: 6, overflow: 'hidden' },
   tratoEstadoSi: { color: '#047857', backgroundColor: '#D1FAE5' },
   tratoBoton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', borderRadius: 10, paddingVertical: 9 },
-  tratoBotonTexto: { color: '#FFF', fontWeight: 'bold', fontSize: 13, marginLeft: 4 },
-  rapidasFila: { flexGrow: 0, backgroundColor: '#FFF', borderTopWidth: 1, borderColor: '#F3F4F6', paddingVertical: 8 },
-  rapida: { backgroundColor: '#EFF6FF', borderWidth: 1, borderColor: '#BFDBFE', borderRadius: 16, paddingHorizontal: 12, paddingVertical: 6, marginRight: 8 },
-  rapidaTexto: { fontSize: 12, color: '#1D4ED8', fontWeight: '600' },
+  tratoBotonTexto: { color: '#FFF', fontWeight: 'bold', fontSize: 15, marginLeft: 4 },
+  rapidasCaja: { flexDirection: 'row', flexWrap: 'wrap', backgroundColor: '#FFF', borderTopWidth: 1, borderColor: '#F3F4F6', paddingHorizontal: 10, paddingTop: 8 },
+  rapida: { backgroundColor: '#EFF6FF', borderWidth: 1, borderColor: '#BFDBFE', borderRadius: 16, paddingHorizontal: 12, paddingVertical: 8, marginRight: 8, marginBottom: 8 },
+  rapidaTexto: { fontSize: 14, color: '#1D4ED8', fontWeight: '600' },
   messagesContainer: { padding: 15, flexGrow: 1, justifyContent: 'flex-end' },
   messageBubbleWrapper: { marginBottom: 12, flexDirection: 'row' },
   messageMineWrapper: { justifyContent: 'flex-end' },
@@ -832,58 +838,58 @@ const styles = StyleSheet.create({
   messageBubble: { maxWidth: '80%', paddingHorizontal: 15, paddingVertical: 10, borderRadius: 18, overflow: 'hidden' },
   messageMine: { backgroundColor: '#00D06C', borderBottomRightRadius: 4 },
   messageTheirs: { backgroundColor: '#FFF', borderBottomLeftRadius: 4, borderWidth: 1, borderColor: '#E5E7EB' },
-  messageText: { fontSize: 15, lineHeight: 20 },
+  messageText: { fontSize: 17, lineHeight: 20 },
   messageTextMine: { color: '#FFF' },
   messageTextTheirs: { color: '#1F2937' },
-  messageTime: { fontSize: 10, marginTop: 5, alignSelf: 'flex-end' },
+  messageTime: { fontSize: 13, marginTop: 5, alignSelf: 'flex-end' },
   messageTimeMine: { color: 'rgba(255,255,255,0.8)' },
   messageTimeTheirs: { color: '#9CA3AF' },
   messageImage: { width: 220, height: 220, borderRadius: 12, marginBottom: 8, backgroundColor: '#E5E7EB', alignSelf: 'center' },
   fileMessageBox: { flexDirection: 'row', alignItems: 'center', marginBottom: 8, padding: 8, borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.2)' },
-  fileMessageText: { fontSize: 13, fontWeight: 'bold', marginLeft: 8, flexShrink: 1 },
+  fileMessageText: { fontSize: 15, fontWeight: 'bold', marginLeft: 8, flexShrink: 1 },
   emptyMessagesBox: { alignItems: 'center', marginVertical: 40 },
-  emptyMessagesText: { fontSize: 16, fontWeight: 'bold', color: '#0D2340', marginTop: 10 },
-  emptyMessagesSub: { fontSize: 13, color: '#6B7280' },
+  emptyMessagesText: { fontSize: 17, fontWeight: 'bold', color: '#0D2340', marginTop: 10 },
+  emptyMessagesSub: { fontSize: 15, color: '#6B7280' },
   blockedBannerContainer: { backgroundColor: '#FEE2E2', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', padding: 15, borderTopWidth: 1, borderColor: '#FCA5A5' },
-  blockedBannerText: { color: '#DC2626', fontWeight: 'bold', fontSize: 12, marginLeft: 10, flexShrink: 1, textAlign: 'center' },
+  blockedBannerText: { color: '#DC2626', fontWeight: 'bold', fontSize: 14, marginLeft: 10, flexShrink: 1, textAlign: 'center' },
   previewBox: { flexDirection: 'row', padding: 15, backgroundColor: '#F3F4F6', borderTopWidth: 1, borderColor: '#E5E7EB', alignItems: 'center' },
   previewImage: { width: 60, height: 60, borderRadius: 10 },
   previewFile: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF', padding: 15, borderRadius: 12, flex: 1, borderWidth: 1, borderColor: '#E5E7EB' },
-  previewFileText: { marginLeft: 10, fontSize: 14, fontWeight: 'bold', color: '#0D2340', flex: 1 },
+  previewFileText: { marginLeft: 10, fontSize: 16, fontWeight: 'bold', color: '#0D2340', flex: 1 },
   removePreviewBtn: { position: 'absolute', top: 5, right: 5, backgroundColor: '#FFF', borderRadius: 14 },
   inputContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF', paddingHorizontal: 15, paddingTop: 10, borderTopWidth: 1, borderColor: '#E5E7EB' },
   attachBtn: { marginRight: 10, padding: 5 },
-  textInput: { flex: 1, backgroundColor: '#F9FAFB', borderRadius: 20, paddingHorizontal: 15, paddingVertical: 10, fontSize: 15, color: '#1F2937', maxHeight: 100, borderWidth: 1, borderColor: '#E5E7EB' },
+  textInput: { flex: 1, backgroundColor: '#F9FAFB', borderRadius: 20, paddingHorizontal: 15, paddingVertical: 10, fontSize: 17, color: '#1F2937', maxHeight: 100, borderWidth: 1, borderColor: '#E5E7EB' },
   sendBtn: { backgroundColor: '#00D06C', width: 44, height: 44, borderRadius: 22, justifyContent: 'center', alignItems: 'center', marginLeft: 10 },
   bottomNavigation: { backgroundColor: '#FFF', flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', borderTopWidth: 1, borderColor: '#E5E7EB', elevation: 15, shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 5, paddingVertical: 12 },
   navItem: { alignItems: 'center', justifyContent: 'center', flex: 1, position: 'relative' },
-  navText: { fontSize: 10, color: '#6B7280', marginTop: 4, fontWeight: '600' },
+  navText: { fontSize: 13, color: '#6B7280', marginTop: 4, fontWeight: '600' },
   modalBgDark: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)' },
   modalBgDarkCenter: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', padding: 20 },
   modalContainer: { backgroundColor: '#FFF', borderRadius: 20, padding: 25, elevation: 10 },
-  modalTitle: { fontSize: 20, fontWeight: 'bold', color: '#0D2340', marginBottom: 20 },
-  modalLabel: { fontSize: 12, fontWeight: 'bold', color: '#6B7280', marginBottom: 5, marginTop: 5 },
-  modalInput: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, padding: 12, marginBottom: 10, fontSize: 14, color: '#1F2937' },
+  modalTitle: { fontSize: 21, fontWeight: 'bold', color: '#0D2340', marginBottom: 20 },
+  modalLabel: { fontSize: 14, fontWeight: 'bold', color: '#6B7280', marginBottom: 5, marginTop: 5 },
+  modalInput: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, padding: 12, marginBottom: 10, fontSize: 16, color: '#1F2937' },
   pickerBox: { borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, backgroundColor: '#F9FAFB', marginBottom: 15, overflow: 'hidden' },
   modalBtnRow: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 10 },
   modalBtnCancel: { padding: 12, marginRight: 10 },
-  modalBtnTextC: { color: '#6B7280', fontWeight: 'bold', fontSize: 14 },
+  modalBtnTextC: { color: '#6B7280', fontWeight: 'bold', fontSize: 16 },
   modalBtnSave: { paddingVertical: 12, paddingHorizontal: 20, borderRadius: 10, minWidth: 100, alignItems: 'center' },
-  modalBtnTextS: { color: '#FFF', fontWeight: 'bold', fontSize: 14 },
+  modalBtnTextS: { color: '#FFF', fontWeight: 'bold', fontSize: 16 },
   bottomSheet: { position: 'absolute', bottom: 0, width: '100%', backgroundColor: '#FFF', borderTopLeftRadius: 25, borderTopRightRadius: 25, padding: 20 },
-  sheetTitle: { fontSize: 18, fontWeight: 'bold', color: '#0D2340', marginBottom: 15, textAlign: 'center' },
+  sheetTitle: { fontSize: 19, fontWeight: 'bold', color: '#0D2340', marginBottom: 15, textAlign: 'center' },
   sheetOption: { flexDirection: 'row', alignItems: 'center', paddingVertical: 18, borderBottomWidth: 1, borderColor: '#E5E7EB' },
-  sheetOptionText: { fontSize: 16, fontWeight: 'bold', color: '#1F2937' },
+  sheetOptionText: { fontSize: 17, fontWeight: 'bold', color: '#1F2937' },
   attachmentSheet: { position: 'absolute', bottom: 100, left: 20, right: 20, backgroundColor: '#FFF', borderRadius: 20, padding: 20 },
   attachRow: { flexDirection: 'row', justifyContent: 'space-around' },
   attachItem: { alignItems: 'center' },
   attachIconBg: { width: 60, height: 60, borderRadius: 30, justifyContent: 'center', alignItems: 'center', marginBottom: 8, elevation: 3 },
-  attachLabel: { fontSize: 13, color: '#4B5563', fontWeight: 'bold' },
+  attachLabel: { fontSize: 15, color: '#4B5563', fontWeight: 'bold' },
   searchContainerInteligente: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 12, paddingHorizontal: 15 },
   searchIcon: { marginRight: 10 },
-  searchInput: { flex: 1, fontSize: 15, color: '#1F2937', paddingVertical: 12 },
+  searchInput: { flex: 1, fontSize: 17, color: '#1F2937', paddingVertical: 12 },
   searchResultItem: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF', padding: 15, borderRadius: 12, marginBottom: 10, elevation: 1 },
   searchResultAvatar: { width: 44, height: 44, borderRadius: 22, marginRight: 15, backgroundColor: '#E5E7EB' },
-  searchResultName: { fontSize: 16, fontWeight: 'bold', color: '#0D2340' },
-  searchResultRole: { fontSize: 12, color: '#00D06C', fontWeight: 'bold', marginTop: 2 },
+  searchResultName: { fontSize: 17, fontWeight: 'bold', color: '#0D2340' },
+  searchResultRole: { fontSize: 14, color: '#00D06C', fontWeight: 'bold', marginTop: 2 },
 });
