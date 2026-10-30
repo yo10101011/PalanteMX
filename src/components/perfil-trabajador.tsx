@@ -11,10 +11,18 @@ import { DIAS_SEMANA, textoDias, textoPrecio } from '@/lib/ubicacion';
 type Props = {
   trabajador: any;
   distancia?: string;                         // P. EJ. "a 12 km" (DESDE QUIEN LO VE)
-  onEliminarObra?: (idObra: string) => void;  // SOLO EL ADMIN PUEDE BORRAR OBRAS DEL PORTAFOLIO
+  onEliminarObra?: (obra: any) => void;       // SOLO EL ADMIN PUEDE BORRAR OBRAS DEL PORTAFOLIO
   obrasEnCurso?: any[];                       // CONTRATOS QUE AÚN NO TERMINA (SOLO EL ADMIN PUEDE VERLOS)
   onEliminarObraPalante?: (obra: any) => void; // SOLO EL ADMIN: QUITAR UNA OBRA TERMINADA EN PALANTEMX
   onEliminarResena?: (resena: any) => void;    // SOLO EL ADMIN: BORRAR UNA RESEÑA (LA CALIFICACIÓN SE RECALCULA)
+};
+
+// QUITA DEL PORTAFOLIO SOLO LA OBRA INDICADA (LA PRIMERA IGUAL A ELLA). NO SE COMPARA SOLO POR id_obra PORQUE LAS
+// OBRAS VIEJAS NO LO TIENEN: SI SE COMPARARA ASÍ, TODAS LAS QUE NO TIENEN id SE BORRARÍAN JUNTAS.
+export const quitarUnaObra = (portafolio: any[], obra: any) => {
+  const igual = (o: any) => o && (obra.id_obra ? o.id_obra === obra.id_obra : JSON.stringify(o) === JSON.stringify(obra));
+  const indice = portafolio.findIndex(igual);
+  return indice === -1 ? portafolio : portafolio.filter((_, i) => i !== indice);
 };
 
 export function PerfilTrabajador({ trabajador: t, distancia, onEliminarObra, obrasEnCurso, onEliminarObraPalante, onEliminarResena }: Props) {
@@ -97,7 +105,7 @@ export function PerfilTrabajador({ trabajador: t, distancia, onEliminarObra, obr
       {portafolio.length === 0 ? <Text style={styles.vacio}>Todavía no sube fotos de trabajos anteriores.</Text> : portafolio.map((obra, i) => (
         <View key={i} style={[styles.tarjeta, { padding: 0, overflow: 'hidden' }]}>
           {onEliminarObra && (
-            <TouchableOpacity style={styles.borrar} onPress={() => onEliminarObra(obra.id_obra)}><Ionicons name="trash" size={18} color="#FFF" /></TouchableOpacity>
+            <TouchableOpacity style={styles.borrar} onPress={() => onEliminarObra(obra)}><Ionicons name="trash" size={18} color="#FFF" /></TouchableOpacity>
           )}
           {(obra.foto_antes || obra.foto_despues) && (
             <View style={{ flexDirection: 'row', height: 140 }}>

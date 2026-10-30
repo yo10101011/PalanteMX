@@ -10,6 +10,7 @@
 //                                 revisar la bitácora, reportar un problema...).
 //   POST /reportes             -> el admin resuelve un reporte y se les avisa a las dos partes.
 //   POST /admin-perfiles       -> el admin borra una reseña u obra de un perfil, o recalcula los perfiles.
+//   POST /equipo               -> el admin PRINCIPAL da de alta o quita personal de monitoreo (con cuenta propia).
 import { createRemoteJWKSet, importPKCS8, jwtVerify, SignJWT } from 'jose';
 
 interface Env {
@@ -54,6 +55,7 @@ export default {
     if (request.method === 'POST' && url.pathname === '/contratos') return gestionarContrato(request, env);
     if (request.method === 'POST' && url.pathname === '/reportes') return resolverReporte(request, env);
     if (request.method === 'POST' && url.pathname === '/admin-perfiles') return adminPerfiles(request, env);
+    if (request.method === 'POST' && url.pathname === '/equipo') return gestionarEquipo(request, env);
     return responder(404, { error: 'Ruta no encontrada' });
   },
 
@@ -1320,7 +1322,16 @@ const adminPerfiles = async (request: Request, env: Env) => {
             updateMask: { fieldPaths: ['oculta_en_perfil'] },
           }]);
         }
-        await recalcularPerfil(env, datos.uid, datos.id_contrato);
+        // SOLO SE QUITA ESA OBRA: LAS DEMÁS SE QUEDAN TAL CUAL (RECALCULAR TODO ES OTRA ACCIÓN, A PROPÓSITO)
+        const perfilRuta = `Usuarios/${datos.uid}`;
+        const perfil = (await leerDocumentos(env, [perfilRuta]))[perfilRuta];
+        if (!perfil) return responder(404, { error: 'No se encontró el perfil del trabajador.' });
+        const obras = ((deFirestore(perfil.fields.obras_realizadas) as any[]) || []).filter(o => o?.id_contrato !== datos.id_contrato);
+        await confirmarEscrituras(env, [{
+          update: { name: `${nombreBase}/${perfilRuta}`, fields: aCamposFirestore({ obras_realizadas: obras }) },
+          updateMask: { fieldPaths: ['obras_realizadas'] },
+          currentDocument: { updateTime: perfil.updateTime },
+        }]);
         return responder(200, { ok: true });
       }
       case 'recalcular': {
@@ -1329,6 +1340,7 @@ const adminPerfiles = async (request: Request, env: Env) => {
         return responder(200, { ok: true });
       }
       case 'recalcular_todos': {
+        if ((await rolAdmin(env, sesion.uid)) !== 'principal') return responder(403, { error: 'Solo el administrador principal puede recalcular todos los perfiles.' });
         const ids = [...(await listarIds(env, 'Usuarios')), ...(await listarIds(env, 'Contratistas'))];
         for (const id of ids) await recalcularPerfil(env, id);
         return responder(200, { ok: true, perfiles: ids.length });
@@ -1338,6 +1350,102 @@ const adminPerfiles = async (request: Request, env: Env) => {
     }
   } catch (error) {
     console.log('Error corrigiendo perfiles', error);
+    return responder(502, { error: 'No se pudo completar. Intenta más tarde.' });
+  }
+};
+
+// ¿ES EL ADMINISTRADOR PRINCIPAL? EL PRINCIPAL ES EL QUE SE CREÓ A MANO EN LA CONSOLA (SU DOCUMENTO NO TRAE principal: false).
+// EL PERSONAL DE MONITOREO TAMBIÉN TIENE DOCUMENTO EN Administradores, PERO CON principal: false.
+const rolAdmin = async (env: Env, uid: string): Promise<'principal' | 'equipo' | null> => {
+  const admin = (await leerDocumentos(env, [`Administradores/${uid}`]))[`Administradores/${uid}`];
+  if (!admin) return null;
+  return admin.fields.principal?.booleanValue === false ? 'equipo' : 'principal';
+};
+
+// =========================================================================
+// RUTA 9: PERSONAL DE MONITOREO (SOPORTE, AUDITOR, MODERADOR). SOLO EL ADMIN PRINCIPAL LO DA DE ALTA O LO QUITA.
+// NO SUBEN INE: SE LES CREA UNA CUENTA CON SU CORREO Y FIREBASE LES MANDA UN CORREO PARA QUE CREEN SU CONTRASEÑA.
+// ESA ES LA VERIFICACIÓN: SOLO QUIEN TIENE ACCESO A ESE CORREO PUEDE ENTRAR. EL PERSONAL NO PUEDE AGREGAR A OTROS.
+//   invitar   { nombre, correo, puesto } -> crea la cuenta, la marca como personal y manda el correo
+//   reenviar  { uid }                    -> vuelve a mandar el correo para crear la contraseña
+//   quitar    { uid }                    -> le quita el acceso y borra su cuenta
+// =========================================================================
+const PUESTOS = ['Soporte Técnico', 'Auditor Legal', 'Moderador'];
+
+const gestionarEquipo = async (request: Request, env: Env) => {
+  const sesion = await verificarSesion(request, env);
+  if (!sesion) return responder(401, { error: 'Sesión inválida o expirada' });
+  let datos: { accion?: unknown; nombre?: unknown; correo?: unknown; puesto?: unknown; uid?: unknown };
+  try { datos = await request.json(); } catch { return responder(400, { error: 'Cuerpo de la petición inválido' }); }
+
+  try {
+    if ((await rolAdmin(env, sesion.uid)) !== 'principal') return responder(403, { error: 'Solo el administrador principal puede manejar al personal.' });
+    const nombreBase = `projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents`;
+    const token = await obtenerTokenGoogle(env);
+    const mandarCorreoContrasena = (correo: string) => fetch(`https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=${env.FIREBASE_WEB_API_KEY}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ requestType: 'PASSWORD_RESET', email: correo }),
+    });
+
+    switch (datos.accion) {
+      case 'invitar': {
+        if (!textoValido(datos.nombre, 80)) return responder(400, { error: 'Escribe el nombre.' });
+        if (!textoValido(datos.correo, 120) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(datos.correo.trim())) return responder(400, { error: 'Escribe un correo válido.' });
+        if (typeof datos.puesto !== 'string' || !PUESTOS.includes(datos.puesto)) return responder(400, { error: 'Elige el puesto.' });
+        const correo = datos.correo.trim().toLowerCase();
+
+        // 1. LA CUENTA (CON UNA CONTRASEÑA AL AZAR QUE NADIE CONOCE: LA PERSONA CREA LA SUYA CON EL CORREO)
+        const crear = await fetch(`https://identitytoolkit.googleapis.com/v1/projects/${env.FIREBASE_PROJECT_ID}/accounts`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: correo, password: `${crypto.randomUUID()}Aa1!`, displayName: datos.nombre.trim() }),
+        });
+        const creado = (await crear.json()) as { localId?: string; error?: { message?: string } };
+        if (!crear.ok || !creado.localId) {
+          if (creado.error?.message?.includes('EMAIL_EXISTS')) return responder(409, { error: 'Ese correo ya tiene una cuenta en PalanteMX (quizá es de un trabajador o contratista). Usa otro correo.' });
+          throw new Error(`No se pudo crear la cuenta: ${JSON.stringify(creado.error)}`);
+        }
+        const uid = creado.localId;
+        const ahora = new Date();
+
+        // 2. SE MARCA COMO PERSONAL (NO PRINCIPAL) Y SE GUARDA EN LA LISTA DEL EQUIPO
+        await confirmarEscrituras(env, [
+          { update: { name: `${nombreBase}/Administradores/${uid}`, fields: aCamposFirestore({ principal: false, nombre: datos.nombre.trim(), correo, puesto: datos.puesto, creado_por: sesion.uid, fecha_alta: ahora.toISOString() }) }, currentDocument: { exists: false } },
+          { update: { name: `${nombreBase}/Equipo_Soporte/${uid}`, fields: aCamposFirestore({ nombre: datos.nombre.trim().toUpperCase(), correo, rol_usuario: datos.puesto, estado_cuenta: 'Invitado (falta que cree su contraseña)', con_cuenta: true, fecha_registro: ahora.toISOString() }) } },
+        ]);
+
+        // 3. EL CORREO PARA QUE CREE SU CONTRASEÑA
+        await mandarCorreoContrasena(correo);
+        return responder(200, { uid });
+      }
+      case 'reenviar': {
+        if (!textoValido(datos.uid, 128)) return responder(400, { error: 'Falta la persona.' });
+        const miembro = (await leerDocumentos(env, [`Administradores/${datos.uid}`]))[`Administradores/${datos.uid}`];
+        if (!miembro || miembro.fields.principal?.booleanValue !== false) return responder(404, { error: 'Esa persona no es parte del personal.' });
+        await mandarCorreoContrasena(texto(miembro.fields.correo));
+        return responder(200, { ok: true });
+      }
+      case 'quitar': {
+        if (!textoValido(datos.uid, 128)) return responder(400, { error: 'Falta la persona.' });
+        if (datos.uid === sesion.uid) return responder(400, { error: 'No te puedes quitar a ti mismo.' });
+        const miembro = (await leerDocumentos(env, [`Administradores/${datos.uid}`]))[`Administradores/${datos.uid}`];
+        if (miembro && miembro.fields.principal?.booleanValue !== false) return responder(403, { error: 'No se puede quitar a un administrador principal.' });
+        await confirmarEscrituras(env, [
+          { delete: `${nombreBase}/Administradores/${datos.uid}` },
+          { delete: `${nombreBase}/Equipo_Soporte/${datos.uid}` },
+        ]);
+        // LA CUENTA SOLO SE BORRA SI ERA DE PERSONAL (LOS REGISTROS VIEJOS DEL EQUIPO NO TENÍAN CUENTA)
+        if (miembro) {
+          await fetch(`https://identitytoolkit.googleapis.com/v1/projects/${env.FIREBASE_PROJECT_ID}/accounts:delete`, {
+            method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ localId: datos.uid }),
+          });
+        }
+        return responder(200, { ok: true });
+      }
+      default:
+        return responder(400, { error: 'Acción desconocida.' });
+    }
+  } catch (error) {
+    console.log('Error con el personal', error);
     return responder(502, { error: 'No se pudo completar. Intenta más tarde.' });
   }
 };
@@ -1353,8 +1461,9 @@ const listarIds = async (env: Env, coleccion: string) => {
 
 // REARMA LA COPIA DE RESEÑAS Y OBRAS TERMINADAS DE UN PERFIL CON LO QUE DE VERDAD EXISTE EN FIREBASE:
 //   - RESEÑAS: LAS DE Resenas_Plataforma DIRIGIDAS A ESTA PERSONA (Y SU PROMEDIO)
-//   - OBRAS: SOLO LAS QUE SIGUEN EXISTIENDO COMO CONTRATO FINALIZADO Y NO SE OCULTARON (quitarContrato SE QUITA SIEMPRE)
-const recalcularPerfil = async (env: Env, uid: string, quitarContrato?: string) => {
+//   - OBRAS: SOLO LAS QUE SIGUEN EXISTIENDO COMO CONTRATO FINALIZADO Y NO SE OCULTARON
+//     (OJO: SI SE BORRARON CONTRATOS EN FIREBASE, SUS OBRAS SE VAN. POR ESO ESTO SOLO SE HACE CUANDO EL ADMIN LO PIDE)
+const recalcularPerfil = async (env: Env, uid: string) => {
   const nombreBase = `projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents`;
   const perfiles = await leerDocumentos(env, [`Usuarios/${uid}`, `Contratistas/${uid}`]);
   const ruta = perfiles[`Usuarios/${uid}`] ? `Usuarios/${uid}` : perfiles[`Contratistas/${uid}`] ? `Contratistas/${uid}` : null;
@@ -1371,7 +1480,7 @@ const recalcularPerfil = async (env: Env, uid: string, quitarContrato?: string) 
   const campos: Record<string, unknown> = { calificacion: promedio.toFixed(1), numero_resenas: resenas.length, resenas };
 
   if (ruta.startsWith('Usuarios/')) {
-    const obras = ((deFirestore(perfil.fields.obras_realizadas) as any[]) || []).filter(o => o?.id_contrato && o.id_contrato !== quitarContrato);
+    const obras = ((deFirestore(perfil.fields.obras_realizadas) as any[]) || []).filter(o => o?.id_contrato);
     const contratos = obras.length ? await leerDocumentos(env, obras.map(o => `Postulaciones/${o.id_contrato}`)) : {};
     campos.obras_realizadas = obras.filter(o => {
       const c = contratos[`Postulaciones/${o.id_contrato}`];
@@ -1457,8 +1566,8 @@ const eliminarCuenta = async (request: Request, env: Env) => {
     if (datos.uid !== undefined && datos.uid !== sesion.uid) {
       // BORRAR LA CUENTA DE OTRA PERSONA: SOLO UN ADMIN
       if (!textoValido(datos.uid, 128)) return responder(400, { error: 'Cuenta inválida' });
-      const admin = await leerDocumentos(env, [`Administradores/${sesion.uid}`]);
-      if (!admin[`Administradores/${sesion.uid}`]) return responder(403, { error: 'Solo un administrador puede eliminar otras cuentas.' });
+      // SOLO EL ADMIN PRINCIPAL (EL PERSONAL DE MONITOREO PUEDE BLOQUEAR, PERO NO BORRAR CUENTAS)
+      if ((await rolAdmin(env, sesion.uid)) !== 'principal') return responder(403, { error: 'Solo el administrador principal puede eliminar cuentas.' });
       uidObjetivo = datos.uid;
     }
 

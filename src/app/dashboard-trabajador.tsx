@@ -20,6 +20,7 @@ import { DIAS_SEMANA, PERIODOS_PAGO, textoDias, textoPrecio, ubicacionDesdeGPS }
 import { BarraSuperior } from '@/components/barra-superior';
 import { CampanaNotificaciones } from '@/components/campana-notificaciones';
 import { ModalPagos } from '@/components/modal-pagos';
+import { quitarUnaObra } from '@/components/perfil-trabajador';
 import { SelectorOficio } from '@/components/selector-oficio';
 import { SelectorUbicacion } from '@/components/selector-ubicacion';
 import { ModalBitacora } from '@/components/modal-bitacora';
@@ -244,9 +245,9 @@ export default function DashboardTrabajador() {
     await cargarPerfil(); setProcesando(false); setModalTrabajo(false); Alert.alert("Obra Guardada", "Tu proyecto se actualizó exitosamente.");
   };
 
-  const eliminarObraPortafolio = (idObra: string) => {
+  const eliminarObraPortafolio = (obra: any) => {
     Alert.alert("Eliminar Obra", "¿Estás seguro de que deseas borrar este trabajo de tu portafolio?", [
-      { text: "Cancelar", style: "cancel" }, { text: "Sí, Eliminar", style: "destructive", onPress: async () => { setProcesando(true); try { const portafolioActualizado = (userData.portafolio || []).filter((o: any) => o && typeof o === 'object' && o.id_obra !== idObra); await updateDoc(doc(db, userData.refPath), { portafolio: portafolioActualizado }); await cargarPerfil(); setObraExpandida(null); Alert.alert("Obra Eliminada", "El trabajo ha sido borrado de tu perfil."); } catch (error) { Alert.alert("Error", "No se pudo eliminar la obra."); } setProcesando(false); } }
+      { text: "Cancelar", style: "cancel" }, { text: "Sí, Eliminar", style: "destructive", onPress: async () => { setProcesando(true); try { const portafolioActualizado = quitarUnaObra(userData.portafolio || [], obra); await updateDoc(doc(db, userData.refPath), { portafolio: portafolioActualizado }); await cargarPerfil(); setObraExpandida(null); Alert.alert("Obra Eliminada", "El trabajo ha sido borrado de tu perfil."); } catch (error) { Alert.alert("Error", "No se pudo eliminar la obra."); } setProcesando(false); } }
     ]);
   };
 
@@ -726,7 +727,7 @@ export default function DashboardTrabajador() {
                   ) : ( <Text style={styles.trackerEmpty}>No hay reportes diarios registrados en esta obra.</Text> )}
                 </View>
 
-                <TouchableOpacity style={{flexDirection: 'row', justifyContent: 'center', alignItems: 'center', backgroundColor: '#FEE2E2', padding: 15, borderRadius: 12, marginTop: 20, borderWidth: 1, borderColor: '#FCA5A5'}} onPress={() => eliminarObraPortafolio(obraExpandida.id_obra)} disabled={procesando}>
+                <TouchableOpacity style={{flexDirection: 'row', justifyContent: 'center', alignItems: 'center', backgroundColor: '#FEE2E2', padding: 15, borderRadius: 12, marginTop: 20, borderWidth: 1, borderColor: '#FCA5A5'}} onPress={() => eliminarObraPortafolio(obraExpandida)} disabled={procesando}>
                   <Ionicons name="trash" size={20} color="#DC2626" style={{marginRight: 8}}/><Text style={{color: '#DC2626', fontWeight: 'bold', fontSize: 16}}>Eliminar esta Obra del Portafolio</Text>
                 </TouchableOpacity>
 

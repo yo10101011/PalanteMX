@@ -132,6 +132,11 @@ export const resolverReporte = (idQueja: string, decision: string, nota: string,
 export const adminPerfiles = (accion: 'eliminar_resena' | 'eliminar_obra' | 'recalcular' | 'recalcular_todos', datos: { uid?: string; id_resena?: string; id_contrato?: string } = {}) =>
   llamarServidor('/admin-perfiles', { accion, ...datos }, "No se pudo completar.") as Promise<{ ok: boolean; perfiles?: number }>;
 
+// PERSONAL DE MONITOREO (SOLO EL ADMIN PRINCIPAL): DAR DE ALTA (LE LLEGA UN CORREO PARA CREAR SU CONTRASEÑA),
+// REENVIAR ESE CORREO, O QUITARLO
+export const gestionarEquipo = (accion: 'invitar' | 'reenviar' | 'quitar', datos: { nombre?: string; correo?: string; puesto?: string; uid?: string }) =>
+  llamarServidor('/equipo', { accion, ...datos }, "No se pudo completar.") as Promise<{ ok?: boolean; uid?: string }>;
+
 // ¿HAY REPORTES DE ESTA OBRA QUE EL ADMIN AÚN NO RESUELVE? MIENTRAS LOS HAYA, NO SE PUEDE TERMINAR LA OBRA
 export const tieneReporteAbierto = (contrato: any) => (contrato?.reportes_abiertos || 0) > 0;
 

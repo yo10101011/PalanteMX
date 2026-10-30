@@ -17,9 +17,15 @@ service cloud.firestore {
       return conSesion() && request.auth.uid == uid;
     }
 
-    // UN ADMIN ES QUIEN TIENE UN DOCUMENTO EN /Administradores/{su uid}. SOLO SE CREA A MANO DESDE LA CONSOLA.
+    // UN ADMIN ES QUIEN TIENE UN DOCUMENTO EN /Administradores/{su uid}. EL PRINCIPAL SE CREA A MANO DESDE LA CONSOLA;
+    // EL PERSONAL DE MONITOREO LO CREA EL WORKER (RUTA /equipo) CON principal: false.
     function esAdmin() {
       return conSesion() && exists(/databases/$(database)/documents/Administradores/$(request.auth.uid));
+    }
+
+    // SOLO EL PRINCIPAL MANEJA AL PERSONAL Y LOS DATOS DEL PANEL (EL PERSONAL TIENE principal: false)
+    function esAdminPrincipal() {
+      return esAdmin() && get(/databases/$(database)/documents/Administradores/$(request.auth.uid)).data.get('principal', true) != false;
     }
 
     function esContratista() {
@@ -178,12 +184,18 @@ service cloud.firestore {
 
     // ---------------------------------------------------------------- SOLO ADMIN
 
+    // LISTA DEL PERSONAL: LA VEN TODOS LOS ADMINS; LA CAMBIA SOLO EL PRINCIPAL (O EL WORKER).
+    // CADA MIEMBRO SOLO PUEDE MARCAR QUE YA ENTRÓ (estado_cuenta Y ultimo_acceso DE SU PROPIO REGISTRO).
     match /Equipo_Soporte/{id} {
-      allow read, write: if esAdmin();
+      allow read: if esAdmin();
+      allow create, delete: if esAdminPrincipal();
+      allow update: if esAdminPrincipal()
+        || (esYo(id) && esAdmin() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['estado_cuenta', 'ultimo_acceso']));
     }
 
     match /Sistema/{id} {
-      allow read, write: if esAdmin();
+      allow read: if esAdmin();
+      allow write: if esAdminPrincipal();
     }
   }
 }

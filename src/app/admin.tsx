@@ -13,7 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Picker } from '@react-native-picker/picker';
 import * as ImagePicker from 'expo-image-picker';
 import { router } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -43,8 +43,8 @@ import { auth, db } from '../../firebaseConfig';
 import { subirFotoACloudinary } from '@/lib/cloudinary';
 import { eliminarCuentaEnServidor } from '@/lib/cuenta';
 import { coincide } from '@/lib/busqueda';
-import { accionContrato, adminPerfiles, ajustesDePago, ESTADOS, estiloEstado, pagosPorConfirmar, resolverReporte, totalRecibido } from '@/lib/contratos';
-import { PerfilTrabajador } from '@/components/perfil-trabajador';
+import { accionContrato, adminPerfiles, gestionarEquipo, ajustesDePago, ESTADOS, estiloEstado, pagosPorConfirmar, resolverReporte, totalRecibido } from '@/lib/contratos';
+import { PerfilTrabajador, quitarUnaObra } from '@/components/perfil-trabajador';
 import { VisorFoto } from '@/components/visor-foto';
 
 // ---------------------------------------------------------------- COLORES Y TIPOS
@@ -114,6 +114,10 @@ export default function AdminDashboard() {
   const [refrescando, setRefrescando] = useState(false);
   const [procesando, setProcesando] = useState(false);
   const [pestañaActiva, setPestañaActiva] = useState('Inicio');
+  // ADMIN PRINCIPAL (EL QUE SE CREÓ EN LA CONSOLA) O PERSONAL DE MONITOREO (LO DIO DE ALTA EL PRINCIPAL)
+  const [esPrincipal, setEsPrincipal] = useState(true);
+  const esPrincipalRef = useRef(true);
+  const miRegistroRef = useRef<any>(null);
 
   // FILTROS DE CADA PESTAÑA
   const [vistaReportes, setVistaReportes] = useState<'Pendientes' | 'Historial'>('Pendientes');
@@ -167,7 +171,10 @@ export default function AdminDashboard() {
         getDocs(collection(db, 'Equipo_Soporte')),
       ]);
 
-      if (adminDoc.exists()) {
+      // EL PRINCIPAL VE Y EDITA EL PERFIL DEL PANEL (Sistema/AdminProfile); EL PERSONAL VE SUS PROPIOS DATOS
+      if (!esPrincipalRef.current) {
+        setAdminData({ nombre: miRegistroRef.current?.nombre || 'Personal', cargo: miRegistroRef.current?.puesto || 'Monitoreo', foto: '' });
+      } else if (adminDoc.exists()) {
         setAdminData(adminDoc.data());
         setEditAdminNombre(adminDoc.data().nombre || '');
         setEditAdminCargo(adminDoc.data().cargo || 'Super Admin');
@@ -197,6 +204,15 @@ export default function AdminDashboard() {
       try {
         const adminDoc = await getDoc(doc(db, 'Administradores', usuarioActual.uid));
         if (!adminDoc.exists()) { await signOut(auth); router.replace('/' as any); return; }
+        // ¿PRINCIPAL O PERSONAL DE MONITOREO? (EL PERSONAL TIENE principal: false Y NO PUEDE AGREGAR A OTROS NI BORRAR CUENTAS)
+        const principal = adminDoc.data().principal !== false;
+        esPrincipalRef.current = principal;
+        miRegistroRef.current = adminDoc.data();
+        setEsPrincipal(principal);
+        if (!principal) {
+          // QUEDA REGISTRADO QUE LA PERSONA YA ENTRÓ (YA CREÓ SU CONTRASEÑA CON EL CORREO)
+          updateDoc(doc(db, 'Equipo_Soporte', usuarioActual.uid), { estado_cuenta: 'Activa', ultimo_acceso: new Date().toISOString() }).catch(() => {});
+        }
         await cargarDatosAdmin();
       } catch (error) {
         console.log("Error verificando acceso de administrador:", error);
@@ -241,19 +257,37 @@ export default function AdminDashboard() {
     setModalEditarAdmin(false);
   };
 
+  // DA DE ALTA A UNA PERSONA DEL PERSONAL: EL SERVIDOR LE CREA SU CUENTA (SIN INE) Y FIREBASE LE MANDA UN CORREO
+  // PARA QUE CREE SU CONTRASEÑA. SOLO QUIEN TIENE ACCESO A ESE CORREO PUEDE ENTRAR.
   const crearPersonalMonitoreo = async () => {
-    if (!nuevoNombre || !nuevoCorreo) { Alert.alert("Faltan datos", "Llena los campos obligatorios."); return; }
+    if (!nuevoNombre.trim() || !nuevoCorreo.trim()) { Alert.alert("Faltan datos", "Escribe el nombre y el correo."); return; }
     setProcesando(true);
     try {
-      await setDoc(doc(db, 'Equipo_Soporte', new Date().getTime().toString()), {
-        nombre: nuevoNombre.toUpperCase(), correo: nuevoCorreo, rol_usuario: nuevoRol, estado_cuenta: 'Activa',
-        fecha_registro: new Date().toISOString(), permisos: ['monitoreo', 'resolucion_quejas'],
-      });
-      Alert.alert("Éxito", `Se registró a ${nuevoNombre} como ${nuevoRol}.`);
+      await gestionarEquipo('invitar', { nombre: nuevoNombre.trim(), correo: nuevoCorreo.trim(), puesto: nuevoRol });
+      Alert.alert("Invitación enviada", `Le llegó un correo a ${nuevoCorreo.trim()} para crear su contraseña (que revise también "Spam"). Después entra a PalanteMX con ese correo y su contraseña, y verá el panel de administración.`);
       setModalCrear(false); setNuevoNombre(''); setNuevoCorreo('');
       await cargarDatosAdmin();
-    } catch (error) { Alert.alert("Error", "No se pudo registrar en la base de datos."); }
+    } catch (error: any) { Alert.alert("No se pudo", error?.message || "Intenta de nuevo."); }
     setProcesando(false);
+  };
+
+  const accionEquipo = (s: any, accion: 'reenviar' | 'quitar') => {
+    const quitar = accion === 'quitar';
+    Alert.alert(quitar ? "Quitar del personal" : "Reenviar correo", quitar
+      ? `¿Quitarle el acceso a ${s.nombre}? Su cuenta se borra y ya no podrá entrar al panel.`
+      : `¿Volver a mandar a ${s.correo} el correo para crear su contraseña?`, [
+      { text: "Cancelar", style: "cancel" },
+      { text: "Sí", style: quitar ? 'destructive' : 'default', onPress: async () => {
+          setProcesando(true);
+          try {
+            await gestionarEquipo(accion, { uid: s.id });
+            if (quitar) await cargarDatosAdmin();
+            Alert.alert("Listo", quitar ? "Se le quitó el acceso." : "Se volvió a mandar el correo.");
+          } catch (error: any) { Alert.alert("No se pudo", error?.message || "Intenta de nuevo."); }
+          setProcesando(false);
+        }
+      }
+    ]);
   };
 
   const alternarBloqueoUsuario = (usuario: any) => {
@@ -304,8 +338,8 @@ export default function AdminDashboard() {
     ]);
   };
 
-  const eliminarObraDeUsuario = (idUsuario: string, idObra: string) => {
-    Alert.alert("Borrar obra del portafolio", "¿Eliminar este trabajo del perfil de este usuario?", [
+  const eliminarObraDeUsuario = (idUsuario: string, obra: any) => {
+    Alert.alert("Borrar obra del portafolio", `¿Eliminar "${obra.titulo}" del portafolio de este usuario?`, [
       { text: "Cancelar", style: "cancel" },
       { text: "Eliminar", style: "destructive", onPress: async () => {
           setProcesando(true);
@@ -313,7 +347,7 @@ export default function AdminDashboard() {
             const userRef = doc(db, 'Usuarios', idUsuario);
             const userDoc = await getDoc(userRef);
             if (userDoc.exists()) {
-              const portafolioActualizado = (userDoc.data().portafolio || []).filter((o: any) => o && o.id_obra !== idObra);
+              const portafolioActualizado = quitarUnaObra(userDoc.data().portafolio || [], obra);
               await updateDoc(userRef, { portafolio: portafolioActualizado });
               await cargarDatosAdmin();
               setUsuarioExpandido({ ...usuarioExpandido, portafolio: portafolioActualizado });
@@ -650,40 +684,67 @@ export default function AdminDashboard() {
         {pestañaActiva === 'Mi cuenta' && (
           <View>
             <View style={[styles.tarjeta, { alignItems: 'center' }]}>
-              <TouchableOpacity onPress={cambiarFotoAdmin}>
+              <TouchableOpacity onPress={cambiarFotoAdmin} disabled={!esPrincipal}>
                 <Image source={{ uri: adminData.foto || undefined }} style={styles.fotoAdmin} />
-                <View style={styles.camara}><Ionicons name="camera" size={14} color="#FFF" /></View>
+                {esPrincipal && <View style={styles.camara}><Ionicons name="camera" size={14} color="#FFF" /></View>}
               </TouchableOpacity>
               <Text style={styles.nombreAdmin}>{adminData.nombre}</Text>
               <Text style={styles.cargoAdmin}>{adminData.cargo}</Text>
-              <TouchableOpacity style={[styles.botonPrincipal, { backgroundColor: COLOR.marino, alignSelf: 'stretch' }]} onPress={() => setModalEditarAdmin(true)}>
-                <Ionicons name="pencil" size={16} color="#FFF" /><Text style={styles.botonPrincipalTexto}>Editar mi perfil</Text>
-              </TouchableOpacity>
+              <View style={[styles.etiqueta, { backgroundColor: esPrincipal ? COLOR.marino : '#DBEAFE', alignSelf: 'center', marginTop: 8 }]}>
+                <Text style={[styles.etiquetaTexto, { color: esPrincipal ? '#FFF' : '#1D4ED8' }]}>{esPrincipal ? 'ADMINISTRADOR PRINCIPAL' : 'PERSONAL AUTORIZADO POR EL ADMINISTRADOR'}</Text>
+              </View>
+              {esPrincipal ? (
+                <TouchableOpacity style={[styles.botonPrincipal, { backgroundColor: COLOR.marino, alignSelf: 'stretch' }]} onPress={() => setModalEditarAdmin(true)}>
+                  <Ionicons name="pencil" size={16} color="#FFF" /><Text style={styles.botonPrincipalTexto}>Editar mi perfil</Text>
+                </TouchableOpacity>
+              ) : (
+                <Text style={[styles.datoChico, { textAlign: 'center', marginTop: 8 }]}>Puedes revisar reportes, usuarios y obras, y bloquear cuentas. Agregar personal y eliminar cuentas solo lo puede hacer el administrador principal.</Text>
+              )}
             </View>
 
-            {/* HERRAMIENTA PARA DESPUÉS DE LIMPIAR DATOS A MANO EN FIREBASE */}
-            <TouchableOpacity style={[styles.tarjeta, { flexDirection: 'row', alignItems: 'center' }]} disabled={procesando} onPress={recalcularTodos}>
+            {/* HERRAMIENTA PARA DESPUÉS DE LIMPIAR DATOS A MANO EN FIREBASE (SOLO EL PRINCIPAL) */}
+            {esPrincipal && <TouchableOpacity style={[styles.tarjeta, { flexDirection: 'row', alignItems: 'center' }]} disabled={procesando} onPress={recalcularTodos}>
               <View style={[styles.iconoEquipo, { backgroundColor: '#DBEAFE' }]}><Ionicons name="refresh" size={20} color="#2563EB" /></View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.tituloTarjeta}>Recalcular todos los perfiles</Text>
                 <Text style={styles.datoChico}>Úsalo si borraste reseñas u obras directo en Firebase: las calificaciones y obras de cada perfil se vuelven a armar.</Text>
               </View>
               {procesando ? <ActivityIndicator color="#2563EB" /> : <Ionicons name="chevron-forward" size={20} color="#9CA3AF" />}
-            </TouchableOpacity>
+            </TouchableOpacity>}
 
             <View style={styles.filaEntre}>
-              <Text style={styles.seccion}>Equipo de monitoreo ({personalSoporte.length})</Text>
-              <TouchableOpacity style={styles.botonChico} onPress={() => setModalCrear(true)}><Ionicons name="person-add" size={14} color="#FFF" /><Text style={styles.botonChicoTexto}>Agregar</Text></TouchableOpacity>
+              <Text style={styles.seccion}>Personal de monitoreo ({personalSoporte.length})</Text>
+              {esPrincipal && <TouchableOpacity style={styles.botonChico} onPress={() => setModalCrear(true)}><Ionicons name="person-add" size={14} color="#FFF" /><Text style={styles.botonChicoTexto}>Agregar</Text></TouchableOpacity>}
             </View>
-            {personalSoporte.map(s => (
-              <View key={s.id} style={[styles.tarjeta, { flexDirection: 'row', alignItems: 'center' }]}>
-                <View style={styles.iconoEquipo}><Ionicons name="headset" size={20} color={COLOR.resuelto} /></View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.tituloTarjeta}>{s.nombre}</Text>
-                  <Text style={styles.datoChico}>{s.rol_usuario} · {s.correo}</Text>
+            {personalSoporte.map(s => {
+              const activo = s.estado_cuenta === 'Activa';
+              return (
+                <View key={s.id} style={[styles.tarjeta, { borderLeftWidth: 5, borderLeftColor: !s.con_cuenta ? '#9CA3AF' : activo ? COLOR.resuelto : COLOR.pendiente }]}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    <View style={styles.iconoEquipo}><Ionicons name="headset" size={20} color={COLOR.resuelto} /></View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.tituloTarjeta}>{s.nombre}</Text>
+                      <Text style={styles.datoChico}>{s.rol_usuario} · {s.correo}</Text>
+                      <Text style={[styles.datoChico, { fontWeight: 'bold', color: !s.con_cuenta ? '#6B7280' : activo ? COLOR.resuelto : '#B45309' }]}>
+                        {!s.con_cuenta ? 'Registro viejo, sin cuenta: quítalo y vuelve a agregarlo' : activo ? `✅ Ya entró${s.ultimo_acceso ? ` (último acceso: ${new Date(s.ultimo_acceso).toLocaleDateString('es-MX')})` : ''}` : '⏳ Falta que cree su contraseña con el correo'}
+                      </Text>
+                    </View>
+                  </View>
+                  {esPrincipal && (
+                    <View style={{ flexDirection: 'row', marginTop: 4 }}>
+                      {s.con_cuenta && !activo && (
+                        <TouchableOpacity style={[styles.botonPrincipal, { flex: 1, backgroundColor: '#2563EB', marginRight: 6, paddingVertical: 8 }]} disabled={procesando} onPress={() => accionEquipo(s, 'reenviar')}>
+                          <Ionicons name="mail" size={14} color="#FFF" /><Text style={styles.botonPrincipalTexto}>Reenviar correo</Text>
+                        </TouchableOpacity>
+                      )}
+                      <TouchableOpacity style={[styles.botonPrincipal, { flex: 1, backgroundColor: COLOR.bloqueada, paddingVertical: 8 }]} disabled={procesando} onPress={() => accionEquipo(s, 'quitar')}>
+                        <Ionicons name="person-remove" size={14} color="#FFF" /><Text style={styles.botonPrincipalTexto}>Quitar acceso</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
                 </View>
-              </View>
-            ))}
+              );
+            })}
             {personalSoporte.length === 0 && <Text style={styles.vacioTexto}>Todavía no hay personal de monitoreo.</Text>}
           </View>
         )}
@@ -792,7 +853,7 @@ export default function AdminDashboard() {
                   <PerfilTrabajador
                     trabajador={usuarioExpandido}
                     obrasEnCurso={obrasEnCursoDe(usuarioExpandido.id)}
-                    onEliminarObra={(idObra) => eliminarObraDeUsuario(usuarioExpandido.id, idObra)}
+                    onEliminarObra={(obra) => eliminarObraDeUsuario(usuarioExpandido.id, obra)}
                     onEliminarObraPalante={(obra) => corregirPerfil("Quitar obra terminada", `¿Quitar "${obra.titulo}" de las obras terminadas de ${usuarioExpandido.nombre}? Ya no aparecerá en su perfil.`, 'eliminar_obra', { uid: usuarioExpandido.id, id_contrato: obra.id_contrato })}
                     onEliminarResena={(r) => corregirPerfil("Borrar reseña", `¿Borrar la reseña de ${r.evaluador_nombre}? Su calificación se recalculará.`, 'eliminar_resena', { id_resena: `${r.evaluador_id}_${usuarioExpandido.id}` })}
                   />
@@ -856,9 +917,12 @@ export default function AdminDashboard() {
                     <Ionicons name={usuarioExpandido.estado_cuenta === 'Bloqueada' ? 'lock-open' : 'lock-closed'} size={16} color="#FFF" />
                     <Text style={styles.botonPrincipalTexto}>{usuarioExpandido.estado_cuenta === 'Bloqueada' ? 'Desbloquear' : 'Bloquear'}</Text>
                   </TouchableOpacity>
-                  <TouchableOpacity style={[styles.botonPrincipal, { flex: 1, backgroundColor: COLOR.bloqueada, marginLeft: 6 }]} disabled={procesando} onPress={() => eliminarUsuarioCompleto(usuarioExpandido)}>
-                    <Ionicons name="trash" size={16} color="#FFF" /><Text style={styles.botonPrincipalTexto}>Eliminar cuenta</Text>
-                  </TouchableOpacity>
+                  {/* BORRAR CUENTAS: SOLO EL ADMINISTRADOR PRINCIPAL */}
+                  {esPrincipal && (
+                    <TouchableOpacity style={[styles.botonPrincipal, { flex: 1, backgroundColor: COLOR.bloqueada, marginLeft: 6 }]} disabled={procesando} onPress={() => eliminarUsuarioCompleto(usuarioExpandido)}>
+                      <Ionicons name="trash" size={16} color="#FFF" /><Text style={styles.botonPrincipalTexto}>Eliminar cuenta</Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
               </ScrollView>
             </SafeAreaView>
@@ -919,6 +983,7 @@ export default function AdminDashboard() {
           <View style={[styles.modalCaja, { maxHeight: '90%' }]}>
             <ScrollView showsVerticalScrollIndicator={false}>
               <Text style={styles.modalTitulo}>Agregar personal de monitoreo</Text>
+              <Text style={[styles.datoChico, { marginBottom: 12 }]}>No sube INE. Se le crea una cuenta y le llega un correo de PalanteMX para crear su contraseña: así comprobamos que el correo es suyo. Después entra con ese correo y verá este panel (sin poder agregar personal ni borrar cuentas).</Text>
               <Text style={styles.modalEtiqueta}>Puesto</Text>
               <View style={styles.pickerCaja}>
                 <Picker selectedValue={nuevoRol} onValueChange={setNuevoRol}>
