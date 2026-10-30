@@ -351,9 +351,9 @@ const validarRostro = async (env: Env, urlINEFrente: string, urlSelfie: string) 
 
   // QUÉ TAN PARECIDAS DEBEN SER LAS CARAS (VARIABLE KYC_MODO EN wrangler.toml):
   //   'estricto' (NORMAL): EL UMBRAL "1e-4" DE Face++ (SOLO 1 EN 10,000 PERSONAS DISTINTAS PASARÍA)
-  //   'pruebas':           EL UMBRAL "1e-3" (1 EN 1,000) MENOS 5 PUNTOS, PARA QUE PASEN FOTOS DE INE VIEJAS O BORROSAS
+  //   'pruebas':           EL UMBRAL "1e-3" DE Face++ (1 EN 1,000): SOLO UN ESCALÓN MENOS ESTRICTO, PARA FOTOS DE INE VIEJAS
   const pruebas = env.KYC_MODO === 'pruebas';
-  const minimo = pruebas ? faceData.thresholds['1e-3'] - 5 : faceData.thresholds['1e-4'];
+  const minimo = pruebas ? faceData.thresholds['1e-3'] : faceData.thresholds['1e-4'];
   console.log(`Comparación de rostro: parecido ${faceData.confidence}, mínimo ${minimo} (modo ${pruebas ? 'pruebas' : 'estricto'})`);
   if (faceData.confidence < minimo) {
     throw new ErrorKYC(pruebas
