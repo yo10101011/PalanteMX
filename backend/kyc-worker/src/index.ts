@@ -22,6 +22,7 @@ interface Env {
   OCR_KEY: string;
   FACE_KEY: string;
   FACE_SECRET: string;
+  KYC_MODO?: string; // 'pruebas' = COMPARACIÓN DE ROSTRO MÁS TOLERANTE; CUALQUIER OTRO VALOR = ESTRICTO
   // EL JSON COMPLETO DE LA CUENTA DE SERVICIO (SE GUARDA CON `wrangler secret put FIREBASE_SERVICE_ACCOUNT`)
   FIREBASE_SERVICE_ACCOUNT: string;
 }
@@ -341,11 +342,23 @@ const validarRostro = async (env: Env, urlINEFrente: string, urlSelfie: string) 
   const faceResponse = await fetch('https://api-us.faceplusplus.com/facepp/v3/compare', { method: 'POST', body: form });
   const faceData: any = await faceResponse.json();
 
-  if (faceData.error_message || !faceData.faces1?.length || !faceData.faces2?.length) {
-    throw new ErrorKYC('Las fotografías no coinciden.');
+  if (faceData.error_message) {
+    console.log('Face++ respondió con error', faceData.error_message);
+    throw new ErrorKYC('No se pudo comparar tu rostro. Toma la selfie con buena luz, de frente y sin lentes ni gorra.');
   }
-  if (faceData.confidence < faceData.thresholds['1e-4']) {
-    throw new ErrorKYC('Las fotografías no coinciden.');
+  if (!faceData.faces1?.length) throw new ErrorKYC('No se encontró un rostro en la foto de la INE. Escanéala de nuevo con buena luz y sin reflejos.');
+  if (!faceData.faces2?.length) throw new ErrorKYC('No se encontró tu rostro en la selfie. Tómala de frente, con buena luz y sin lentes ni gorra.');
+
+  // QUÉ TAN PARECIDAS DEBEN SER LAS CARAS (VARIABLE KYC_MODO EN wrangler.toml):
+  //   'estricto' (NORMAL): EL UMBRAL "1e-4" DE Face++ (SOLO 1 EN 10,000 PERSONAS DISTINTAS PASARÍA)
+  //   'pruebas':           EL UMBRAL "1e-3" (1 EN 1,000) MENOS 5 PUNTOS, PARA QUE PASEN FOTOS DE INE VIEJAS O BORROSAS
+  const pruebas = env.KYC_MODO === 'pruebas';
+  const minimo = pruebas ? faceData.thresholds['1e-3'] - 5 : faceData.thresholds['1e-4'];
+  console.log(`Comparación de rostro: parecido ${faceData.confidence}, mínimo ${minimo} (modo ${pruebas ? 'pruebas' : 'estricto'})`);
+  if (faceData.confidence < minimo) {
+    throw new ErrorKYC(pruebas
+      ? `Las fotografías no coinciden (parecido ${Math.round(faceData.confidence)} de ${Math.round(minimo)} necesarios). Intenta con mejor luz.`
+      : 'Las fotografías no coinciden.');
   }
 };
 

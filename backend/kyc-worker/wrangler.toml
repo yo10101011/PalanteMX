@@ -10,6 +10,10 @@ FIREBASE_PROJECT_ID = "palantemx-2a5aa"
 CLOUDINARY_CLOUD_NAME = "ylqsvel1"
 # La "apiKey" web de Firebase: es la misma que está en firebaseConfig.js dentro de la app, no es secreta.
 FIREBASE_WEB_API_KEY = "AIzaSyCnlqzM3GCDGICbgUmCrsKPMobxvCqneIc"
+# Qué tan parecida debe ser la selfie a la foto de la INE:
+#   "pruebas"  = más tolerante (para crear cuentas de prueba con INE viejas o borrosas)
+#   "estricto" = el nivel normal y seguro. ⚠️ REGRESARLO A "estricto" ANTES DE USAR LA APP CON GENTE REAL.
+KYC_MODO = "pruebas"
 
 # Tarea diaria (gratis en el plan Free de Cloudflare): revisa obras terminadas sin pago confirmado.
 # 15:00 UTC = 9:00 de la mañana en el centro de México.
