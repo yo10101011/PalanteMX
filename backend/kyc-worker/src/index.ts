@@ -9,6 +9,7 @@
 //   POST /contratos            -> todos los pasos de un contrato (proponer, postular, aceptar, terminar, cancelar,
 //                                 revisar la bitácora, reportar un problema...).
 //   POST /reportes             -> el admin resuelve un reporte y se les avisa a las dos partes.
+//   POST /admin-perfiles       -> el admin borra una reseña u obra de un perfil, o recalcula los perfiles.
 import { createRemoteJWKSet, importPKCS8, jwtVerify, SignJWT } from 'jose';
 
 interface Env {
@@ -52,6 +53,7 @@ export default {
     if (request.method === 'POST' && url.pathname === '/eliminar-cuenta') return eliminarCuenta(request, env);
     if (request.method === 'POST' && url.pathname === '/contratos') return gestionarContrato(request, env);
     if (request.method === 'POST' && url.pathname === '/reportes') return resolverReporte(request, env);
+    if (request.method === 'POST' && url.pathname === '/admin-perfiles') return adminPerfiles(request, env);
     return responder(404, { error: 'Ruta no encontrada' });
   },
 
@@ -1277,6 +1279,110 @@ const resolverReporte = async (request: Request, env: Env) => {
     console.log('Error resolviendo reporte', error);
     return responder(502, { error: 'No se pudo resolver el reporte. Intenta más tarde.' });
   }
+};
+
+// =========================================================================
+// RUTA 8: EL ADMIN CORRIGE LOS DATOS PÚBLICOS DE UN PERFIL
+// EL PERFIL GUARDA UNA COPIA DE SUS RESEÑAS (calificacion, numero_resenas, resenas) Y DE SUS OBRAS TERMINADAS
+// (obras_realizadas) PARA CARGAR RÁPIDO. SI SE BORRA EL ORIGINAL, LA COPIA SE DEBE RECALCULAR:
+//   eliminar_resena  { id_resena }               -> borra la reseña y recalcula a quien la recibió
+//   eliminar_obra    { uid, id_contrato }        -> quita la obra del perfil (y no vuelve a aparecer al recalcular)
+//   recalcular       { uid }                     -> rearma reseñas y obras de un perfil con lo que de verdad existe
+//   recalcular_todos {}                          -> lo mismo para todos (p. ej. después de limpiar Firebase a mano)
+// =========================================================================
+const adminPerfiles = async (request: Request, env: Env) => {
+  const sesion = await verificarSesion(request, env);
+  if (!sesion) return responder(401, { error: 'Sesión inválida o expirada' });
+  let datos: { accion?: unknown; uid?: unknown; id_resena?: unknown; id_contrato?: unknown };
+  try { datos = await request.json(); } catch { return responder(400, { error: 'Cuerpo de la petición inválido' }); }
+
+  try {
+    if (!(await leerDocumentos(env, [`Administradores/${sesion.uid}`]))[`Administradores/${sesion.uid}`]) {
+      return responder(403, { error: 'Solo un administrador puede hacer esto.' });
+    }
+    const nombreBase = `projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents`;
+
+    switch (datos.accion) {
+      case 'eliminar_resena': {
+        if (!textoValido(datos.id_resena, 300) || !/^[\w]+_[\w]+$/.test(datos.id_resena)) return responder(400, { error: 'Reseña inválida.' });
+        const idEvaluado = datos.id_resena.split('_')[1];
+        await confirmarEscrituras(env, [{ delete: `${nombreBase}/Resenas_Plataforma/${datos.id_resena}` }]);
+        await recalcularPerfil(env, idEvaluado);
+        return responder(200, { ok: true });
+      }
+      case 'eliminar_obra': {
+        if (!textoValido(datos.uid, 128) || !textoValido(datos.id_contrato, 128)) return responder(400, { error: 'Faltan datos.' });
+        // SE MARCA EL CONTRATO PARA QUE AL RECALCULAR NO VUELVA A APARECER EN EL PERFIL (SI EL CONTRATO AÚN EXISTE)
+        const ruta = `Postulaciones/${datos.id_contrato}`;
+        if ((await leerDocumentos(env, [ruta]))[ruta]) {
+          await confirmarEscrituras(env, [{
+            update: { name: `${nombreBase}/${ruta}`, fields: aCamposFirestore({ oculta_en_perfil: true }) },
+            updateMask: { fieldPaths: ['oculta_en_perfil'] },
+          }]);
+        }
+        await recalcularPerfil(env, datos.uid, datos.id_contrato);
+        return responder(200, { ok: true });
+      }
+      case 'recalcular': {
+        if (!textoValido(datos.uid, 128)) return responder(400, { error: 'Falta el usuario.' });
+        await recalcularPerfil(env, datos.uid);
+        return responder(200, { ok: true });
+      }
+      case 'recalcular_todos': {
+        const ids = [...(await listarIds(env, 'Usuarios')), ...(await listarIds(env, 'Contratistas'))];
+        for (const id of ids) await recalcularPerfil(env, id);
+        return responder(200, { ok: true, perfiles: ids.length });
+      }
+      default:
+        return responder(400, { error: 'Acción desconocida.' });
+    }
+  } catch (error) {
+    console.log('Error corrigiendo perfiles', error);
+    return responder(502, { error: 'No se pudo completar. Intenta más tarde.' });
+  }
+};
+
+// IDS DE TODOS LOS DOCUMENTOS DE UNA COLECCIÓN (HASTA 300)
+const listarIds = async (env: Env, coleccion: string) => {
+  const token = await obtenerTokenGoogle(env);
+  const respuesta = await fetch(`${urlDocumentos(env)}/${coleccion}?pageSize=300&mask.fieldPaths=nombre`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!respuesta.ok) throw new Error(`Firestore respondió ${respuesta.status}: ${await respuesta.text()}`);
+  const { documents = [] } = (await respuesta.json()) as { documents?: { name: string }[] };
+  return documents.map(d => d.name.split('/').pop() as string);
+};
+
+// REARMA LA COPIA DE RESEÑAS Y OBRAS TERMINADAS DE UN PERFIL CON LO QUE DE VERDAD EXISTE EN FIREBASE:
+//   - RESEÑAS: LAS DE Resenas_Plataforma DIRIGIDAS A ESTA PERSONA (Y SU PROMEDIO)
+//   - OBRAS: SOLO LAS QUE SIGUEN EXISTIENDO COMO CONTRATO FINALIZADO Y NO SE OCULTARON (quitarContrato SE QUITA SIEMPRE)
+const recalcularPerfil = async (env: Env, uid: string, quitarContrato?: string) => {
+  const nombreBase = `projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents`;
+  const perfiles = await leerDocumentos(env, [`Usuarios/${uid}`, `Contratistas/${uid}`]);
+  const ruta = perfiles[`Usuarios/${uid}`] ? `Usuarios/${uid}` : perfiles[`Contratistas/${uid}`] ? `Contratistas/${uid}` : null;
+  if (!ruta) return;
+  const perfil = perfiles[ruta]!;
+
+  const resenas = (await consultarDocumentos(env, 'Resenas_Plataforma', [['evaluado_id', 'EQUAL', uid]], 300))
+    .map(r => ({
+      evaluador_id: texto(r.fields.evaluador_id), evaluador_nombre: texto(r.fields.evaluador_nombre), evaluador_foto: texto(r.fields.evaluador_foto),
+      estrellas: numero(r.fields.estrellas), comentario: texto(r.fields.comentario), fecha: texto(r.fields.fecha), timestamp: numero(r.fields.timestamp),
+    }))
+    .sort((a, b) => a.timestamp - b.timestamp);
+  const promedio = resenas.length ? resenas.reduce((s, r) => s + r.estrellas, 0) / resenas.length : 0;
+  const campos: Record<string, unknown> = { calificacion: promedio.toFixed(1), numero_resenas: resenas.length, resenas };
+
+  if (ruta.startsWith('Usuarios/')) {
+    const obras = ((deFirestore(perfil.fields.obras_realizadas) as any[]) || []).filter(o => o?.id_contrato && o.id_contrato !== quitarContrato);
+    const contratos = obras.length ? await leerDocumentos(env, obras.map(o => `Postulaciones/${o.id_contrato}`)) : {};
+    campos.obras_realizadas = obras.filter(o => {
+      const c = contratos[`Postulaciones/${o.id_contrato}`];
+      return c && texto(c.fields.estado) === 'Finalizada' && !c.fields.oculta_en_perfil?.booleanValue;
+    });
+  }
+
+  await confirmarEscrituras(env, [{
+    update: { name: `${nombreBase}/${ruta}`, fields: aCamposFirestore(campos) },
+    updateMask: { fieldPaths: Object.keys(campos) },
+  }]);
 };
 
 // CONSULTA DOCUMENTOS CON FILTROS (TODOS DEBEN CUMPLIRSE). op: 'EQUAL' COMPARA CON UN VALOR, 'IN' CON UNA LISTA.

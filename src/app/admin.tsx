@@ -43,7 +43,7 @@ import { auth, db } from '../../firebaseConfig';
 import { subirFotoACloudinary } from '@/lib/cloudinary';
 import { eliminarCuentaEnServidor } from '@/lib/cuenta';
 import { coincide } from '@/lib/busqueda';
-import { accionContrato, ajustesDePago, ESTADOS, estiloEstado, pagosPorConfirmar, resolverReporte, totalRecibido } from '@/lib/contratos';
+import { accionContrato, adminPerfiles, ajustesDePago, ESTADOS, estiloEstado, pagosPorConfirmar, resolverReporte, totalRecibido } from '@/lib/contratos';
 import { PerfilTrabajador } from '@/components/perfil-trabajador';
 import { VisorFoto } from '@/components/visor-foto';
 
@@ -319,6 +319,43 @@ export default function AdminDashboard() {
               setUsuarioExpandido({ ...usuarioExpandido, portafolio: portafolioActualizado });
             }
           } catch (error) { Alert.alert("Error", "No se pudo borrar."); }
+          setProcesando(false);
+        }
+      }
+    ]);
+  };
+
+  // CORRIGE LA COPIA DE RESEÑAS Y OBRAS DE UN PERFIL (BORRAR UNA RESEÑA U OBRA, O RECALCULAR TODO) Y LO VUELVE A MOSTRAR
+  const corregirPerfil = (titulo: string, pregunta: string, accion: 'eliminar_resena' | 'eliminar_obra' | 'recalcular', datos: { uid?: string; id_resena?: string; id_contrato?: string }) => {
+    Alert.alert(titulo, pregunta, [
+      { text: "Cancelar", style: "cancel" },
+      { text: "Sí", style: accion === 'recalcular' ? 'default' : 'destructive', onPress: async () => {
+          setProcesando(true);
+          try {
+            await adminPerfiles(accion, datos);
+            await cargarDatosAdmin();
+            const u = usuarioExpandido;
+            const fresco = await getDoc(doc(db, u.rol === 'Trabajador' ? 'Usuarios' : 'Contratistas', u.id));
+            if (fresco.exists()) setUsuarioExpandido({ id: fresco.id, rol: u.rol, ...fresco.data() });
+            Alert.alert("Listo", accion === 'recalcular' ? "Se recalcularon sus reseñas, su calificación y sus obras." : "Se quitó y la calificación se recalculó.");
+          } catch (error: any) { Alert.alert("No se pudo", error?.message || "Intenta de nuevo."); }
+          setProcesando(false);
+        }
+      }
+    ]);
+  };
+
+  // DESPUÉS DE BORRAR COSAS A MANO EN FIREBASE (P. EJ. PARA EMPEZAR PRUEBAS DE CERO), REARMA TODOS LOS PERFILES
+  const recalcularTodos = () => {
+    Alert.alert("Recalcular todos los perfiles", "Se vuelven a calcular las reseñas, calificaciones y obras terminadas de todos los usuarios, con lo que de verdad existe en Firebase. Úsalo después de borrar reseñas u obras directo en Firebase.", [
+      { text: "Cancelar", style: "cancel" },
+      { text: "Recalcular", onPress: async () => {
+          setProcesando(true);
+          try {
+            const r = await adminPerfiles('recalcular_todos');
+            await cargarDatosAdmin();
+            Alert.alert("Listo", `Se recalcularon ${r.perfiles || 0} perfiles.`);
+          } catch (error: any) { Alert.alert("No se pudo", error?.message || "Intenta de nuevo."); }
           setProcesando(false);
         }
       }
@@ -624,6 +661,16 @@ export default function AdminDashboard() {
               </TouchableOpacity>
             </View>
 
+            {/* HERRAMIENTA PARA DESPUÉS DE LIMPIAR DATOS A MANO EN FIREBASE */}
+            <TouchableOpacity style={[styles.tarjeta, { flexDirection: 'row', alignItems: 'center' }]} disabled={procesando} onPress={recalcularTodos}>
+              <View style={[styles.iconoEquipo, { backgroundColor: '#DBEAFE' }]}><Ionicons name="refresh" size={20} color="#2563EB" /></View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.tituloTarjeta}>Recalcular todos los perfiles</Text>
+                <Text style={styles.datoChico}>Úsalo si borraste reseñas u obras directo en Firebase: las calificaciones y obras de cada perfil se vuelven a armar.</Text>
+              </View>
+              {procesando ? <ActivityIndicator color="#2563EB" /> : <Ionicons name="chevron-forward" size={20} color="#9CA3AF" />}
+            </TouchableOpacity>
+
             <View style={styles.filaEntre}>
               <Text style={styles.seccion}>Equipo de monitoreo ({personalSoporte.length})</Text>
               <TouchableOpacity style={styles.botonChico} onPress={() => setModalCrear(true)}><Ionicons name="person-add" size={14} color="#FFF" /><Text style={styles.botonChicoTexto}>Agregar</Text></TouchableOpacity>
@@ -742,7 +789,13 @@ export default function AdminDashboard() {
                 </View>
 
                 {usuarioExpandido.rol === 'Trabajador' ? (
-                  <PerfilTrabajador trabajador={usuarioExpandido} obrasEnCurso={obrasEnCursoDe(usuarioExpandido.id)} onEliminarObra={(idObra) => eliminarObraDeUsuario(usuarioExpandido.id, idObra)} />
+                  <PerfilTrabajador
+                    trabajador={usuarioExpandido}
+                    obrasEnCurso={obrasEnCursoDe(usuarioExpandido.id)}
+                    onEliminarObra={(idObra) => eliminarObraDeUsuario(usuarioExpandido.id, idObra)}
+                    onEliminarObraPalante={(obra) => corregirPerfil("Quitar obra terminada", `¿Quitar "${obra.titulo}" de las obras terminadas de ${usuarioExpandido.nombre}? Ya no aparecerá en su perfil.`, 'eliminar_obra', { uid: usuarioExpandido.id, id_contrato: obra.id_contrato })}
+                    onEliminarResena={(r) => corregirPerfil("Borrar reseña", `¿Borrar la reseña de ${r.evaluador_nombre}? Su calificación se recalculará.`, 'eliminar_resena', { id_resena: `${r.evaluador_id}_${usuarioExpandido.id}` })}
+                  />
                 ) : (
                   <View style={[styles.tarjeta, { alignItems: 'center' }]}>
                     <TouchableOpacity onPress={() => usuarioExpandido.foto_rostro_url && setFotoGrande(usuarioExpandido.foto_rostro_url)}>
@@ -757,6 +810,29 @@ export default function AdminDashboard() {
                     </Text>
                   </View>
                 )}
+
+                {/* RESEÑAS DEL CONTRATISTA (EL DEL TRABAJADOR YA LAS MUESTRA SU PERFIL), CON BOTÓN PARA BORRAR */}
+                {usuarioExpandido.rol === 'Contratista' && (
+                  <>
+                    <Text style={styles.seccion}>Reseñas que recibió ({usuarioExpandido.resenas?.length || 0})</Text>
+                    {(usuarioExpandido.resenas || []).length === 0 ? <Text style={styles.vacioTexto}>No tiene reseñas.</Text>
+                      : [...usuarioExpandido.resenas].reverse().map((r: any, i: number) => (
+                        <View key={i} style={[styles.tarjeta, { flexDirection: 'row', alignItems: 'center' }]}>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.tituloTarjeta}>{r.evaluador_nombre} · {'★'.repeat(r.estrellas)}</Text>
+                            <Text style={[styles.datoChico, { fontStyle: 'italic' }]}>"{r.comentario}" · {r.fecha}</Text>
+                          </View>
+                          <TouchableOpacity onPress={() => corregirPerfil("Borrar reseña", `¿Borrar la reseña de ${r.evaluador_nombre}? Su calificación se recalculará.`, 'eliminar_resena', { id_resena: `${r.evaluador_id}_${usuarioExpandido.id}` })}>
+                            <Ionicons name="trash" size={22} color={COLOR.bloqueada} />
+                          </TouchableOpacity>
+                        </View>
+                      ))}
+                  </>
+                )}
+
+                <TouchableOpacity style={[styles.botonPrincipal, { backgroundColor: '#2563EB' }]} disabled={procesando} onPress={() => corregirPerfil("Recalcular este perfil", `Se vuelven a calcular las reseñas, la calificación y las obras terminadas de ${usuarioExpandido.nombre} con lo que de verdad existe en Firebase.`, 'recalcular', { uid: usuarioExpandido.id })}>
+                  <Ionicons name="refresh" size={16} color="#FFF" /><Text style={styles.botonPrincipalTexto}>Recalcular reseñas y obras</Text>
+                </TouchableOpacity>
 
                 <Text style={styles.seccion}>Reportes en su contra ({reportesContra(usuarioExpandido.id).length})</Text>
                 {reportesContra(usuarioExpandido.id).length === 0 ? <Text style={styles.vacioTexto}>No tiene reportes en su contra.</Text>

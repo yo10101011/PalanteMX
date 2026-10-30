@@ -128,6 +128,10 @@ export const accionContrato = async (accion: AccionContrato, datos: DatosAccion 
 export const resolverReporte = (idQueja: string, decision: string, nota: string, ajuste = 0, bloquear = false) =>
   llamarServidor('/reportes', { id_queja: idQueja, decision, nota, descuento: ajuste, bloquear }, "No se pudo resolver el reporte.");
 
+// EL ADMIN CORRIGE LA COPIA DE RESEÑAS Y OBRAS TERMINADAS QUE GUARDA CADA PERFIL (VER /admin-perfiles EN EL SERVIDOR)
+export const adminPerfiles = (accion: 'eliminar_resena' | 'eliminar_obra' | 'recalcular' | 'recalcular_todos', datos: { uid?: string; id_resena?: string; id_contrato?: string } = {}) =>
+  llamarServidor('/admin-perfiles', { accion, ...datos }, "No se pudo completar.") as Promise<{ ok: boolean; perfiles?: number }>;
+
 // ¿HAY REPORTES DE ESTA OBRA QUE EL ADMIN AÚN NO RESUELVE? MIENTRAS LOS HAYA, NO SE PUEDE TERMINAR LA OBRA
 export const tieneReporteAbierto = (contrato: any) => (contrato?.reportes_abiertos || 0) > 0;
 

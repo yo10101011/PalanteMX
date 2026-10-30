@@ -13,9 +13,11 @@ type Props = {
   distancia?: string;                         // P. EJ. "a 12 km" (DESDE QUIEN LO VE)
   onEliminarObra?: (idObra: string) => void;  // SOLO EL ADMIN PUEDE BORRAR OBRAS DEL PORTAFOLIO
   obrasEnCurso?: any[];                       // CONTRATOS QUE AÚN NO TERMINA (SOLO EL ADMIN PUEDE VERLOS)
+  onEliminarObraPalante?: (obra: any) => void; // SOLO EL ADMIN: QUITAR UNA OBRA TERMINADA EN PALANTEMX
+  onEliminarResena?: (resena: any) => void;    // SOLO EL ADMIN: BORRAR UNA RESEÑA (LA CALIFICACIÓN SE RECALCULA)
 };
 
-export function PerfilTrabajador({ trabajador: t, distancia, onEliminarObra, obrasEnCurso }: Props) {
+export function PerfilTrabajador({ trabajador: t, distancia, onEliminarObra, obrasEnCurso, onEliminarObraPalante, onEliminarResena }: Props) {
   const [fotoGrande, setFotoGrande] = useState<string | null>(null);
   const obrasPalante: any[] = [...(t?.obras_realizadas || [])].reverse();
   const portafolio: any[] = (t?.portafolio || []).filter((o: any) => o && typeof o === 'object');
@@ -70,6 +72,9 @@ export function PerfilTrabajador({ trabajador: t, distancia, onEliminarObra, obr
       <Text style={styles.seccion}>🤝 Obras terminadas en PalanteMX ({obrasPalante.length})</Text>
       {obrasPalante.length === 0 ? <Text style={styles.vacio}>Todavía no termina obras dentro de PalanteMX.</Text> : obrasPalante.map((obra, i) => (
         <View key={i} style={[styles.tarjeta, { padding: 0, overflow: 'hidden' }]}>
+          {onEliminarObraPalante && (
+            <TouchableOpacity style={styles.borrar} onPress={() => onEliminarObraPalante(obra)}><Ionicons name="trash" size={18} color="#FFF" /></TouchableOpacity>
+          )}
           {obra.foto_trabajo ? <TouchableOpacity onPress={() => setFotoGrande(obra.foto_trabajo)}><Image source={{ uri: obra.foto_trabajo }} style={styles.fotoObra} /></TouchableOpacity> : null}
           <View style={{ padding: 14 }}>
             <Text style={styles.obraTitulo}>{obra.titulo}</Text>
@@ -113,6 +118,9 @@ export function PerfilTrabajador({ trabajador: t, distancia, onEliminarObra, obr
         <View key={i} style={styles.tarjeta}>
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
             <Image source={{ uri: r.evaluador_foto || undefined }} style={styles.fotoResena} />
+            {onEliminarResena && (
+              <TouchableOpacity style={[styles.borrar, { top: 0, right: 0 }]} onPress={() => onEliminarResena(r)}><Ionicons name="trash" size={16} color="#FFF" /></TouchableOpacity>
+            )}
             <View style={{ flex: 1 }}>
               <Text style={styles.obraTitulo}>{r.evaluador_nombre}</Text>
               <View style={{ flexDirection: 'row', alignItems: 'center' }}>
