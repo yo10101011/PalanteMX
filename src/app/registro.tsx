@@ -14,6 +14,7 @@ import { createUserWithEmailAndPassword, deleteUser, signOut, User } from 'fireb
 import { auth } from '../../firebaseConfig';
 import { subirACloudinary } from '@/lib/cloudinary';
 import { SelectorOficio } from '@/components/selector-oficio';
+import { ubicacionPrecisa } from '@/lib/ubicacion';
 
 export default function RegistroScreen() {
   const [rol, setRol] = useState('Trabajador');
@@ -128,10 +129,12 @@ export default function RegistroScreen() {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') { mostrarAlerta('Restringido', 'GPS requerido.', 'error'); return; }
       mostrarAlerta('Conectando...', 'Buscando satélites...', 'info');
-      const location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-      setUbicacion({ latitud: location.coords.latitude, longitud: location.coords.longitude });
-      setAlerta({ visible: false, titulo: '', mensaje: '', tipo: 'info' }); 
-      mostrarAlerta('Exitoso', 'Coordenadas registradas.', 'success');
+      // HASTA 3 LECTURAS Y SE QUEDA CON LA MÁS PRECISA (UNA SOLA LECTURA DENTRO DE CASA PUEDE TENER KILÓMETROS DE ERROR)
+      const punto = await ubicacionPrecisa();
+      setUbicacion({ latitud: punto.latitud, longitud: punto.longitud });
+      setAlerta({ visible: false, titulo: '', mensaje: '', tipo: 'info' });
+      if ((punto.precision ?? 0) > 500) mostrarAlerta('Ubicación aproximada', 'Tu GPS no está muy preciso. Se guardó, pero se corregirá sola la próxima vez que abras la app. Si puedes, acércate a una ventana y vuelve a tocar.', 'info');
+      else mostrarAlerta('Exitoso', 'Ubicación registrada.', 'success');
     } catch (error) {
       mostrarAlerta('Error', 'Enciende tu GPS.', 'error');
     }

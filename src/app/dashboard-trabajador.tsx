@@ -16,7 +16,7 @@ import { subirFotoACloudinary } from '@/lib/cloudinary';
 import { eliminarCuentaEnServidor } from '@/lib/cuenta';
 import { abrirChatCon, accionContrato, AccionContrato, ESTADOS, MENSAJES_INICIALES, pagosPorConfirmar, sePuedeCalificar, tieneReporteAbierto } from '@/lib/contratos';
 import { useMensajesSinLeer } from '@/lib/mensajes';
-import { DIAS_SEMANA, PERIODOS_PAGO, textoDias, textoPrecio, ubicacionDesdeGPS } from '@/lib/ubicacion';
+import { DIAS_SEMANA, PERIODOS_PAGO, textoDias, textoPrecio, actualizarMiUbicacion } from '@/lib/ubicacion';
 import { BarraSuperior } from '@/components/barra-superior';
 import { CampanaNotificaciones } from '@/components/campana-notificaciones';
 import { ModalPagos } from '@/components/modal-pagos';
@@ -132,16 +132,16 @@ export default function DashboardTrabajador() {
         setUbicacionLegible([data.ubicacion_texto, data.ubicacion_estado].filter(Boolean).join(', ') || 'Sin ubicación');
         setEditUbicacion(data.ubicacion_texto || '');
         setEditEstado(data.ubicacion_estado || '');
-        if (!data.ubicacion_estado || !data.ubicacion_texto) {
-          ubicacionDesdeGPS(data.ubicacion).then(gps => {
-            const estado = data.ubicacion_estado || gps?.estado || '';
-            const ciudad = data.ubicacion_texto || gps?.ciudad || '';
-            if (estado && !data.ubicacion_estado) updateDoc(doc(db, userDoc.ref.path), { ubicacion_estado: estado }).catch(() => {});
-            setUbicacionLegible([ciudad, estado].filter(Boolean).join(', ') || 'Sin ubicación');
-            setEditUbicacion(ciudad);
-            setEditEstado(estado);
-          });
-        }
+        // ACTUALIZA SU UBICACIÓN (SI LA NUEVA LECTURA ES MÁS PRECISA) Y LLENA ESTADO Y MUNICIPIO SI FALTAN
+        actualizarMiUbicacion(data, campos => updateDoc(doc(db, userDoc.ref.path), campos)).then(campos => {
+          if (!campos) return;
+          const estado = (campos.ubicacion_estado as string) || data.ubicacion_estado || '';
+          const municipio = (campos.ubicacion_texto as string) || data.ubicacion_texto || '';
+          setUbicacionLegible([municipio, estado].filter(Boolean).join(', ') || 'Sin ubicación');
+          setEditUbicacion(municipio);
+          setEditEstado(estado);
+          setUserData((u: any) => ({ ...u, ...campos }));
+        });
 
         // TODOS MIS CONTRATOS, CON LOS DATOS DE CADA CONTRATISTA (UNA SOLA LECTURA POR CONTRATISTA)
         const snapContratos = await getDocs(query(collection(db, 'Postulaciones'), where('id_trabajador', '==', usuarioActual.uid)));
@@ -468,15 +468,16 @@ export default function DashboardTrabajador() {
 
               {/* DATOS DEL PERFIL EN UNA SOLA CAJA, ORDENADA (ANTES ERAN VARIAS ETIQUETAS AMONTONADAS) */}
               <View style={styles.cajaDatos}>
-                {[
-                  ['Ubicación', ubicacionLegible],
-                  ['Teléfono', userData?.numero_telefono || 'Sin teléfono'],
-                  ['Precio', userData?.tarifa_monto ? textoPrecio(userData.tarifa_monto, userData.tarifa_periodo) : 'Sin definir'],
-                  ['Días disponibles', userData?.dias_disponibles?.length ? textoDias(userData.dias_disponibles) : 'Sin definir'],
-                ].map(([etiqueta, valor], i) => (
+                {([
+                  ['location', '#DC2626', 'Ubicación', ubicacionLegible],
+                  ['call', '#2563EB', 'Teléfono', userData?.numero_telefono || 'Sin teléfono'],
+                  ['cash', '#059669', 'Precio', userData?.tarifa_monto ? textoPrecio(userData.tarifa_monto, userData.tarifa_periodo) : 'Sin definir'],
+                  ['calendar', '#D97706', 'Días disponibles', userData?.dias_disponibles?.length ? textoDias(userData.dias_disponibles) : 'Sin definir'],
+                ] as const).map(([icono, color, etiqueta, valor], i) => (
                   <View key={etiqueta} style={[styles.filaDato, i > 0 && styles.filaDatoBorde]}>
+                    <View style={[styles.iconoDato, { backgroundColor: `${color}15` }]}><Ionicons name={icono} size={17} color={color} /></View>
                     <Text style={styles.datoEtiqueta}>{etiqueta}</Text>
-                    <Text style={[styles.datoValor, valor === 'Sin definir' && { color: '#9CA3AF' }]} numberOfLines={1}>{valor}</Text>
+                    <Text style={[styles.datoValor, valor === 'Sin definir' && { color: '#9CA3AF', fontWeight: 'normal' }]} numberOfLines={2}>{valor}</Text>
                   </View>
                 ))}
                 {(!userData?.tarifa_monto || !userData?.dias_disponibles?.length) && (
@@ -980,10 +981,11 @@ const styles = StyleSheet.create({
   dispDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#FFF', marginRight: 6 },
   dispText: { color: '#FFF', fontSize: 13, fontWeight: 'bold', letterSpacing: 1 },
 
-  cajaDatos: { backgroundColor: '#FFF', borderRadius: 16, paddingHorizontal: 16, paddingVertical: 6, marginTop: 16, width: '100%', borderWidth: 1, borderColor: '#E5E7EB' },
-  filaDato: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 10 },
+  cajaDatos: { backgroundColor: '#FFF', borderRadius: 18, paddingHorizontal: 14, paddingVertical: 4, marginTop: 16, width: '100%', elevation: 3, shadowColor: '#0D2340', shadowOpacity: 0.08, shadowRadius: 8, shadowOffset: { width: 0, height: 3 } },
+  filaDato: { flexDirection: 'row', alignItems: 'center', paddingVertical: 11 },
   filaDatoBorde: { borderTopWidth: 1, borderColor: '#F3F4F6' },
-  datoEtiqueta: { fontSize: 14, color: '#6B7280' },
+  iconoDato: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', marginRight: 10 },
+  datoEtiqueta: { fontSize: 14, color: '#6B7280', flex: 1 },
   datoValor: { fontSize: 15, color: '#0D2340', fontWeight: '600', flexShrink: 1, marginLeft: 12, textAlign: 'right' },
   completarPerfil: { borderTopWidth: 1, borderColor: '#F3F4F6', paddingVertical: 10, alignItems: 'center' },
   completarPerfilTexto: { fontSize: 15, color: '#2563EB', fontWeight: 'bold' },

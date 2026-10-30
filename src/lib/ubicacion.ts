@@ -98,6 +98,58 @@ export const mensajeUbicacion = (nivel: NivelUbicacion, distanciaKm: number | nu
   return { texto: mensajes[nivel][para], color: mensajes[nivel].color };
 };
 
+// MUNICIPIO OFICIAL (DEL CATÁLOGO DEL INEGI) A PARTIR DE LO QUE DICE EL TELÉFONO. EN ANDROID, "subregion" SUELE SER
+// EL MUNICIPIO ("San Felipe del Progreso") Y "city" EL PUEBLO ("Palmillas"): SE PRUEBAN LOS DOS.
+const municipioOficial = (estado: string, candidatos: (string | null | undefined)[]) => {
+  const lista = municipiosDe(estado);
+  for (const c of candidatos) {
+    if (!c) continue;
+    const limpio = sinAcentos(c).replace(/^(municipio de|mpio\.?)\s+/, '');
+    const encontrado = lista.find(m => sinAcentos(m) === limpio) || lista.find(m => sinAcentos(m).startsWith(limpio) || limpio.startsWith(sinAcentos(m)));
+    if (encontrado) return encontrado;
+  }
+  return '';
+};
+
+// ACTUALIZA LA UBICACIÓN DEL PERFIL CADA VEZ QUE LA PERSONA ABRE LA APP (SIN DETENER LA PANTALLA):
+//   - LAS COORDENADAS SE CAMBIAN SOLO SI LA LECTURA NUEVA ES MÁS PRECISA, O SI LA GUARDADA TIENE MÁS DE 12 HORAS
+//     (LA DEL REGISTRO PODÍA VENIR DE LA ANTENA CELULAR, CON KILÓMETROS DE ERROR)
+//   - SI FALTA EL ESTADO O EL MUNICIPIO, SE LLENAN SOLOS CON LOS NOMBRES OFICIALES
+// DEVUELVE LOS CAMPOS QUE CAMBIARON (PARA QUE LA PANTALLA LOS MUESTRE), O null SI NO CAMBIÓ NADA.
+export const actualizarMiUbicacion = async (perfil: any, guardar: (campos: Record<string, unknown>) => Promise<unknown>) => {
+  try {
+    const permiso = await Location.getForegroundPermissionsAsync();
+    if (!permiso.granted) return null; // NO SE PIDE PERMISO AQUÍ: SOLO SE USA SI YA LO DIO
+    const lectura = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+    const precision = lectura.coords.accuracy ?? 9999;
+    const campos: Record<string, unknown> = {};
+
+    const anterior = perfil?.ubicacion_precision ?? 9999;
+    const vieja = !perfil?.ubicacion_actualizada || Date.now() - new Date(perfil.ubicacion_actualizada).getTime() > 12 * 60 * 60 * 1000;
+    if (precision <= 300 && (precision < anterior || vieja)) {
+      campos.ubicacion = { latitud: lectura.coords.latitude, longitud: lectura.coords.longitude };
+      campos.ubicacion_precision = Math.round(precision);
+      campos.ubicacion_actualizada = new Date().toISOString();
+    }
+
+    if (!perfil?.ubicacion_estado || !perfil?.ubicacion_texto) {
+      const [lugar] = await Location.reverseGeocodeAsync({ latitude: lectura.coords.latitude, longitude: lectura.coords.longitude });
+      const estado = perfil?.ubicacion_estado || normalizarEstado(lugar?.region);
+      if (estado && !perfil?.ubicacion_estado) campos.ubicacion_estado = estado;
+      if (estado && !perfil?.ubicacion_texto) {
+        const municipio = municipioOficial(estado, [lugar?.subregion, lugar?.city, lugar?.district]);
+        if (municipio) campos.ubicacion_texto = municipio;
+      }
+    }
+
+    if (Object.keys(campos).length === 0) return null;
+    await guardar(campos);
+    return campos;
+  } catch {
+    return null;
+  }
+};
+
 // CIUDAD Y ESTADO A PARTIR DE LAS COORDENADAS GUARDADAS EN EL REGISTRO
 export const ubicacionDesdeGPS = async (gps?: { latitud?: number; longitud?: number }) => {
   if (!gps?.latitud || !gps?.longitud) return null;
@@ -120,7 +172,7 @@ export const distanciaKm = (a?: { latitud?: number; longitud?: number } | null, 
   return 6371 * 2 * Math.asin(Math.sqrt(h));
 };
 
-export const textoDistancia = (km: number | null) => (km === null ? '' : km < 1 ? 'a menos de 1 km' : `a ${Math.round(km)} km`);
+export const textoDistancia = (km: number | null) => (km === null ? '' : km < 1 ? 'muy cerca de ti (menos de 1 km)' : `a ${Math.round(km)} km de ti`);
 
 // DÍAS DE LA SEMANA EN QUE EL TRABAJADOR ESTÁ DISPONIBLE (CAMPO dias_disponibles DEL PERFIL)
 export const DIAS_SEMANA = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];

@@ -48,12 +48,13 @@ export function PerfilTrabajador({ trabajador: t, distancia, onEliminarObra, obr
 
         {/* DATOS EN FILAS ORDENADAS: ETIQUETA A LA IZQUIERDA, VALOR A LA DERECHA */}
         <View style={styles.datos}>
-          {[
-            ['Ubicación', `${ubicacion || 'Sin ubicación'}${distancia ? ` (${distancia})` : ''}`],
-            ['Precio', textoPrecio(t?.tarifa_monto, t?.tarifa_periodo)],
-            ['Días disponibles', textoDias(t?.dias_disponibles)],
-          ].map(([etiqueta, valor], i) => (
+          {([
+            ['location', '#DC2626', 'Ubicación', `${ubicacion || 'Sin ubicación'}${distancia ? ` (${distancia})` : ''}`],
+            ['cash', '#059669', 'Precio', textoPrecio(t?.tarifa_monto, t?.tarifa_periodo)],
+            ['calendar', '#D97706', 'Días disponibles', textoDias(t?.dias_disponibles)],
+          ] as const).map(([icono, color, etiqueta, valor], i) => (
             <View key={etiqueta} style={[styles.filaDato, i > 0 && styles.filaDatoBorde]}>
+              <View style={[styles.iconoDato, { backgroundColor: `${color}15` }]}><Ionicons name={icono} size={16} color={color} /></View>
               <Text style={styles.datoEtiqueta}>{etiqueta}</Text>
               <Text style={styles.datoValor} numberOfLines={2}>{valor}</Text>
             </View>
@@ -164,10 +165,11 @@ const styles = StyleSheet.create({
   dia: { borderRadius: 8, paddingHorizontal: 6, paddingVertical: 4, marginHorizontal: 2, backgroundColor: '#F3F4F6' },
   diaSi: { backgroundColor: '#00A355' },
   diaTexto: { fontSize: 13, fontWeight: 'bold', color: '#9CA3AF' },
-  datos: { alignSelf: 'stretch', marginTop: 12, borderWidth: 1, borderColor: '#F3F4F6', borderRadius: 12, paddingHorizontal: 12 },
-  filaDato: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 9 },
+  datos: { alignSelf: 'stretch', marginTop: 14, backgroundColor: '#FFF', borderRadius: 16, paddingHorizontal: 12, elevation: 2, shadowColor: '#0D2340', shadowOpacity: 0.08, shadowRadius: 6, shadowOffset: { width: 0, height: 2 } },
+  filaDato: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10 },
   filaDatoBorde: { borderTopWidth: 1, borderColor: '#F3F4F6' },
-  datoEtiqueta: { fontSize: 14, color: '#6B7280' },
+  iconoDato: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center', marginRight: 10 },
+  datoEtiqueta: { fontSize: 14, color: '#6B7280', flex: 1 },
   datoValor: { fontSize: 15, color: '#0D2340', fontWeight: '600', flexShrink: 1, marginLeft: 12, textAlign: 'right' },
   stats: { flexDirection: 'row', marginTop: 12, backgroundColor: '#F9FAFB', borderRadius: 12, paddingVertical: 10, alignSelf: 'stretch' },
   stat: { flex: 1, alignItems: 'center' },

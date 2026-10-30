@@ -20,7 +20,7 @@ import { eliminarCuentaEnServidor } from '@/lib/cuenta';
 import { abrirChatCon, accionContrato, AccionContrato, ESTADOS, MENSAJES_INICIALES, sePuedeCalificar, tieneReporteAbierto } from '@/lib/contratos';
 import { coincide } from '@/lib/busqueda';
 import { useMensajesSinLeer } from '@/lib/mensajes';
-import { distanciaKm, ESTADOS_MEXICO, nombreDeLugar, PERIODOS_PAGO, textoDias, textoDistancia, textoPrecio, ubicacionDesdeGPS, ubicacionPrecisa } from '@/lib/ubicacion';
+import { distanciaKm, ESTADOS_MEXICO, nombreDeLugar, PERIODOS_PAGO, textoDias, textoDistancia, textoPrecio, actualizarMiUbicacion, ubicacionPrecisa } from '@/lib/ubicacion';
 import { BuscadorConSugerencias } from '@/components/buscador-sugerencias';
 import { BarraSuperior } from '@/components/barra-superior';
 import { CampanaNotificaciones } from '@/components/campana-notificaciones';
@@ -154,17 +154,16 @@ export default function DashboardContratista() {
         setUbicacionLegible([data.ubicacion_texto, data.ubicacion_estado].filter(Boolean).join(', ') || 'Sin ubicación');
         setEditUbicacion(data.ubicacion_texto || '');
         setEditEstado(data.ubicacion_estado || '');
-        if (!data.ubicacion_estado || !data.ubicacion_texto) {
-          ubicacionDesdeGPS(data.ubicacion).then(gps => {
-            const estado = data.ubicacion_estado || gps?.estado || '';
-            const ciudad = data.ubicacion_texto || gps?.ciudad || '';
-            if (estado && !data.ubicacion_estado) updateDoc(doc(db, userDoc.ref.path), { ubicacion_estado: estado }).catch(() => {});
-            setUbicacionLegible([ciudad, estado].filter(Boolean).join(', ') || 'Sin ubicación');
-            setEditUbicacion(ciudad);
-            setEditEstado(estado);
-            setUserData((u: any) => ({ ...u, ubicacion_estado: estado }));
-          });
-        }
+        // ACTUALIZA SU UBICACIÓN (SI LA NUEVA LECTURA ES MÁS PRECISA) Y LLENA ESTADO Y MUNICIPIO SI FALTAN
+        actualizarMiUbicacion(data, campos => updateDoc(doc(db, userDoc.ref.path), campos)).then(campos => {
+          if (!campos) return;
+          const estado = (campos.ubicacion_estado as string) || data.ubicacion_estado || '';
+          const municipio = (campos.ubicacion_texto as string) || data.ubicacion_texto || '';
+          setUbicacionLegible([municipio, estado].filter(Boolean).join(', ') || 'Sin ubicación');
+          setEditUbicacion(municipio);
+          setEditEstado(estado);
+          setUserData((u: any) => ({ ...u, ...campos }));
+        });
 
         await cargarDirectorio();
 
