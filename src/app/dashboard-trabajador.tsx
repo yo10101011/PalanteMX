@@ -16,8 +16,9 @@ import { subirFotoACloudinary } from '@/lib/cloudinary';
 import { eliminarCuentaEnServidor } from '@/lib/cuenta';
 import { abrirChatCon, accionContrato, AccionContrato, ESTADOS, MENSAJES_INICIALES, pagosPorConfirmar, sePuedeCalificar, tieneReporteAbierto } from '@/lib/contratos';
 import { useMensajesSinLeer } from '@/lib/mensajes';
-import { DIAS_SEMANA, PERIODOS_PAGO, textoDias, textoPrecio, actualizarMiUbicacion } from '@/lib/ubicacion';
+import { DIAS_SEMANA, PERIODOS_PAGO, textoPrecio, actualizarMiUbicacion } from '@/lib/ubicacion';
 import { BarraSuperior } from '@/components/barra-superior';
+import { DatosTrabajador } from '@/components/datos-trabajador';
 import { CampanaNotificaciones } from '@/components/campana-notificaciones';
 import { ModalPagos } from '@/components/modal-pagos';
 import { quitarUnaObra } from '@/components/perfil-trabajador';
@@ -156,7 +157,7 @@ export default function DashboardTrabajador() {
         lista.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
         setContratos(lista);
       }
-    } catch (error) { console.log("Error", error); } finally { setCargando(false); }
+    } catch (error) { if (auth.currentUser) console.log("Error cargando el perfil del trabajador:", error); } finally { setCargando(false); }
   };
 
   useEffect(() => { cargarPerfil(); }, []);
@@ -278,7 +279,7 @@ export default function DashboardTrabajador() {
       const snapTrab = await getDocs(collection(db, 'Usuarios'));
       const todos = [...snapCont.docs.map(d => ({id: d.id, rol: 'Contratista', ...d.data()})), ...snapTrab.docs.map(d => ({id: d.id, rol: 'Trabajador', ...d.data()}))];
       setListaUsuariosEvaluar(todos.filter(u => u.id !== userData.id));
-    } catch (error) { console.log("Error", error); }
+    } catch (error) { console.log("Error cargando usuarios para evaluar:", error); }
   };
 
   // LA RESEÑA LA VALIDA Y GUARDA EL SERVIDOR (backend/kyc-worker): SOLO SE CALIFICA A QUIEN TE CONTRATÓ,
@@ -467,28 +468,13 @@ export default function DashboardTrabajador() {
                 {procesando && <ActivityIndicator size="small" color="#FFF" style={{marginLeft: 5}} />}
               </TouchableOpacity>
 
-              {/* DATOS DEL PERFIL EN UNA SOLA CAJA, ORDENADA (ANTES ERAN VARIAS ETIQUETAS AMONTONADAS) */}
-              <View style={styles.cajaDatos}>
-                {([
-                  ['location', '#DC2626', 'Ubicación', ubicacionLegible],
-                  ['call', '#2563EB', 'Teléfono', userData?.numero_telefono || 'Sin teléfono'],
-                  ['cash', '#059669', 'Precio', userData?.tarifa_monto ? textoPrecio(userData.tarifa_monto, userData.tarifa_periodo) : 'Sin definir'],
-                  ['calendar', '#D97706', 'Días disponibles', userData?.dias_disponibles?.length ? textoDias(userData.dias_disponibles) : 'Sin definir'],
-                ] as const).map(([icono, color, etiqueta, valor], i) => (
-                  <View key={etiqueta} style={[styles.filaDato, i > 0 && styles.filaDatoBorde]}>
-                    <View style={[styles.iconoDato, { backgroundColor: `${color}15` }]}><Ionicons name={icono} size={16} color={color} /></View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.datoEtiqueta}>{etiqueta}</Text>
-                      <Text style={[styles.datoValor, valor === 'Sin definir' && { color: '#9CA3AF', fontWeight: 'normal' }]} numberOfLines={2}>{valor}</Text>
-                    </View>
-                  </View>
-                ))}
-                {(!userData?.tarifa_monto || !userData?.dias_disponibles?.length) && (
-                  <TouchableOpacity onPress={() => setModalEditar(true)} style={styles.completarPerfil}>
-                    <Text style={styles.completarPerfilTexto}>Completar mi perfil</Text>
-                  </TouchableOpacity>
-                )}
-              </View>
+              <DatosTrabajador
+                ubicacion={ubicacionLegible}
+                precio={userData?.tarifa_monto ? textoPrecio(userData.tarifa_monto, userData.tarifa_periodo) : ''}
+                segundoDato={{ etiqueta: 'Teléfono', valor: userData?.numero_telefono }}
+                dias={userData?.dias_disponibles}
+                onCompletar={() => setModalEditar(true)}
+              />
 
               <View style={styles.statsRow}>
                 <View style={styles.statBox}><Text style={styles.statNumber}>{userData?.calificacion || '0.0'}</Text><Text style={styles.statLabel}>Calificación</Text></View>
@@ -983,14 +969,6 @@ const styles = StyleSheet.create({
   dispDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#FFF', marginRight: 6 },
   dispText: { color: '#FFF', fontSize: 13, fontWeight: 'bold', letterSpacing: 1 },
 
-  cajaDatos: { backgroundColor: '#FFF', borderRadius: 18, paddingHorizontal: 14, paddingVertical: 4, marginTop: 16, width: '100%', elevation: 3, shadowColor: '#0D2340', shadowOpacity: 0.08, shadowRadius: 8, shadowOffset: { width: 0, height: 3 } },
-  filaDato: { flexDirection: 'row', alignItems: 'center', paddingVertical: 9 },
-  filaDatoBorde: { borderTopWidth: 1, borderColor: '#F3F4F6' },
-  iconoDato: { width: 30, height: 30, borderRadius: 15, alignItems: 'center', justifyContent: 'center', marginRight: 12 },
-  datoEtiqueta: { fontSize: 12, color: '#9CA3AF', fontWeight: '600', letterSpacing: 0.3 },
-  datoValor: { fontSize: 14, color: '#0D2340', fontWeight: '600', marginTop: 1 },
-  completarPerfil: { borderTopWidth: 1, borderColor: '#F3F4F6', paddingVertical: 10, alignItems: 'center' },
-  completarPerfilTexto: { fontSize: 15, color: '#2563EB', fontWeight: 'bold' },
   statsRow: { flexDirection: 'row', backgroundColor: '#FFF', borderRadius: 16, paddingVertical: 15, paddingHorizontal: 15, marginTop: 12, elevation: 2, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 5, width: '100%', justifyContent: 'space-between' },
   statBox: { alignItems: 'center', flex: 1 },
   statNumber: { fontSize: 17, fontWeight: 'bold', color: '#0D2340' },

@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
 import { SelectorFotos, subirFotos } from '@/components/selector-fotos';
-import { accionContrato } from '@/lib/contratos';
+import { accionContrato, dineroYaPagado } from '@/lib/contratos';
 
 type Props = {
   contrato: any | null; // null = MODAL CERRADO
@@ -44,6 +44,15 @@ export function ModalCancelarContrato({ contrato, onClose, onCancelado }: Props)
             Vas a cancelar "{contrato?.titulo_vacante}". Se enviará un reporte al administrador y la obra quedará
             <Text style={{ fontWeight: 'bold' }}> suspendida</Text> hasta que él decida.
           </Text>
+          {dineroYaPagado(contrato) > 0 && (
+            <View style={styles.dinero}>
+              <Ionicons name="cash-outline" size={18} color="#92400E" />
+              <Text style={styles.dineroTexto}>
+                El contratista ya pagó ${dineroYaPagado(contrato).toLocaleString('es-MX')} en esta obra. Ese dinero no se pierde: el administrador
+                decidirá si el trabajador lo devuelve (todo o una parte) o se lo queda por lo que ya trabajó.
+              </Text>
+            </View>
+          )}
           <Text style={styles.etiqueta}>¿Por qué la cancelas? (obligatorio)</Text>
           <TextInput style={styles.input} multiline value={motivo} onChangeText={setMotivo} placeholder="Ej. El trabajador dejó de presentarse..." />
           <View style={{ height: 10 }} />
@@ -63,6 +72,8 @@ export function ModalCancelarContrato({ contrato, onClose, onCancelado }: Props)
 const styles = StyleSheet.create({
   fondo: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', padding: 20 },
   caja: { backgroundColor: '#FFF', borderRadius: 20, padding: 22 },
+  dinero: { flexDirection: 'row', alignItems: 'flex-start', backgroundColor: '#FFFBEB', borderWidth: 1, borderColor: '#FDE68A', borderRadius: 10, padding: 10, marginBottom: 10 },
+  dineroTexto: { flex: 1, marginLeft: 8, fontSize: 14, color: '#92400E' },
   encabezado: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
   titulo: { fontSize: 20, fontWeight: 'bold', color: '#0D2340' },
   texto: { fontSize: 15, color: '#4B5563', marginBottom: 15, lineHeight: 19 },

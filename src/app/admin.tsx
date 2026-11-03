@@ -146,6 +146,7 @@ export default function AdminDashboard() {
   const [decision, setDecision] = useState('');
   const [notaAdmin, setNotaAdmin] = useState('');
   const [ajuste, setAjuste] = useState('');
+  const [devolver, setDevolver] = useState(''); // AL CANCELAR UNA OBRA: PESOS QUE EL TRABAJADOR DEVUELVE DE LO YA PAGADO
   const [bloquear, setBloquear] = useState(false);
 
   const [modalEditarAdmin, setModalEditarAdmin] = useState(false);
@@ -403,7 +404,7 @@ export default function AdminDashboard() {
     else Alert.alert("Perfil no encontrado", "Esta cuenta ya no existe o fue eliminada.");
   };
 
-  const abrirResolucion = (queja: any) => { setQuejaResolviendo(queja); setDecision(''); setNotaAdmin(''); setAjuste(''); setBloquear(false); };
+  const abrirResolucion = (queja: any) => { setQuejaResolviendo(queja); setDecision(''); setNotaAdmin(''); setAjuste(''); setDevolver(''); setBloquear(false); };
 
   // QUIÉN TIENE LA RAZÓN CON LA DECISIÓN ELEGIDA, Y QUIÉN NO
   const opcionElegida = quejaResolviendo ? opcionesDeReporte(quejaResolviendo).find(o => o.valor === decision) : undefined;
@@ -415,6 +416,8 @@ export default function AdminDashboard() {
   const permiteAjuste = !!quejaResolviendo?.id_contrato && !esCancelacion(quejaResolviendo) && !!ganador;
   const trabajadorDeQueja = quejaResolviendo?.rol_reportante === 'Trabajador' ? quejaResolviendo?.nombre_reportante : quejaResolviendo?.acusado;
   const contratistaDeQueja = quejaResolviendo?.rol_reportante === 'Contratista' ? quejaResolviendo?.nombre_reportante : quejaResolviendo?.acusado;
+  // DINERO QUE YA SE HABÍA PAGADO AL CANCELARSE LA OBRA (LOS REPORTES NUEVOS LO TRAEN)
+  const montoPagado: number = esCancelacion(quejaResolviendo) ? quejaResolviendo?.monto_pagado || 0 : 0;
 
   // RESUELVE EL REPORTE EN EL SERVIDOR: CAMBIA LA OBRA O EL DÍA DE BITÁCORA SI TOCA, APLICA EL AJUSTE, BLOQUEA SI SE PIDIÓ,
   // ARCHIVA EL REPORTE Y LES MANDA UNA NOTIFICACIÓN CON LA NOTA A LAS DOS PARTES
@@ -424,7 +427,8 @@ export default function AdminDashboard() {
     setProcesando(true);
     try {
       if (esCancelacion(quejaResolviendo)) {
-        await accionContrato(decision as 'admin_reactivar' | 'admin_cancelar', { id_contrato: quejaResolviendo.id_contrato, nota: notaAdmin.trim() });
+        if (decision === 'admin_cancelar' && montoPagado > 0 && devolver === '') { setProcesando(false); Alert.alert("Aviso", `Ya se habían pagado $${montoPagado.toLocaleString('es-MX')}. Indica cuánto debe devolver el trabajador (0 si se lo queda).`); return; }
+        await accionContrato(decision as 'admin_reactivar' | 'admin_cancelar', { id_contrato: quejaResolviendo.id_contrato, nota: notaAdmin.trim(), devolver: decision === 'admin_cancelar' ? parseInt(devolver) || 0 : 0 });
       } else {
         await resolverReporte(quejaResolviendo.id, decision, notaAdmin.trim(), permiteAjuste ? parseInt(ajuste) || 0 : 0, bloquear);
       }
@@ -805,6 +809,23 @@ export default function AdminDashboard() {
                     </>
                   )}
 
+                  {/* CANCELACIÓN CON DINERO YA PAGADO (P. EJ. LA MITAD AL INICIO): ¿EL TRABAJADOR LO DEVUELVE O SE LO QUEDA? */}
+                  {decision === 'admin_cancelar' && montoPagado > 0 && (
+                    <>
+                      <Text style={[styles.modalEtiqueta, { marginTop: 8 }]}>2. Dinero ya pagado: ${montoPagado.toLocaleString('es-MX')}</Text>
+                      <Text style={[styles.datoChico, { marginBottom: 6 }]}>¿Cuánto debe devolverle {conRol(trabajadorDeQueja, 'trabajador')} a {conRol(contratistaDeQueja, 'contratista')}? Si ya trabajó una parte, puede quedarse con lo que corresponde.</Text>
+                      <View style={{ flexDirection: 'row', marginBottom: 6 }}>
+                        <TouchableOpacity style={[styles.opcion, { flex: 1, marginRight: 4 }, devolver === String(montoPagado) && { borderColor: '#B91C1C', backgroundColor: '#FEE2E2' }]} onPress={() => setDevolver(String(montoPagado))}>
+                          <Text style={[styles.opcionTexto, { marginLeft: 0 }]}>Devolver todo</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={[styles.opcion, { flex: 1, marginLeft: 4 }, devolver === '0' && { borderColor: '#047857', backgroundColor: '#ECFDF5' }]} onPress={() => setDevolver('0')}>
+                          <Text style={[styles.opcionTexto, { marginLeft: 0 }]}>Se lo queda</Text>
+                        </TouchableOpacity>
+                      </View>
+                      <TextInput style={styles.modalInput} keyboardType="numeric" placeholder="O escribe otra cantidad" value={devolver} onChangeText={t => setDevolver(t.replace(/[^0-9]/g, ''))} />
+                    </>
+                  )}
+
                   {perdedor && !esCancelacion(quejaResolviendo) && (
                     <View style={styles.filaBloquear}>
                       <Text style={[styles.opcionTexto, { marginLeft: 0 }]}>Bloquear la cuenta de {conRol(perdedor.nombre, perdedor.rol)}</Text>
@@ -812,7 +833,7 @@ export default function AdminDashboard() {
                     </View>
                   )}
 
-                  <Text style={[styles.modalEtiqueta, { marginTop: 8 }]}>{permiteAjuste ? '3' : '2'}. Nota para las dos partes (obligatoria)</Text>
+                  <Text style={[styles.modalEtiqueta, { marginTop: 8 }]}>{permiteAjuste || (decision === 'admin_cancelar' && montoPagado > 0) ? '3' : '2'}. Nota para las dos partes (obligatoria)</Text>
                   <TextInput style={[styles.modalInput, { height: 100, textAlignVertical: 'top' }]} multiline value={notaAdmin} onChangeText={setNotaAdmin} placeholder="Ej. Revisamos las fotos: el contratista no entregó el material acordado..." />
                   <Text style={[styles.datoChico, { marginBottom: 10 }]}>A los dos les llega una notificación con tu decisión y esta nota.</Text>
 

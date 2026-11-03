@@ -188,7 +188,7 @@ export default function DashboardContratista() {
         lista.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
         setCandidatos(lista);
       }
-    } catch (error) { console.log("Error", error); } finally { setCargando(false); }
+    } catch (error) { if (auth.currentUser) console.log("Error cargando el panel del contratista:", error); } finally { setCargando(false); }
   };
 
   // TRABAJADORES DE EXPLORAR. SE VUELVEN A LEER CADA VEZ QUE SE ENTRA A EXPLORAR, PARA VER SUS OBRAS Y RESEÑAS AL DÍA.

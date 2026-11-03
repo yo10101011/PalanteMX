@@ -72,7 +72,11 @@ type DatosAccion = {
   fotos?: string[];                                        // EVIDENCIA DE UN REPORTE (YA SUBIDAS A CLOUDINARY)
   monto?: number; concepto?: string; comprobante?: string; // REGISTRAR UN PAGO
   id_pago?: string; recibido?: boolean;                    // CONFIRMAR UN PAGO
+  devolver?: number;                                       // ADMIN CANCELA: PESOS QUE EL TRABAJADOR DEBE DEVOLVER
 };
+
+// LO QUE EL CONTRATISTA YA PAGÓ (CONFIRMADO O POR CONFIRMAR; NO CUENTA LO MARCADO COMO NO RECIBIDO)
+export const dineroYaPagado = (contrato: any) => (contrato?.pagos || []).filter((p: any) => p.estado !== ESTADO_PAGO.NO_RECIBIDO).reduce((s: number, p: any) => s + (p.monto || 0), 0);
 
 // ---------------------------------------------------------------- PAGOS
 // EL DINERO SE PAGA POR FUERA (EFECTIVO O TRANSFERENCIA). EN LA APP QUEDA LA EVIDENCIA: EL CONTRATISTA SUBE EL
@@ -84,7 +88,8 @@ export const CONCEPTOS_PAGO = ['Pago de la obra', 'Pago parcial / adelanto', 'Pa
 export const pagosPorConfirmar = (contrato: any) => (contrato?.pagos || []).filter((p: any) => p.estado === ESTADO_PAGO.POR_CONFIRMAR);
 export const totalRecibido = (contrato: any) => (contrato?.pagos || []).filter((p: any) => p.estado === ESTADO_PAGO.RECIBIDO).reduce((s: number, p: any) => s + (p.monto || 0), 0);
 
-// AJUSTES DE DINERO QUE ORDENÓ EL ADMIN: 'extra' (EL CONTRATISTA DEBE PAGAR DE MÁS) O 'descuento' (SE LE QUITA AL TRABAJADOR)
+// AJUSTES DE DINERO QUE ORDENÓ EL ADMIN: 'extra' (EL CONTRATISTA DEBE PAGAR DE MÁS), 'descuento' (SE LE QUITA AL TRABAJADOR)
+// O 'devolucion' (AL CANCELAR, EL TRABAJADOR DEVUELVE PARTE DE LO QUE YA HABÍA RECIBIDO)
 export const ajustesDePago = (contrato: any): any[] => contrato?.ajustes_pago || [];
 
 // ---------------------------------------------------------------- CONDICIONES DE LA OBRA

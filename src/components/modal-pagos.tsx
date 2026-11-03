@@ -52,6 +52,7 @@ export function ModalPagos({ contrato, rol, onClose, onCambio }: Props) {
   const ajustes = ajustesDePago(contrato);
   const extras = ajustes.filter(a => a.tipo === 'extra').reduce((s, a) => s + a.monto, 0);
   const descuentos = ajustes.filter(a => a.tipo === 'descuento').reduce((s, a) => s + a.monto, 0);
+  const devoluciones = ajustes.filter(a => a.tipo === 'devolucion').reduce((s, a) => s + a.monto, 0);
   const puedeRegistrar = rol === 'contratista' && [ESTADOS.ACTIVA, ESTADOS.POR_CONFIRMAR_FIN, ESTADOS.FINALIZADA, ESTADOS.SUSPENDIDA, ESTADOS.CANCELADA].includes(contrato?.estado);
 
   const registrar = async () => {
@@ -104,6 +105,7 @@ export function ModalPagos({ contrato, rol, onClose, onCambio }: Props) {
                   ))}
                   {extras > 0 && <Text style={styles.ajusteTotal}>El contratista debe pagar {pesos(extras)} extra.</Text>}
                   {descuentos > 0 && <Text style={styles.ajusteTotal}>Se descuentan {pesos(descuentos)} del pago al trabajador.</Text>}
+                  {devoluciones > 0 && <Text style={styles.ajusteTotal}>El trabajador debe devolver {pesos(devoluciones)} al contratista.</Text>}
                 </View>
               )}
 

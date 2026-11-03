@@ -30,8 +30,11 @@ export function VistaCondiciones({ condiciones, titulo = 'Lo que se acordó' }: 
   return (
     <View style={styles.vista}>
       <Text style={styles.vistaTitulo}>{titulo}</Text>
-      {lista.map(c => (
-        <Text key={c.clave} style={styles.vistaFila}><Text style={{ fontWeight: 'bold' }}>{c.pregunta.replace(/[¿?]/g, '')}:</Text> {condiciones![c.clave]}</Text>
+      {lista.map((c, i) => (
+        <View key={c.clave} style={[styles.vistaFila, i > 0 && styles.vistaFilaBorde]}>
+          <Text style={styles.vistaEtiqueta}>{c.pregunta.replace(/[¿?]/g, '').replace(/ \(.*\)/, '')}</Text>
+          <Text style={styles.vistaValor}>{condiciones![c.clave]}</Text>
+        </View>
       ))}
     </View>
   );
@@ -40,7 +43,10 @@ export function VistaCondiciones({ condiciones, titulo = 'Lo que se acordó' }: 
 const styles = StyleSheet.create({
   etiqueta: { fontSize: 14, fontWeight: 'bold', color: '#6B7280', marginBottom: 5, marginTop: 5 },
   caja: { borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, backgroundColor: '#F9FAFB', marginBottom: 8, overflow: 'hidden' },
-  vista: { backgroundColor: '#F0F9FF', borderRadius: 10, padding: 10, marginTop: 10, borderWidth: 1, borderColor: '#BAE6FD' },
-  vistaTitulo: { fontSize: 14, fontWeight: 'bold', color: '#075985', marginBottom: 4 },
-  vistaFila: { fontSize: 14, color: '#0C4A6E', marginTop: 2 },
+  vista: { backgroundColor: '#F8FAFC', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 8, marginTop: 10, borderWidth: 1, borderColor: '#E2E8F0' },
+  vistaTitulo: { fontSize: 12, fontWeight: 'bold', color: '#64748B', letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: 4 },
+  vistaFila: { flexDirection: 'row', alignItems: 'center', paddingVertical: 6 },
+  vistaFilaBorde: { borderTopWidth: 1, borderColor: '#EEF2F6' },
+  vistaEtiqueta: { flex: 1, fontSize: 13, color: '#64748B', marginRight: 8 },
+  vistaValor: { flex: 1, fontSize: 13, color: '#0D2340', fontWeight: 'bold', textAlign: 'right' },
 });

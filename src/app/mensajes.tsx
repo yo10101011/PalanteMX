@@ -89,6 +89,9 @@ export default function Mensajes() {
   // TRATOS PENDIENTES CON LA PERSONA DEL CHAT ABIERTO (PROPUESTAS O SOLICITUDES QUE AÚN NO SE ACEPTAN).
   // EL TRATO SE ACEPTA AQUÍ, EN EL CHAT, DESPUÉS DE PLATICAR: ASÍ NADIE CIERRA UN TRATO SIN HABERSE PUESTO DE ACUERDO.
   const [tratos, setTratos] = useState<any[]>([]);
+  // SI HAY VARIOS TRATOS CON LA MISMA PERSONA SE MUESTRA UNO A LA VEZ (EL ELEGIDO), PLEGADO PARA NO TAPAR EL CHAT
+  const [tratoElegidoId, setTratoElegidoId] = useState<string | null>(null);
+  const [tratoAbierto, setTratoAbierto] = useState(false);
   const mensajeAplicadoRef = useRef(''); // PARA PONER EL MENSAJE LISTO (autoOpenMensaje) UNA SOLA VEZ
 
   const cargarTratos = async (otroId?: string) => {
@@ -107,7 +110,7 @@ export default function Mensajes() {
   const responderTrato = (trato: any, accion: 'aceptar' | 'rechazar') => {
     const aceptar = accion === 'aceptar';
     Alert.alert(aceptar ? "Aceptar el trato" : "No aceptar", aceptar
-      ? `¿Ya se pusieron de acuerdo en todo? "${trato.titulo_vacante}" empieza cuando los dos acepten.`
+      ? `Vas a aceptar la obra:\n\n"${trato.titulo_vacante}"${trato.vacante?.pago ? `\n${trato.vacante.pago}` : ''}\n\n¿Es la obra de la que hablaron y ya se pusieron de acuerdo en todo? Empieza cuando los dos acepten.`
       : `¿Seguro que no quieres seguir con "${trato.titulo_vacante}"?`, [
       { text: "Volver", style: "cancel" },
       { text: aceptar ? "Sí, aceptar" : "Sí", style: aceptar ? 'default' : 'destructive', onPress: async () => {
@@ -230,7 +233,7 @@ export default function Mensajes() {
     escuchaMensajesRef.current = null;
     setMensajes([]);
     setChatActivo(chat);
-    setTratos([]);
+    setTratos([]); setTratoElegidoId(null); setTratoAbierto(false);
     cargarTratos(chat.usuarios_ids?.find((id: string) => id !== miPerfil.id));
     // MENSAJE LISTO PARA EMPEZAR LA PLÁTICA (P. EJ. "HOLA, VI TU PERFIL..."), SOLO SI VIENE DE OTRA PANTALLA CON UNO.
     // SE PONE HASTA SABER LOS MENSAJES DEL CHAT: SI YA MANDÉ ESE MISMO MENSAJE (LA MISMA OBRA), YA NO SE PONE.
@@ -402,7 +405,7 @@ export default function Mensajes() {
       const bloqueadosArray = Array.isArray(bloqueados) ? bloqueados : [];
       
       setListaUsuariosSistema(todos.filter(u => u.id !== miPerfil.id && !bloqueadosArray.includes(u.id)));
-    } catch (error) { console.log("Error", error); }
+    } catch (error) { console.log("Error cargando usuarios para nuevo chat:", error); }
     setProcesando(false);
   };
 
@@ -451,7 +454,7 @@ export default function Mensajes() {
         <KeyboardAvoidingView style={{flex: 1}} behavior="padding">
           
           <View style={styles.chatHeader}>
-            <TouchableOpacity style={styles.backBtn} onPress={() => { escuchaMensajesRef.current?.(); escuchaMensajesRef.current = null; setChatActivo(null); setTratos([]); router.setParams({ autoOpenId: '', autoOpenNombre: '', autoOpenMensaje: '' }); }}>
+            <TouchableOpacity style={styles.backBtn} onPress={() => { escuchaMensajesRef.current?.(); escuchaMensajesRef.current = null; setChatActivo(null); setTratos([]); setTratoElegidoId(null); setTratoAbierto(false); router.setParams({ autoOpenId: '', autoOpenNombre: '', autoOpenMensaje: '' }); }}>
               <Ionicons name="arrow-back" size={24} color="#FFF" />
             </TouchableOpacity>
             <Image source={{uri: otroUsuarioData.foto || undefined}} style={styles.chatAvatar} />
@@ -469,49 +472,77 @@ export default function Mensajes() {
               <Ionicons name="shield-checkmark" size={16} color="#B45309" style={{marginRight: 8}} />
               <Text style={styles.privacyText}>Por tu seguridad, mantén el respeto. La plataforma sancionará fraudes o vocabulario inapropiado.</Text>
             </View>
-          ) : tratos.map(trato => {
+          ) : (() => {
             // EL TRATO LO ACEPTAN LOS DOS AQUÍ (CADA UNO CON SU BOTÓN), Y SOLO CUANDO LOS DOS YA ESCRIBIERON EN ESTE CHAT.
-            // LA OBRA EMPIEZA HASTA QUE ACEPTÓ EL ÚLTIMO.
+            // LA OBRA EMPIEZA HASTA QUE ACEPTÓ EL ÚLTIMO. CON VARIOS TRATOS, SE ELIGE ARRIBA DE CUÁL OBRA HABLAN,
+            // Y SOLO SE VE (Y SE PUEDE ACEPTAR) ESE: ASÍ NADIE ACEPTA POR ERROR LA OBRA QUE NO ERA.
+            const yaAcepteEn = (t: any) => (t.aceptado_por || []).includes(miPerfil.id);
+            const trato = tratos.find(t => t.id === tratoElegidoId) || tratos.find(t => !yaAcepteEn(t)) || tratos[0];
             const aceptados: string[] = trato.aceptado_por || [];
             const yoAcepte = aceptados.includes(miPerfil.id);
             const elAcepto = !!otroUsuarioId && aceptados.includes(otroUsuarioId);
-            const meToca = !yoAcepte;
+            const primerNombre = otroUsuarioData.nombre?.split(' ')[0] || 'la otra persona';
             const yaPlaticaron = mensajes.some(m => m.emisor_id === miPerfil.id) && mensajes.some(m => m.emisor_id === otroUsuarioId);
             return (
-              <View key={trato.id} style={styles.tratoBanner}>
-                <View style={{flexDirection: 'row', alignItems: 'center'}}>
-                  <Ionicons name="briefcase" size={18} color="#1D4ED8" />
-                  <Text style={styles.tratoTitulo} numberOfLines={1}>{trato.estado === ESTADOS.PROPUESTA ? 'Propuesta' : 'Solicitud'}: {trato.titulo_vacante}</Text>
-                </View>
-                {trato.vacante?.pago ? <Text style={styles.tratoDato}>{trato.vacante.pago}{trato.vacante.ubicacion ? ` • ${trato.vacante.ubicacion}` : ''}</Text> : null}
-                {!oficioCoincide(trato.oficio_trabajador, trato.vacante?.oficio) && (
-                  <View style={styles.avisoOficio}>
-                    <Ionicons name="alert-circle-outline" size={16} color="#B45309" />
-                    <Text style={styles.avisoOficioTexto}>{avisoOficio(trato.oficio_trabajador, trato.vacante.oficio)}</Text>
-                  </View>
-                )}
-                <View style={{flexDirection: 'row', marginTop: 6}}>
-                  <Text style={[styles.tratoEstado, yoAcepte && styles.tratoEstadoSi]}>{yoAcepte ? 'Tú aceptaste' : 'Tú: falta aceptar'}</Text>
-                  <Text style={[styles.tratoEstado, elAcepto && styles.tratoEstadoSi]} numberOfLines={1}>{elAcepto ? `${otroUsuarioData.nombre?.split(' ')[0]} aceptó` : `${otroUsuarioData.nombre?.split(' ')[0]}: falta`}</Text>
-                </View>
-                {meToca ? (
+              <View style={styles.tratoBanner}>
+                {tratos.length > 1 && (
                   <>
-                    <Text style={styles.tratoAyuda}>{yaPlaticaron ? 'Si ya se pusieron de acuerdo en todo, acepta el trato. La obra empieza cuando los dos acepten.' : 'Primero platiquen los detalles aquí (los dos deben escribir). Después podrán aceptar el trato.'}</Text>
-                    <View style={{flexDirection: 'row', marginTop: 8}}>
-                      <TouchableOpacity style={[styles.tratoBoton, {backgroundColor: yaPlaticaron ? '#00D06C' : '#D1D5DB', flex: 2}]} disabled={!yaPlaticaron || procesando} onPress={() => responderTrato(trato, 'aceptar')}>
-                        <Ionicons name="checkmark-circle" size={16} color="#FFF" /><Text style={styles.tratoBotonTexto}>Aceptar trato</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity style={[styles.tratoBoton, {backgroundColor: '#FFF', borderWidth: 1, borderColor: '#DC2626', flex: 1, marginLeft: 8}]} disabled={procesando} onPress={() => responderTrato(trato, 'rechazar')}>
-                        <Text style={[styles.tratoBotonTexto, {color: '#DC2626'}]}>Rechazar</Text>
-                      </TouchableOpacity>
-                    </View>
+                    <Text style={styles.tratosCuenta}>{tratos.length} obras pendientes con {primerNombre}. Elige de cuál están hablando:</Text>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom: 8}}>
+                      {tratos.map(t => (
+                        <TouchableOpacity key={t.id} style={[styles.tratoChip, t.id === trato.id && styles.tratoChipActivo]} onPress={() => { setTratoElegidoId(t.id); setTratoAbierto(true); }}>
+                          {!yaAcepteEn(t) && <View style={[styles.tratoChipPunto, t.id === trato.id && {backgroundColor: '#FFF'}]} />}
+                          <Text style={[styles.tratoChipTexto, t.id === trato.id && {color: '#FFF'}]} numberOfLines={1}>{t.titulo_vacante}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
                   </>
-                ) : (
-                  <Text style={styles.tratoAyuda}>Ya aceptaste. Falta que {otroUsuarioData.nombre} acepte desde este chat; entonces empieza la obra.</Text>
+                )}
+                <TouchableOpacity style={{flexDirection: 'row', alignItems: 'center'}} onPress={() => setTratoAbierto(a => !a)} activeOpacity={0.7}>
+                  <Ionicons name="briefcase" size={18} color="#1D4ED8" />
+                  <View style={{flex: 1, marginLeft: 8}}>
+                    <Text style={styles.tratoTitulo} numberOfLines={1}>{trato.titulo_vacante}</Text>
+                    <Text style={[styles.tratoResumen, !yoAcepte && {color: '#B45309'}]}>
+                      {trato.estado === ESTADOS.PROPUESTA ? 'Propuesta' : 'Solicitud'} • {!yoAcepte ? 'Te falta aceptar' : elAcepto ? 'Los dos aceptaron' : `Esperando a ${primerNombre}`}
+                    </Text>
+                  </View>
+                  <Text style={styles.tratoVer}>{tratoAbierto ? 'Ocultar' : 'Ver trato'}</Text>
+                  <Ionicons name={tratoAbierto ? 'chevron-up' : 'chevron-down'} size={18} color="#1D4ED8" />
+                </TouchableOpacity>
+
+                {tratoAbierto && (
+                  <View style={{marginTop: 8}}>
+                    {trato.vacante?.pago ? <Text style={styles.tratoDato}>{trato.vacante.pago}{trato.vacante.ubicacion ? ` • ${trato.vacante.ubicacion}` : ''}</Text> : null}
+                    {!oficioCoincide(trato.oficio_trabajador, trato.vacante?.oficio) && (
+                      <View style={styles.avisoOficio}>
+                        <Ionicons name="alert-circle-outline" size={16} color="#B45309" />
+                        <Text style={styles.avisoOficioTexto}>{avisoOficio(trato.oficio_trabajador, trato.vacante.oficio)}</Text>
+                      </View>
+                    )}
+                    <View style={{flexDirection: 'row', marginTop: 6}}>
+                      <Text style={[styles.tratoEstado, yoAcepte && styles.tratoEstadoSi]}>{yoAcepte ? 'Tú aceptaste' : 'Tú: falta aceptar'}</Text>
+                      <Text style={[styles.tratoEstado, elAcepto && styles.tratoEstadoSi]} numberOfLines={1}>{elAcepto ? `${primerNombre} aceptó` : `${primerNombre}: falta`}</Text>
+                    </View>
+                    {!yoAcepte ? (
+                      <>
+                        <Text style={styles.tratoAyuda}>{yaPlaticaron ? 'Si ya se pusieron de acuerdo en todo, acepta el trato. La obra empieza cuando los dos acepten.' : 'Primero platiquen los detalles aquí (los dos deben escribir). Después podrán aceptar el trato.'}</Text>
+                        <View style={{flexDirection: 'row', marginTop: 8}}>
+                          <TouchableOpacity style={[styles.tratoBoton, {backgroundColor: yaPlaticaron ? '#00D06C' : '#D1D5DB', flex: 2}]} disabled={!yaPlaticaron || procesando} onPress={() => responderTrato(trato, 'aceptar')}>
+                            <Ionicons name="checkmark-circle" size={16} color="#FFF" /><Text style={styles.tratoBotonTexto}>Aceptar este trato</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity style={[styles.tratoBoton, {backgroundColor: '#FFF', borderWidth: 1, borderColor: '#DC2626', flex: 1, marginLeft: 8}]} disabled={procesando} onPress={() => responderTrato(trato, 'rechazar')}>
+                            <Text style={[styles.tratoBotonTexto, {color: '#DC2626'}]}>Rechazar</Text>
+                          </TouchableOpacity>
+                        </View>
+                      </>
+                    ) : (
+                      <Text style={styles.tratoAyuda}>Ya aceptaste. Falta que {primerNombre} acepte desde este chat; entonces empieza la obra.</Text>
+                    )}
+                  </View>
                 )}
               </View>
             );
-          })}
+          })()}
 
           <FlatList
             ref={flatListRef}
@@ -827,8 +858,15 @@ const styles = StyleSheet.create({
   chatRole: { fontSize: 13, color: '#00D06C', fontWeight: 'bold' },
   privacyBanner: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FEF3C7', paddingHorizontal: 15, paddingVertical: 10, borderBottomWidth: 1, borderColor: '#FDE68A' },
   privacyText: { flex: 1, fontSize: 13, color: '#B45309', fontWeight: 'bold' },
-  tratoBanner: { backgroundColor: '#EFF6FF', borderBottomWidth: 1, borderColor: '#BFDBFE', padding: 12 },
-  tratoTitulo: { fontSize: 16, fontWeight: 'bold', color: '#1E3A8A', marginLeft: 6, flex: 1 },
+  tratoBanner: { backgroundColor: '#EFF6FF', borderBottomWidth: 1, borderColor: '#BFDBFE', paddingHorizontal: 12, paddingVertical: 10 },
+  tratoTitulo: { fontSize: 15, fontWeight: 'bold', color: '#1E3A8A' },
+  tratoResumen: { fontSize: 13, color: '#047857', fontWeight: '600', marginTop: 1 },
+  tratoVer: { fontSize: 13, color: '#1D4ED8', fontWeight: 'bold', marginRight: 2 },
+  tratosCuenta: { fontSize: 13, color: '#1E40AF', marginBottom: 6 },
+  tratoChip: { flexDirection: 'row', alignItems: 'center', maxWidth: 200, borderWidth: 1, borderColor: '#93C5FD', backgroundColor: '#FFF', borderRadius: 16, paddingHorizontal: 10, paddingVertical: 5, marginRight: 6 },
+  tratoChipActivo: { backgroundColor: '#1D4ED8', borderColor: '#1D4ED8' },
+  tratoChipTexto: { fontSize: 13, color: '#1E3A8A', fontWeight: '600', flexShrink: 1 },
+  tratoChipPunto: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#F59E0B', marginRight: 5 },
   tratoDato: { fontSize: 14, color: '#00A355', fontWeight: 'bold', marginTop: 2 },
   avisoOficio: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFBEB', borderWidth: 1, borderColor: '#FDE68A', borderRadius: 10, padding: 8, marginTop: 6 },
   avisoOficioTexto: { flex: 1, marginLeft: 6, fontSize: 13, color: '#92400E' },

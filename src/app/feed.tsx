@@ -44,6 +44,7 @@ export default function FeedTrabajador() {
   const [orden, setOrden] = useState('calificacion');
   const [pagoMinimo, setPagoMinimo] = useState('');
   const [miPerfil, setMiPerfil] = useState<any>(null);
+  const [vacantesAbiertas, setVacantesAbiertas] = useState<string[]>([]); // TARJETAS CON "VER DETALLES" ABIERTO
   const [contratistas, setContratistas] = useState<Record<string, any>>({}); // PARA LA CALIFICACIÓN DE CADA CONTRATISTA
   const [fotoGrande, setFotoGrande] = useState<string | null>(null);
 
@@ -281,26 +282,33 @@ export default function FeedTrabajador() {
                         </TouchableOpacity>
                       )}
 
-                      {/* DETALLES TÉCNICOS Y DE HORARIO */}
-                      <View style={styles.jobDetailsGrid}>
-                        <View style={styles.jobDetailRow}>
-                          <Ionicons name="location-outline" size={16} color="#6B7280" />
-                          <Text style={styles.jobDetailText}>{[item.ubicacion, item.estado_republica].filter(Boolean).join(', ')}{item.distancia !== null ? ` • ${textoDistancia(item.distancia)}` : ''}</Text>
-                        </View>
-                        <View style={styles.jobDetailRow}>
-                          <Ionicons name="cash-outline" size={16} color="#00D06C" />
-                          <Text style={[styles.jobDetailText, {color: '#00D06C', fontWeight: 'bold'}]}>{item.pago}</Text>
-                        </View>
-                        <View style={styles.jobDetailRow}>
-                          <Ionicons name="calendar-outline" size={16} color="#F59E0B" />
-                          <Text style={[styles.jobDetailText, {color: '#B45309'}]}>{item.horario}</Text>
-                        </View>
+                      {/* LO MÁS IMPORTANTE A LA VISTA: PAGO, OFICIO, LUGAR Y HORARIO. EL RESTO, EN "VER DETALLES" */}
+                      <View style={styles.jobPagoFila}>
+                        <Text style={styles.jobPago} numberOfLines={1}>{item.pago || 'Pago a convenir'}</Text>
+                        {item.categoria ? <View style={styles.jobOficio}><Text style={styles.jobOficioTexto} numberOfLines={1}>{item.categoria}</Text></View> : null}
                       </View>
+                      <View style={styles.jobDetailRow}>
+                        <Ionicons name="location-outline" size={15} color="#6B7280" />
+                        <Text style={styles.jobDetailText} numberOfLines={1}>{[item.ubicacion, item.estado_republica].filter(Boolean).join(', ')}{item.distancia !== null ? ` · ${textoDistancia(item.distancia)}` : ''}</Text>
+                      </View>
+                      {item.horario ? (
+                        <View style={styles.jobDetailRow}>
+                          <Ionicons name="time-outline" size={15} color="#6B7280" />
+                          <Text style={styles.jobDetailText} numberOfLines={1}>{item.horario}</Text>
+                        </View>
+                      ) : null}
 
-                      <Text style={styles.jobDesc}>{item.descripcion}</Text>
-                      {item.lugar_obra_texto ? <Text style={[styles.jobDetailText, {marginLeft: 0, marginBottom: 8}]}>Lugar de la obra: {item.lugar_obra_texto}</Text> : null}
-                      <VistaCondiciones condiciones={item.condiciones} titulo="Lo que ofrece el contratista" />
-                      <View style={{height: 10}} />
+                      <Text style={styles.jobDesc} numberOfLines={vacantesAbiertas.includes(item.id) ? undefined : 2}>{item.descripcion}</Text>
+                      {vacantesAbiertas.includes(item.id) && (
+                        <>
+                          {item.lugar_obra_texto ? <Text style={styles.jobLugar}>Lugar de la obra: {item.lugar_obra_texto}</Text> : null}
+                          <VistaCondiciones condiciones={item.condiciones} titulo="Lo que ofrece el contratista" />
+                        </>
+                      )}
+                      <TouchableOpacity style={styles.jobVerMas} onPress={() => setVacantesAbiertas(v => v.includes(item.id) ? v.filter(id => id !== item.id) : [...v, item.id])}>
+                        <Text style={styles.jobVerMasTexto}>{vacantesAbiertas.includes(item.id) ? 'Ver menos' : 'Ver detalles y condiciones'}</Text>
+                        <Ionicons name={vacantesAbiertas.includes(item.id) ? 'chevron-up' : 'chevron-down'} size={16} color="#2563EB" />
+                      </TouchableOpacity>
 
                       {/* ETIQUETAS */}
                       {item.etiquetas && (
@@ -469,8 +477,8 @@ const styles = StyleSheet.create({
   feedContainer: { paddingHorizontal: 20, paddingBottom: 100, paddingTop: 10 },
   feedResultsText: { fontSize: 14, color: '#9CA3AF', fontWeight: 'bold', marginBottom: 15, textTransform: 'uppercase', letterSpacing: 1 },
 
-  jobCard: { backgroundColor: '#FFF', borderRadius: 16, padding: 20, marginBottom: 20, elevation: 3, shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 6 },
-  jobHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 15 },
+  jobCard: { backgroundColor: '#FFF', borderRadius: 16, padding: 16, marginBottom: 16, elevation: 3, shadowColor: '#0D2340', shadowOpacity: 0.08, shadowRadius: 8, shadowOffset: { width: 0, height: 3 } },
+  jobHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
   contractorAvatar: { width: 50, height: 50, borderRadius: 25, backgroundColor: '#E5E7EB', marginRight: 15, borderWidth: 1, borderColor: '#D1D5DB' },
   jobTitle: { fontSize: 17, fontWeight: 'bold', color: '#0D2340', marginBottom: 4 },
   jobCompany: { fontSize: 15, color: '#6B7280', fontWeight: '500' },
@@ -483,11 +491,17 @@ const styles = StyleSheet.create({
   jobImageTag: { position: 'absolute', bottom: 10, left: 10, backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
   jobImageTagText: { color: '#FFF', fontSize: 13, fontWeight: 'bold' },
 
-  jobDetailsGrid: { backgroundColor: '#F9FAFB', borderRadius: 10, padding: 12, marginBottom: 15, borderWidth: 1, borderColor: '#E5E7EB' },
-  jobDetailRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 6 },
-  jobDetailText: { fontSize: 15, color: '#4B5563', marginLeft: 8 },
+  jobPagoFila: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
+  jobPago: { fontSize: 19, fontWeight: 'bold', color: '#00A355', flexShrink: 1, marginRight: 8 },
+  jobOficio: { backgroundColor: '#EFF6FF', borderRadius: 12, paddingHorizontal: 10, paddingVertical: 3, marginLeft: 'auto', maxWidth: '50%' },
+  jobOficioTexto: { fontSize: 13, color: '#1D4ED8', fontWeight: 'bold' },
+  jobDetailRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
+  jobDetailText: { fontSize: 14, color: '#4B5563', marginLeft: 6, flex: 1 },
 
-  jobDesc: { fontSize: 16, color: '#4B5563', lineHeight: 20, marginBottom: 15 },
+  jobDesc: { fontSize: 15, color: '#374151', lineHeight: 21, marginTop: 8 },
+  jobLugar: { fontSize: 14, color: '#4B5563', marginTop: 8 },
+  jobVerMas: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', paddingVertical: 8, marginBottom: 6 },
+  jobVerMasTexto: { fontSize: 14, color: '#2563EB', fontWeight: 'bold', marginRight: 2 },
 
   tagsContainer: { flexDirection: 'row', flexWrap: 'wrap', marginBottom: 20 },
   tagBadge: { backgroundColor: '#F0FDF4', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, marginRight: 8, marginBottom: 8, borderWidth: 1, borderColor: '#BBEFD3' },
