@@ -11,7 +11,7 @@ import { auth, db } from '../../firebaseConfig';
 import { abrirChatCon, accionContrato, ESTADOS, estiloEstado, MENSAJES_INICIALES } from '@/lib/contratos';
 import { coincide } from '@/lib/busqueda';
 import { useMensajesSinLeer } from '@/lib/mensajes';
-import { OFICIOS } from '@/lib/oficios';
+import { OFICIOS, oficioCoincide } from '@/lib/oficios';
 import { VistaCondiciones } from '@/components/condiciones-obra';
 import { distanciaKm, ESTADOS_MEXICO, textoDistancia } from '@/lib/ubicacion';
 import { BuscadorConSugerencias } from '@/components/buscador-sugerencias';
@@ -108,9 +108,13 @@ export default function FeedTrabajador() {
   };
 
   const postularse = async (vacante: any) => {
+    // SI SU OFICIO NO ES EL QUE PIDE LA OBRA, SÍ PUEDE POSTULARSE, PERO SE LE AVISA (AL CONTRATISTA TAMBIÉN LE SALE EL AVISO)
+    const mismoOficio = oficioCoincide(miPerfil?.oficio_principal, vacante.categoria);
     Alert.alert(
-      "Postular a esta obra",
-      `¿Enviar tu perfil profesional a ${vacante.contratista}?`,
+      mismoOficio ? "Postular a esta obra" : "Tu perfil no coincide con esta obra",
+      mismoOficio
+        ? `¿Enviar tu perfil profesional a ${vacante.contratista}?`
+        : `Tu oficio es "${miPerfil?.oficio_principal}" y esta obra busca "${vacante.categoria}". Puedes postularte de todos modos: el contratista verá este aviso y lo podrán platicar en el chat. ¿Quieres enviar tu solicitud?`,
       [
         { text: "Cancelar", style: "cancel" },
         { text: "Sí, postularme", onPress: async () => {
@@ -307,6 +311,12 @@ export default function FeedTrabajador() {
                         </View>
                       )}
 
+                      {!oficioCoincide(miPerfil?.oficio_principal, item.categoria) && (
+                        <View style={styles.avisoOficio}>
+                          <Ionicons name="alert-circle-outline" size={16} color="#B45309" />
+                          <Text style={styles.avisoOficioTexto}>No es tu oficio ({miPerfil?.oficio_principal}). Puedes postularte, pero el contratista lo verá.</Text>
+                        </View>
+                      )}
                       <TouchableOpacity style={styles.applyBtn} onPress={() => postularse(item)} disabled={procesando}>
                         {procesando ? <ActivityIndicator color="#FFF"/> : <><Text style={styles.applyBtnText}>Postularme a esta obra</Text><Ionicons name="arrow-forward" size={18} color="#FFF" style={{marginLeft: 5}}/></>}
                       </TouchableOpacity>
@@ -484,6 +494,8 @@ const styles = StyleSheet.create({
   tagText: { color: '#005530', fontSize: 13, fontWeight: 'bold' },
 
   applyBtn: { backgroundColor: '#00D06C', flexDirection: 'row', justifyContent: 'center', alignItems: 'center', paddingVertical: 14, borderRadius: 12 },
+  avisoOficio: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFBEB', borderWidth: 1, borderColor: '#FDE68A', borderRadius: 10, padding: 10, marginBottom: 10 },
+  avisoOficioTexto: { flex: 1, marginLeft: 8, fontSize: 13, color: '#92400E' },
   applyBtnText: { color: '#FFF', fontSize: 16, fontWeight: 'bold' },
 
   postulacionCard: { backgroundColor: '#FFF', borderRadius: 16, padding: 20, marginBottom: 15, borderWidth: 1, borderColor: '#E5E7EB' },

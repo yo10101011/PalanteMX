@@ -425,6 +425,7 @@ export default function DashboardTrabajador() {
   const barra = (
     <BarraSuperior
       rol="Trabajador"
+      onCerrarSesion={cerrarSesion}
       onNuevos={cargarPerfil}
       titulo={pestañaActiva === 'Mis Trabajos' ? 'Mis obras' : 'Mi perfil'}
       subtitulo={pestañaActiva === 'Mis Trabajos' ? 'Propuestas, obras activas, bitácora y pagos' : `${userData?.nombre || ''} ${userData?.apellidos || ''}`.trim()}
@@ -475,9 +476,11 @@ export default function DashboardTrabajador() {
                   ['calendar', '#D97706', 'Días disponibles', userData?.dias_disponibles?.length ? textoDias(userData.dias_disponibles) : 'Sin definir'],
                 ] as const).map(([icono, color, etiqueta, valor], i) => (
                   <View key={etiqueta} style={[styles.filaDato, i > 0 && styles.filaDatoBorde]}>
-                    <View style={[styles.iconoDato, { backgroundColor: `${color}15` }]}><Ionicons name={icono} size={17} color={color} /></View>
-                    <Text style={styles.datoEtiqueta}>{etiqueta}</Text>
-                    <Text style={[styles.datoValor, valor === 'Sin definir' && { color: '#9CA3AF', fontWeight: 'normal' }]} numberOfLines={2}>{valor}</Text>
+                    <View style={[styles.iconoDato, { backgroundColor: `${color}15` }]}><Ionicons name={icono} size={16} color={color} /></View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.datoEtiqueta}>{etiqueta}</Text>
+                      <Text style={[styles.datoValor, valor === 'Sin definir' && { color: '#9CA3AF', fontWeight: 'normal' }]} numberOfLines={2}>{valor}</Text>
+                    </View>
                   </View>
                 ))}
                 {(!userData?.tarifa_monto || !userData?.dias_disponibles?.length) && (
@@ -635,7 +638,6 @@ export default function DashboardTrabajador() {
 
                   <TouchableOpacity style={styles.settingsOption} onPress={() => setModalEditar(true)}><View style={styles.settingsRow}><Ionicons name="person-circle-outline" size={24} color="#0D2340" /><Text style={styles.settingsText}>Editar información personal</Text></View><Ionicons name="chevron-forward" size={20} color="#9CA3AF" /></TouchableOpacity>
                   <TouchableOpacity style={styles.settingsOption} onPress={abrirModalQueja}><View style={styles.settingsRow}><Ionicons name="shield-half-outline" size={24} color="#D32F2F" /><Text style={[styles.settingsText, {color: '#D32F2F'}]}>Levantar Reporte Oficial</Text></View><Ionicons name="chevron-forward" size={20} color="#9CA3AF" /></TouchableOpacity>
-                  <TouchableOpacity style={[styles.settingsOption, { marginTop: 20 }]} onPress={cerrarSesion}><View style={styles.settingsRow}><Ionicons name="log-out-outline" size={24} color="#0D2340" /><Text style={[styles.settingsText, { fontWeight: 'bold' }]}>Cerrar Sesión</Text></View></TouchableOpacity>
                   <TouchableOpacity style={[styles.settingsOption, { borderBottomWidth: 0, marginTop: 10 }]} onPress={eliminarCuenta}><View style={styles.settingsRow}><Ionicons name="trash-outline" size={24} color="#D32F2F" /><Text style={[styles.settingsText, { color: '#D32F2F', fontWeight: 'bold' }]}>Eliminar mi cuenta</Text></View></TouchableOpacity>
                 </View>
               )}
@@ -982,11 +984,11 @@ const styles = StyleSheet.create({
   dispText: { color: '#FFF', fontSize: 13, fontWeight: 'bold', letterSpacing: 1 },
 
   cajaDatos: { backgroundColor: '#FFF', borderRadius: 18, paddingHorizontal: 14, paddingVertical: 4, marginTop: 16, width: '100%', elevation: 3, shadowColor: '#0D2340', shadowOpacity: 0.08, shadowRadius: 8, shadowOffset: { width: 0, height: 3 } },
-  filaDato: { flexDirection: 'row', alignItems: 'center', paddingVertical: 11 },
+  filaDato: { flexDirection: 'row', alignItems: 'center', paddingVertical: 9 },
   filaDatoBorde: { borderTopWidth: 1, borderColor: '#F3F4F6' },
-  iconoDato: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', marginRight: 10 },
-  datoEtiqueta: { fontSize: 14, color: '#6B7280', flex: 1 },
-  datoValor: { fontSize: 15, color: '#0D2340', fontWeight: '600', flexShrink: 1, marginLeft: 12, textAlign: 'right' },
+  iconoDato: { width: 30, height: 30, borderRadius: 15, alignItems: 'center', justifyContent: 'center', marginRight: 12 },
+  datoEtiqueta: { fontSize: 12, color: '#9CA3AF', fontWeight: '600', letterSpacing: 0.3 },
+  datoValor: { fontSize: 14, color: '#0D2340', fontWeight: '600', marginTop: 1 },
   completarPerfil: { borderTopWidth: 1, borderColor: '#F3F4F6', paddingVertical: 10, alignItems: 'center' },
   completarPerfilTexto: { fontSize: 15, color: '#2563EB', fontWeight: 'bold' },
   statsRow: { flexDirection: 'row', backgroundColor: '#FFF', borderRadius: 16, paddingVertical: 15, paddingHorizontal: 15, marginTop: 12, elevation: 2, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 5, width: '100%', justifyContent: 'space-between' },

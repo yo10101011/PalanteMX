@@ -42,6 +42,7 @@ import {
 import { auth, db } from '../../firebaseConfig';
 import { subirACloudinary, subirFotoACloudinary } from '@/lib/cloudinary';
 import { accionContrato, ESTADOS, RESPUESTAS_RAPIDAS } from '@/lib/contratos';
+import { avisoOficio, oficioCoincide } from '@/lib/oficios';
 import { useTecladoVisible } from '@/lib/teclado';
 import { SelectorFotos, subirFotos } from '@/components/selector-fotos';
 
@@ -483,6 +484,12 @@ export default function Mensajes() {
                   <Text style={styles.tratoTitulo} numberOfLines={1}>{trato.estado === ESTADOS.PROPUESTA ? 'Propuesta' : 'Solicitud'}: {trato.titulo_vacante}</Text>
                 </View>
                 {trato.vacante?.pago ? <Text style={styles.tratoDato}>{trato.vacante.pago}{trato.vacante.ubicacion ? ` • ${trato.vacante.ubicacion}` : ''}</Text> : null}
+                {!oficioCoincide(trato.oficio_trabajador, trato.vacante?.oficio) && (
+                  <View style={styles.avisoOficio}>
+                    <Ionicons name="alert-circle-outline" size={16} color="#B45309" />
+                    <Text style={styles.avisoOficioTexto}>{avisoOficio(trato.oficio_trabajador, trato.vacante.oficio)}</Text>
+                  </View>
+                )}
                 <View style={{flexDirection: 'row', marginTop: 6}}>
                   <Text style={[styles.tratoEstado, yoAcepte && styles.tratoEstadoSi]}>{yoAcepte ? 'Tú aceptaste' : 'Tú: falta aceptar'}</Text>
                   <Text style={[styles.tratoEstado, elAcepto && styles.tratoEstadoSi]} numberOfLines={1}>{elAcepto ? `${otroUsuarioData.nombre?.split(' ')[0]} aceptó` : `${otroUsuarioData.nombre?.split(' ')[0]}: falta`}</Text>
@@ -823,6 +830,8 @@ const styles = StyleSheet.create({
   tratoBanner: { backgroundColor: '#EFF6FF', borderBottomWidth: 1, borderColor: '#BFDBFE', padding: 12 },
   tratoTitulo: { fontSize: 16, fontWeight: 'bold', color: '#1E3A8A', marginLeft: 6, flex: 1 },
   tratoDato: { fontSize: 14, color: '#00A355', fontWeight: 'bold', marginTop: 2 },
+  avisoOficio: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFBEB', borderWidth: 1, borderColor: '#FDE68A', borderRadius: 10, padding: 8, marginTop: 6 },
+  avisoOficioTexto: { flex: 1, marginLeft: 6, fontSize: 13, color: '#92400E' },
   tratoAyuda: { fontSize: 14, color: '#1E40AF', marginTop: 4 },
   tratoEstado: { flex: 1, fontSize: 13, fontWeight: 'bold', color: '#B45309', backgroundColor: '#FEF3C7', borderRadius: 8, paddingHorizontal: 6, paddingVertical: 3, marginRight: 6, overflow: 'hidden' },
   tratoEstadoSi: { color: '#047857', backgroundColor: '#D1FAE5' },

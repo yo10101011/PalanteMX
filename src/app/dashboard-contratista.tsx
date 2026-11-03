@@ -31,7 +31,7 @@ import { ModalPagos } from '@/components/modal-pagos';
 import { SelectorMapa } from '@/components/selector-mapa';
 import { SelectorOficio } from '@/components/selector-oficio';
 import { SelectorUbicacion } from '@/components/selector-ubicacion';
-import { OFICIOS } from '@/lib/oficios';
+import { avisoOficio, OFICIOS, oficioCoincide } from '@/lib/oficios';
 import { ModalBitacora } from '@/components/modal-bitacora';
 import { ModalCancelarContrato } from '@/components/modal-cancelar-contrato';
 import { ModalReportarProblema } from '@/components/modal-reportar-problema';
@@ -386,7 +386,8 @@ export default function DashboardContratista() {
       return;
     }
     setTrabajadorParaContratar(trabajador);
-    setVacanteSeleccionadaParaContratar(vacantesActivas[0].id);
+    // SE ELIGE PRIMERO UNA VACANTE DE SU MISMO OFICIO, SI HAY
+    setVacanteSeleccionadaParaContratar((vacantesActivas.find(v => oficioCoincide(trabajador.oficio_principal, v.categoria)) || vacantesActivas[0]).id);
     setModalContratarDirecto(true);
   };
 
@@ -526,6 +527,8 @@ export default function DashboardContratista() {
     foto: contrato.trabajador?.foto_rostro_url,
   }, mensaje);
   // UNA SOLICITUD SE PLATICA Y SE ACEPTA EN EL CHAT (AHÍ APARECE EL BOTÓN "ACEPTAR TRATO")
+  // OFICIO QUE PIDE LA OBRA DE UNA SOLICITUD (LOS CONTRATOS NUEVOS LO TRAEN; LOS VIEJOS SE BUSCAN EN MIS VACANTES)
+  const oficioDeVacante = (cand: any) => cand.vacante?.oficio || misVacantes.find(v => v.id === cand.id_vacante)?.categoria || '';
   const irAlChatDeSolicitud = (cand: any) => chatearCon(cand, MENSAJES_INICIALES.solicitud(cand.trabajador?.nombre || '', cand.titulo_vacante));
 
   // QUÉ PUEDE HACER EL CONTRATISTA CON CADA CONTRATO, SEGÚN SU ESTADO
@@ -614,6 +617,7 @@ export default function DashboardContratista() {
   const barra = (
     <BarraSuperior
       rol="Contratista"
+      onCerrarSesion={cerrarSesion}
       onNuevos={cargarPerfil}
       titulo={pestañaActiva === 'Perfil' ? 'Mi perfil' : TITULOS_PESTAÑA[pestañaActiva]?.titulo || 'PalanteMX'}
       subtitulo={pestañaActiva === 'Perfil' ? 'Tus datos, reseñas y ajustes' : TITULOS_PESTAÑA[pestañaActiva]?.sub}
@@ -826,6 +830,12 @@ export default function DashboardContratista() {
                       <Ionicons name="chevron-forward" size={20} color="#9CA3AF" />
                     </View>
                     <View style={styles.candidatoFooter}><Text style={styles.candidatoFooterText}><Text style={{fontWeight: 'bold'}}>Postuló para:</Text> {cand.titulo_vacante}</Text></View>
+                    {!oficioCoincide(cand.trabajador.oficio_principal, oficioDeVacante(cand)) && (
+                      <View style={styles.avisoOficio}>
+                        <Ionicons name="alert-circle-outline" size={16} color="#B45309" />
+                        <Text style={styles.avisoOficioTexto}>{avisoOficio(cand.trabajador.oficio_principal, oficioDeVacante(cand))}</Text>
+                      </View>
+                    )}
                     <View style={{flexDirection: 'row', marginTop: 10}}>
                       <TouchableOpacity style={[styles.candBtnAccion, {borderColor: '#00D06C', backgroundColor: '#00D06C', marginHorizontal: 0, padding: 10}]} onPress={() => irAlChatDeSolicitud(cand)}>
                         <Ionicons name="chatbubbles" size={18} color="#FFF" /><Text style={[styles.candBtnText, {color: '#FFF'}]}>Ir al chat para platicar y aceptar</Text>
@@ -887,7 +897,6 @@ export default function DashboardContratista() {
               <TouchableOpacity style={styles.settingsOption} onPress={() => setModalEditar(true)}><View style={styles.settingsRow}><Ionicons name="person-circle-outline" size={24} color="#0D2340" /><Text style={styles.settingsText}>Editar datos de la empresa</Text></View><Ionicons name="chevron-forward" size={20} color="#9CA3AF" /></TouchableOpacity>
               <TouchableOpacity style={styles.settingsOption} onPress={abrirModalEvaluar}><View style={styles.settingsRow}><Ionicons name="star-outline" size={24} color="#F59E0B" /><Text style={styles.settingsText}>Evaluar a un Trabajador contratado</Text></View><Ionicons name="chevron-forward" size={20} color="#9CA3AF" /></TouchableOpacity>
               <TouchableOpacity style={styles.settingsOption} onPress={abrirModalQueja}><View style={styles.settingsRow}><Ionicons name="shield-half-outline" size={24} color="#D32F2F" /><Text style={[styles.settingsText, {color: '#D32F2F'}]}>Levantar Reporte a Trabajador</Text></View><Ionicons name="chevron-forward" size={20} color="#9CA3AF" /></TouchableOpacity>
-              <TouchableOpacity style={[styles.settingsOption, { marginTop: 20 }]} onPress={cerrarSesion}><View style={styles.settingsRow}><Ionicons name="log-out-outline" size={24} color="#0D2340" /><Text style={[styles.settingsText, { fontWeight: 'bold' }]}>Cerrar Sesión</Text></View></TouchableOpacity>
               <TouchableOpacity style={[styles.settingsOption, { borderBottomWidth: 0, marginTop: 10 }]} onPress={eliminarCuenta}><View style={styles.settingsRow}><Ionicons name="trash-outline" size={24} color="#D32F2F" /><Text style={[styles.settingsText, { color: '#D32F2F', fontWeight: 'bold' }]}>Eliminar cuenta de contratista</Text></View></TouchableOpacity>
               </View>
               )}
@@ -937,6 +946,15 @@ export default function DashboardContratista() {
                 ))}
               </Picker>
             </View>
+            {(() => {
+              const oficioObra = misVacantes.find(v => v.id === vacanteSeleccionadaParaContratar)?.categoria;
+              return oficioCoincide(trabajadorParaContratar?.oficio_principal, oficioObra) ? null : (
+                <View style={[styles.avisoOficio, { marginBottom: 10 }]}>
+                  <Ionicons name="alert-circle-outline" size={16} color="#B45309" />
+                  <Text style={styles.avisoOficioTexto}>{avisoOficio(trabajadorParaContratar?.oficio_principal, oficioObra)}</Text>
+                </View>
+              );
+            })()}
             
             <View style={styles.modalBtnRow}>
               <TouchableOpacity style={styles.modalBtnCancel} onPress={() => setModalContratarDirecto(false)}><Text style={styles.modalBtnTextC}>Cancelar</Text></TouchableOpacity>
@@ -1333,6 +1351,8 @@ const styles = StyleSheet.create({
   modalLabel: { fontSize: 14, fontWeight: 'bold', color: '#6B7280', marginBottom: 5, marginTop: 5 },
   modalInput: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, padding: 12, marginBottom: 10, fontSize: 16, color: '#1F2937' },
   pickerBox: { borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, backgroundColor: '#F9FAFB', marginBottom: 15, overflow: 'hidden' },
+  avisoOficio: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFBEB', borderWidth: 1, borderColor: '#FDE68A', borderRadius: 10, padding: 10, marginTop: 8 },
+  avisoOficioTexto: { flex: 1, marginLeft: 8, fontSize: 13, color: '#92400E' },
   uploadArea: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderStyle: 'dashed', borderRadius: 12, padding: 20, alignItems: 'center', marginBottom: 15 },
   uploadText: { color: '#9CA3AF', marginTop: 5, fontSize: 14, fontWeight: 'bold', textAlign: 'center' },
   uploadedImagePreview: { width: '100%', height: 120, borderRadius: 10 },

@@ -46,7 +46,7 @@ export function PerfilTrabajador({ trabajador: t, distancia, onEliminarObra, obr
           <Text style={{ color: t?.disponibilidad === 'Ocupado' ? '#B45309' : '#059669', fontWeight: 'bold', fontSize: 14 }}>{t?.disponibilidad === 'Ocupado' ? 'OCUPADO EN OTRA OBRA' : 'DISPONIBLE PARA TRABAJAR'}</Text>
         </View>
 
-        {/* DATOS EN FILAS ORDENADAS: ETIQUETA A LA IZQUIERDA, VALOR A LA DERECHA */}
+        {/* DATOS EN FILAS ORDENADAS: ÍCONO, Y LA ETIQUETA CHIQUITA ENCIMA DEL VALOR */}
         <View style={styles.datos}>
           {([
             ['location', '#DC2626', 'Ubicación', `${ubicacion || 'Sin ubicación'}${distancia ? ` (${distancia})` : ''}`],
@@ -55,8 +55,10 @@ export function PerfilTrabajador({ trabajador: t, distancia, onEliminarObra, obr
           ] as const).map(([icono, color, etiqueta, valor], i) => (
             <View key={etiqueta} style={[styles.filaDato, i > 0 && styles.filaDatoBorde]}>
               <View style={[styles.iconoDato, { backgroundColor: `${color}15` }]}><Ionicons name={icono} size={16} color={color} /></View>
-              <Text style={styles.datoEtiqueta}>{etiqueta}</Text>
-              <Text style={styles.datoValor} numberOfLines={2}>{valor}</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.datoEtiqueta}>{etiqueta}</Text>
+                <Text style={styles.datoValor} numberOfLines={2}>{valor}</Text>
+              </View>
             </View>
           ))}
         </View>
@@ -166,11 +168,11 @@ const styles = StyleSheet.create({
   diaSi: { backgroundColor: '#00A355' },
   diaTexto: { fontSize: 13, fontWeight: 'bold', color: '#9CA3AF' },
   datos: { alignSelf: 'stretch', marginTop: 14, backgroundColor: '#FFF', borderRadius: 16, paddingHorizontal: 12, elevation: 2, shadowColor: '#0D2340', shadowOpacity: 0.08, shadowRadius: 6, shadowOffset: { width: 0, height: 2 } },
-  filaDato: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10 },
+  filaDato: { flexDirection: 'row', alignItems: 'center', paddingVertical: 9 },
   filaDatoBorde: { borderTopWidth: 1, borderColor: '#F3F4F6' },
-  iconoDato: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center', marginRight: 10 },
-  datoEtiqueta: { fontSize: 14, color: '#6B7280', flex: 1 },
-  datoValor: { fontSize: 15, color: '#0D2340', fontWeight: '600', flexShrink: 1, marginLeft: 12, textAlign: 'right' },
+  iconoDato: { width: 30, height: 30, borderRadius: 15, alignItems: 'center', justifyContent: 'center', marginRight: 12 },
+  datoEtiqueta: { fontSize: 12, color: '#9CA3AF', fontWeight: '600', letterSpacing: 0.3 },
+  datoValor: { fontSize: 14, color: '#0D2340', fontWeight: '600', marginTop: 1 },
   stats: { flexDirection: 'row', marginTop: 12, backgroundColor: '#F9FAFB', borderRadius: 12, paddingVertical: 10, alignSelf: 'stretch' },
   stat: { flex: 1, alignItems: 'center' },
   statNumero: { fontSize: 17, fontWeight: 'bold', color: '#0D2340' },

@@ -683,9 +683,12 @@ const crearContrato = async (env: Env, uid: string, quienInicia: 'contratista' |
         nombre_trabajador: `${texto(trabajador.fields.nombre)} ${texto(trabajador.fields.apellidos)}`.trim(),
         id_contratista: idContratista,
         contratista: texto(vacante.fields.contratista),
+        // OFICIO DEL TRABAJADOR AL POSTULARSE: SI NO ES EL QUE PIDE LA OBRA, LA APP MUESTRA UN AVISO A LOS DOS
+        oficio_trabajador: texto(trabajador.fields.oficio_principal),
         // RESUMEN DE LA VACANTE PARA DIBUJAR LAS TARJETAS SIN TENER QUE LEERLA
         vacante: {
           titulo: texto(vacante.fields.titulo),
+          oficio: texto(vacante.fields.categoria),
           contratista: texto(vacante.fields.contratista),
           ubicacion: texto(vacante.fields.ubicacion),
           pago: texto(vacante.fields.pago),
