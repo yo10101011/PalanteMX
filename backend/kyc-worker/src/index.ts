@@ -60,11 +60,91 @@ export default {
     return responder(404, { error: 'Ruta no encontrada' });
   },
 
-  // TAREA DIARIA (CRON DE wrangler.toml, GRATIS EN CLOUDFLARE): REVISA OBRAS TERMINADAS SIN PAGO CONFIRMADO
-  async scheduled(_evento: unknown, env: Env, ctx: { waitUntil: (promesa: Promise<unknown>) => void }) {
+  // TAREAS AUTOMÁTICAS (CRONS DE wrangler.toml, GRATIS EN CLOUDFLARE):
+  //   9:00 AM (15:00 UTC): PAGOS PENDIENTES Y DÍAS DE TRABAJO QUE SE QUEDARON SIN BITÁCORA
+  //   7:00 PM (01:00 UTC): RECORDATORIO A QUIEN HOY TRABAJA Y AÚN NO LLENA SU BITÁCORA
+  async scheduled(evento: { cron?: string }, env: Env, ctx: { waitUntil: (promesa: Promise<unknown>) => void }) {
+    if (evento?.cron === CRON_TARDE) {
+      ctx.waitUntil(recordarBitacoraDeHoy(env).catch(error => console.log('Error recordando bitácoras', error)));
+      return;
+    }
     ctx.waitUntil(revisarPagosPendientes(env).catch(error => console.log('Error revisando pagos pendientes', error)));
     ctx.waitUntil(recordarPagosVencidos(env).catch(error => console.log('Error recordando pagos', error)));
+    ctx.waitUntil(registrarBitacorasFaltantes(env).catch(error => console.log('Error revisando bitácoras faltantes', error)));
   },
+};
+
+// ---------------------------------------------------------------- BITÁCORAS QUE NO SE LLENARON
+// UN DÍA DE TRABAJO (SEGÚN inicio_obra / fin_obra / dias_obra DEL CONTRATO) EN QUE EL TRABAJADOR NO LLENÓ LA BITÁCORA:
+//   - A LAS 7 PM SE LE RECUERDA (TODAVÍA TIENE HASTA LAS 11:59 PM).
+//   - AL DÍA SIGUIENTE SE REGISTRA SOLO COMO FALTA (asistio: false, automatica: true) Y SE LES AVISA A LOS DOS.
+//     COMO EL DÍA YA EXISTE, YA NO SE PUEDE LLENAR DESPUÉS (Y LAS REGLAS SOLO DEJAN ESCRIBIR EL DÍA DE HOY).
+// LAS OBRAS VIEJAS SIN DÍAS DE TRABAJO NO SE REVISAN (NO SE SABE QUÉ DÍAS SE TRABAJABA).
+const CRON_TARDE = '0 1 * * *';
+const DIAS_SEMANA_OBRA = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
+const claveMexico = (fecha: Date) => fecha.toLocaleDateString('en-CA', { timeZone: 'America/Mexico_City' }); // 'AAAA-MM-DD'
+const fechaLarga = (clave: string) => new Date(`${clave}T12:00:00-06:00`).toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'America/Mexico_City' });
+
+// ¿ESE DÍA SE TRABAJA EN LA OBRA? (Y YA SE HABÍA CERRADO EL TRATO PARA ENTONCES)
+const esDiaDeTrabajo = (obra: DocumentoLeido, clave: string) => {
+  const inicio = texto(obra.fields.inicio_obra);
+  if (!inicio || clave < inicio) return false;
+  const fin = texto(obra.fields.fin_obra);
+  if (fin && clave > fin) return false;
+  const aceptado = numero(obra.fields.timestamp_inicio);
+  if (aceptado && clave < claveMexico(new Date(aceptado))) return false;
+  const dias = (deFirestore(obra.fields.dias_obra) as string[]) || [];
+  const diaSemana = DIAS_SEMANA_OBRA[(new Date(`${clave}T12:00:00-06:00`).getUTCDay() + 6) % 7];
+  return dias.length === 0 || dias.includes(diaSemana);
+};
+
+const registrarBitacorasFaltantes = async (env: Env) => {
+  const nombreBase = `projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents`;
+  // LOS ÚLTIMOS 3 DÍAS (SIN CONTAR HOY), POR SI ALGÚN DÍA LA TAREA NO CORRIÓ
+  const dias = [1, 2, 3].map(n => claveMexico(new Date(Date.now() - n * 24 * 60 * 60 * 1000)));
+  const activas = await consultarDocumentos(env, 'Postulaciones', [['estado', 'EQUAL', ESTADOS.ACTIVA]], 300);
+  for (const obra of activas) {
+    const faltantes = dias.filter(d => esDiaDeTrabajo(obra, d));
+    if (faltantes.length === 0) continue;
+    const registrados = await idsDeDocumentos(env, `Postulaciones/${obra.id}/Bitacora`);
+    const sinBitacora = faltantes.filter(d => !registrados.includes(d)).sort();
+    if (sinBitacora.length === 0) continue;
+
+    const idTrabajador = texto(obra.fields.id_trabajador);
+    const idContratista = texto(obra.fields.id_contratista);
+    const titulo = texto(obra.fields.titulo_vacante);
+    const nombres = await nombresDePartes(env, idTrabajador, idContratista);
+    const listaDias = sinBitacora.map(fechaLarga).join(', ');
+    await confirmarEscrituras(env, [
+      ...sinBitacora.map(d => ({
+        update: {
+          name: `${nombreBase}/Postulaciones/${obra.id}/Bitacora/${d}`,
+          fields: aCamposFirestore({
+            asistio: false, automatica: true, autor_id: 'sistema', evidencia: null,
+            nota: 'El trabajador no llenó la bitácora este día. PalanteMX lo registró automáticamente como falta.',
+            fecha: new Date(`${d}T12:00:00-06:00`).toLocaleDateString('es-MX', { timeZone: 'America/Mexico_City' }),
+            timestamp: new Date(`${d}T12:00:00-06:00`).getTime(),
+          }),
+        },
+        currentDocument: { exists: false }, // SI EL TRABAJADOR SÍ LO LLENÓ, NO SE TOCA
+      })),
+      nuevaNotificacion(env, idTrabajador, 'No llenaste tu bitácora', `No registraste tu bitácora de "${titulo}" del ${listaDias}. Quedó registrado como falta y ya no se puede llenar. Si sí fuiste a trabajar, platícalo con el contratista o levanta un reporte.`, { destino: { abrir: 'bitacora', id_contrato: obra.id }, tipo: 'reporte', importante: true }),
+      nuevaNotificacion(env, idContratista, 'Día sin bitácora', `${nombres.trabajador} (trabajador) no llenó la bitácora de "${titulo}" del ${listaDias}. Quedó registrado como falta. Si sí trabajó, puedes platicarlo con él en el chat.`, { destino: { abrir: 'bitacora', id_contrato: obra.id }, tipo: 'reporte', importante: true }),
+    ]);
+  }
+};
+
+const recordarBitacoraDeHoy = async (env: Env) => {
+  const hoy = claveMexico(new Date());
+  const activas = await consultarDocumentos(env, 'Postulaciones', [['estado', 'EQUAL', ESTADOS.ACTIVA]], 300);
+  for (const obra of activas) {
+    if (!esDiaDeTrabajo(obra, hoy)) continue;
+    const registrados = await idsDeDocumentos(env, `Postulaciones/${obra.id}/Bitacora`);
+    if (registrados.includes(hoy)) continue;
+    await confirmarEscrituras(env, [
+      nuevaNotificacion(env, texto(obra.fields.id_trabajador), 'Llena tu bitácora de hoy', `Hoy es día de trabajo en "${texto(obra.fields.titulo_vacante)}" y aún no llenas tu bitácora. Tienes hasta las 11:59 de la noche; si no, el día quedará como falta.`, { destino: { abrir: 'bitacora', id_contrato: obra.id }, tipo: 'contrato', importante: true }),
+    ]);
+  }
 };
 
 // CUÁNTO DEBERÍA HABER PAGADO YA EL CONTRATISTA, SEGÚN CADA CUÁNTO SE PAGA (LA MISMA CUENTA QUE HACE LA APP EN lib/pagos.ts):

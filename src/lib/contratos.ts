@@ -159,6 +159,7 @@ export const REVISION = {
 
 // TEXTO Y COLOR DE CADA DÍA (EN LA LISTA Y EN EL CALENDARIO). UNA FALTA NO SE REVISA: YA NO CUENTA.
 export const estiloDia = (dia: any): { texto: string; color: string } => {
+  if (dia.automatica) return { texto: 'Sin bitácora (falta)', color: '#DC2626' };
   if (!dia.asistio) return { texto: 'Faltó', color: '#9CA3AF' };
   switch (dia.revision) {
     case REVISION.CONFIRMADA: return { texto: 'Confirmado', color: '#00D06C' };

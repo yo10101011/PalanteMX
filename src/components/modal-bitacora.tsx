@@ -196,7 +196,7 @@ export function ModalBitacora({ contrato, rol, onClose }: Props) {
                           <Text style={styles.fecha}>{dia.fecha}</Text>
                           <View style={[styles.etiqueta, { backgroundColor: estilo.color }]}><Text style={styles.etiquetaTexto}>{estilo.texto}</Text></View>
                         </View>
-                        <Text style={styles.asistencia}>{dia.asistio ? 'Asistió y trabajó' : 'No asistió'}</Text>
+                        <Text style={styles.asistencia}>{dia.automatica ? 'No llenó la bitácora (registrado automáticamente)' : dia.asistio ? 'Asistió y trabajó' : 'No asistió'}</Text>
                         <Text style={styles.nota}>{dia.nota}</Text>
                         {dia.evidencia ? (
                           <TouchableOpacity onPress={() => setFotoGrande(dia.evidencia)}>
