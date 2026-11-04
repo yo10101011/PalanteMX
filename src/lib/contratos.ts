@@ -64,7 +64,7 @@ export type AccionContrato =
   | 'solicitar_fin' | 'confirmar_fin' | 'rechazar_fin' | 'cancelar'
   | 'revisar_bitacora' | 'reportar_problema'
   | 'registrar_pago' | 'confirmar_pago'
-  | 'admin_reactivar' | 'admin_cancelar';
+  | 'admin_reactivar' | 'admin_cancelar' | 'cambiar_inicio';
 
 type DatosAccion = {
   id_contrato?: string; id_vacante?: string; id_trabajador?: string; motivo?: string;
@@ -73,6 +73,7 @@ type DatosAccion = {
   monto?: number; concepto?: string; comprobante?: string; // REGISTRAR UN PAGO
   id_pago?: string; recibido?: boolean;                    // CONFIRMAR UN PAGO
   devolver?: number;                                       // ADMIN CANCELA: PESOS QUE EL TRABAJADOR DEBE DEVOLVER
+  inicio_obra?: string;                                    // CAMBIAR EL DÍA EN QUE EMPIEZA LA OBRA ('AAAA-MM-DD')
 };
 
 // LO QUE EL CONTRATISTA YA PAGÓ (CONFIRMADO O POR CONFIRMAR; NO CUENTA LO MARCADO COMO NO RECIBIDO)
@@ -169,6 +170,17 @@ export const estiloDia = (dia: any): { texto: string; color: string } => {
 // CLAVE "AAAA-MM-DD" DEL DÍA (HORA DEL TELÉFONO). ES EL ID DE CADA DÍA DE LA BITÁCORA
 export const claveDia = (fecha: Date) =>
   `${fecha.getFullYear()}-${String(fecha.getMonth() + 1).padStart(2, '0')}-${String(fecha.getDate()).padStart(2, '0')}`;
+
+// DÍA EN QUE EMPIEZA LA OBRA ('AAAA-MM-DD'), ELEGIDO AL PUBLICAR LA VACANTE. ANTES DE ESE DÍA NO SE LLENA LA BITÁCORA.
+// (NO CONFUNDIR CON fecha_inicio, QUE ES CUÁNDO SE ACEPTÓ EL TRATO.) LAS OBRAS VIEJAS NO LO TIENEN: EMPIEZAN YA.
+export const yaEmpezo = (contrato: any) => !contrato?.inicio_obra || claveDia(new Date()) >= contrato.inicio_obra;
+
+// 'AAAA-MM-DD' -> "lunes 10 de noviembre"
+export const textoFecha = (clave?: string) => {
+  if (!clave || !/^\d{4}-\d{2}-\d{2}$/.test(clave)) return '';
+  const [a, m, d] = clave.split('-').map(Number);
+  return new Date(a, m - 1, d).toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long' });
+};
 
 // BITÁCORA DIARIA: VIVE DENTRO DE CADA CONTRATO (Postulaciones/{id}/Bitacora), ASÍ LAS DOS PARTES VEN LA MISMA
 export const leerBitacora = async (idContrato: string) => {

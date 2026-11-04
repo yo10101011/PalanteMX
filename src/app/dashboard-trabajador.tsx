@@ -1005,7 +1005,7 @@ const styles = StyleSheet.create({
   projectDetailsRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
   projectSubtitle: { fontSize: 14, color: '#6B7280', marginLeft: 4 },
   dotSeparator: { marginHorizontal: 8, color: '#D1D5DB', fontSize: 16 },
-  projectDesc: { fontSize: 15, color: '#4B5563', marginTop: 8, lineHeight: 18, backgroundColor: '#F9FAFB', padding: 10, borderRadius: 8 },
+  projectDesc: { fontSize: 15, color: '#4B5563', marginTop: 8, lineHeight: 21, backgroundColor: '#F9FAFB', padding: 10, borderRadius: 8 },
   
   trackerContainer: { marginTop: 15, padding: 15, backgroundColor: '#F9FAFB', borderRadius: 12, borderWidth: 1, borderColor: '#E5E7EB' },
   trackerTitle: { fontSize: 15, fontWeight: 'bold', color: '#0D2340', marginBottom: 10 },
@@ -1067,7 +1067,7 @@ const styles = StyleSheet.create({
   expandedFechasLabel: { fontSize: 13, color: '#9CA3AF', fontWeight: 'bold', marginBottom: 2 },
   expandedFechasValue: { fontSize: 16, color: '#0D2340', fontWeight: 'bold' },
   expandedSectionTitle: { fontSize: 17, fontWeight: 'bold', color: '#0D2340', marginBottom: 10 },
-  expandedDesc: { fontSize: 16, color: '#4B5563', lineHeight: 20, marginBottom: 20 },
+  expandedDesc: { fontSize: 16, color: '#4B5563', lineHeight: 22, marginBottom: 20 },
 
   searchContainerInteligente: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 12, paddingHorizontal: 15 },
   searchIcon: { marginRight: 10 },
@@ -1088,5 +1088,5 @@ const styles = StyleSheet.create({
   reviewName: { fontSize: 16, fontWeight: 'bold', color: '#0D2340' },
   reviewDate: { fontSize: 13, color: '#9CA3AF' },
   reviewStarsRow: { flexDirection: 'row', alignItems: 'center', marginTop: 2 },
-  reviewComment: { fontSize: 15, color: '#4B5563', fontStyle: 'italic', lineHeight: 18 }
+  reviewComment: { fontSize: 15, color: '#4B5563', fontStyle: 'italic', lineHeight: 21 }
 });

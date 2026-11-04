@@ -468,7 +468,7 @@ const styles = StyleSheet.create({
   modalAlertHeader: { padding: 20, alignItems: 'center' },
   modalAlertContent: { padding: 25, alignItems: 'center' },
   modalAlertTitle: { fontSize: 19, fontWeight: 'bold', color: '#0D2340', marginBottom: 10, textAlign: 'center' },
-  modalAlertText: { fontSize: 16, color: '#6B7280', textAlign: 'center', marginBottom: 25, lineHeight: 20 },
+  modalAlertText: { fontSize: 16, color: '#6B7280', textAlign: 'center', marginBottom: 25, lineHeight: 22 },
   modalAlertBtn: { backgroundColor: '#0D2340', paddingVertical: 14, paddingHorizontal: 40, borderRadius: 12 },
   modalAlertBtnText: { color: '#FFFFFF', fontWeight: 'bold', fontSize: 16, letterSpacing: 1 }
 });

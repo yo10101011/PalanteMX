@@ -157,7 +157,7 @@ const styles = StyleSheet.create({
   avisoNuevo: { backgroundColor: '#EFF6FF', borderWidth: 1, borderColor: '#BFDBFE' },
   icono: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center', marginRight: 10 },
   avisoTitulo: { fontSize: 16, fontWeight: 'bold', color: '#0D2340' },
-  avisoTexto: { fontSize: 15, color: '#4B5563', marginTop: 2, lineHeight: 18 },
+  avisoTexto: { fontSize: 15, color: '#4B5563', marginTop: 2, lineHeight: 21 },
   pie: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 5 },
   avisoFecha: { fontSize: 13, color: '#9CA3AF' },
   irChat: { fontSize: 14, color: '#2563EB', fontWeight: 'bold' },

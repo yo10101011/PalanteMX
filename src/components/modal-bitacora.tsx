@@ -13,7 +13,7 @@ import { CalendarioBitacora } from '@/components/calendario-bitacora';
 import { SelectorFotos, subirFotos } from '@/components/selector-fotos';
 import { VisorFoto } from '@/components/visor-foto';
 import { subirFotoACloudinary } from '@/lib/cloudinary';
-import { accionContrato, agregarABitacora, claveDia, ESTADOS, estiloDia, leerBitacora, REVISION } from '@/lib/contratos';
+import { accionContrato, agregarABitacora, claveDia, ESTADOS, estiloDia, leerBitacora, REVISION, textoFecha, yaEmpezo } from '@/lib/contratos';
 import { distanciaKm, evaluarUbicacion, mensajeUbicacion, NivelUbicacion, nombreDeLugar, ubicacionPrecisa } from '@/lib/ubicacion';
 
 const ICONO_NIVEL: Record<NivelUbicacion, keyof typeof Ionicons.glyphMap> = {
@@ -254,10 +254,14 @@ export function ModalBitacora({ contrato, rol, onClose }: Props) {
                     );
                   })}
 
-                  {escribirPermitido && yaRegistroHoy && (
+                  {/* ANTES DEL DÍA EN QUE EMPIEZA LA OBRA NO SE PUEDE LLENAR (LAS REGLAS TAMBIÉN LO IMPIDEN) */}
+                  {escribirPermitido && !yaEmpezo(contrato) && (
+                    <Text style={styles.avisoHoy}>La obra empieza el {textoFecha(contrato.inicio_obra)}. Desde ese día podrás llenar tu bitácora.</Text>
+                  )}
+                  {escribirPermitido && yaEmpezo(contrato) && yaRegistroHoy && (
                     <Text style={styles.avisoHoy}>Ya registraste tu avance de hoy. Mañana podrás agregar el siguiente.</Text>
                   )}
-                  {escribirPermitido && !yaRegistroHoy && (
+                  {escribirPermitido && yaEmpezo(contrato) && !yaRegistroHoy && (
                     <View style={styles.formulario}>
                       <Text style={styles.formTitulo}>Reportar avance de hoy ({new Date().toLocaleDateString('es-MX')})</Text>
                       <Text style={styles.etiquetaForm}>¿Asististe a la obra hoy?</Text>

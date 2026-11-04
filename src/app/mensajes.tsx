@@ -41,7 +41,7 @@ import {
 } from 'firebase/firestore';
 import { auth, db } from '../../firebaseConfig';
 import { subirACloudinary, subirFotoACloudinary } from '@/lib/cloudinary';
-import { accionContrato, ESTADOS, RESPUESTAS_RAPIDAS } from '@/lib/contratos';
+import { accionContrato, ESTADOS, RESPUESTAS_RAPIDAS, textoFecha } from '@/lib/contratos';
 import { avisoOficio, oficioCoincide } from '@/lib/oficios';
 import { useTecladoVisible } from '@/lib/teclado';
 import { SelectorFotos, subirFotos } from '@/components/selector-fotos';
@@ -233,7 +233,7 @@ export default function Mensajes() {
     escuchaMensajesRef.current = null;
     setMensajes([]);
     setChatActivo(chat);
-    setTratos([]); setTratoElegidoId(null); setTratoAbierto(false);
+    setTratos([]); setTratoElegidoId(null); setTratoAbierto(false); setRapidasAbiertas(false);
     cargarTratos(chat.usuarios_ids?.find((id: string) => id !== miPerfil.id));
     // MENSAJE LISTO PARA EMPEZAR LA PLÁTICA (P. EJ. "HOLA, VI TU PERFIL..."), SOLO SI VIENE DE OTRA PANTALLA CON UNO.
     // SE PONE HASTA SABER LOS MENSAJES DEL CHAT: SI YA MANDÉ ESE MISMO MENSAJE (LA MISMA OBRA), YA NO SE PONE.
@@ -288,6 +288,7 @@ export default function Mensajes() {
     const archivoEnviar = archivoSeleccionado;
     
     setNuevoMensaje('');
+    setRapidasAbiertas(false);
     setArchivoSeleccionado(null);
 
     const timestampActual = new Date().getTime();
@@ -454,7 +455,7 @@ export default function Mensajes() {
         <KeyboardAvoidingView style={{flex: 1}} behavior="padding">
           
           <View style={styles.chatHeader}>
-            <TouchableOpacity style={styles.backBtn} onPress={() => { escuchaMensajesRef.current?.(); escuchaMensajesRef.current = null; setChatActivo(null); setTratos([]); setTratoElegidoId(null); setTratoAbierto(false); router.setParams({ autoOpenId: '', autoOpenNombre: '', autoOpenMensaje: '' }); }}>
+            <TouchableOpacity style={styles.backBtn} onPress={() => { escuchaMensajesRef.current?.(); escuchaMensajesRef.current = null; setChatActivo(null); setTratos([]); setTratoElegidoId(null); setTratoAbierto(false); setRapidasAbiertas(false); router.setParams({ autoOpenId: '', autoOpenNombre: '', autoOpenMensaje: '' }); }}>
               <Ionicons name="arrow-back" size={24} color="#FFF" />
             </TouchableOpacity>
             <Image source={{uri: otroUsuarioData.foto || undefined}} style={styles.chatAvatar} />
@@ -513,6 +514,7 @@ export default function Mensajes() {
                 {tratoAbierto && (
                   <View style={{marginTop: 8}}>
                     {trato.vacante?.pago ? <Text style={styles.tratoDato}>{trato.vacante.pago}{trato.vacante.ubicacion ? ` • ${trato.vacante.ubicacion}` : ''}</Text> : null}
+                    {trato.inicio_obra ? <Text style={styles.tratoAyuda}>Empieza el {textoFecha(trato.inicio_obra)}</Text> : null}
                     {!oficioCoincide(trato.oficio_trabajador, trato.vacante?.oficio) && (
                       <View style={styles.avisoOficio}>
                         <Ionicons name="alert-circle-outline" size={16} color="#B45309" />
@@ -630,7 +632,8 @@ export default function Mensajes() {
                 <Ionicons name={rapidasAbiertas ? 'flash' : 'flash-outline'} size={26} color="#F59E0B" />
               </TouchableOpacity>
               
-              <TextInput style={styles.textInput} placeholder="Escribe un mensaje..." value={nuevoMensaje} onChangeText={setNuevoMensaje} multiline />
+              {/* LAS RESPUESTAS RÁPIDAS SE CIERRAN SOLAS AL ESCRIBIR, AL TOCAR LA CAJA O AL ENVIAR */}
+              <TextInput style={styles.textInput} placeholder="Escribe un mensaje..." value={nuevoMensaje} onFocus={() => setRapidasAbiertas(false)} onChangeText={t => { setNuevoMensaje(t); setRapidasAbiertas(false); }} multiline />
 
               <TouchableOpacity style={[styles.sendBtn, (!nuevoMensaje.trim() && !archivoSeleccionado) && {backgroundColor: '#D1D5DB'}]} onPress={enviarMensaje} disabled={(!nuevoMensaje.trim() && !archivoSeleccionado) || procesando}>
                 {procesando ? <ActivityIndicator size="small" color="#FFF" /> : <Ionicons name="send" size={18} color="#FFF" style={{marginLeft: 3}} />}
@@ -885,7 +888,7 @@ const styles = StyleSheet.create({
   messageBubble: { maxWidth: '80%', paddingHorizontal: 15, paddingVertical: 10, borderRadius: 18, overflow: 'hidden' },
   messageMine: { backgroundColor: '#00D06C', borderBottomRightRadius: 4 },
   messageTheirs: { backgroundColor: '#FFF', borderBottomLeftRadius: 4, borderWidth: 1, borderColor: '#E5E7EB' },
-  messageText: { fontSize: 17, lineHeight: 20 },
+  messageText: { fontSize: 17, lineHeight: 24 },
   messageTextMine: { color: '#FFF' },
   messageTextTheirs: { color: '#1F2937' },
   messageTime: { fontSize: 13, marginTop: 5, alignSelf: 'flex-end' },

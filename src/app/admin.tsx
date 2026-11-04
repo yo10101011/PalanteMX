@@ -1068,7 +1068,7 @@ const styles = StyleSheet.create({
   parteNombre: { fontSize: 15, fontWeight: 'bold', color: '#1F2937', marginTop: 2 },
   parteRol: { fontSize: 13, fontWeight: 'bold', marginTop: 2 },
   descripcion: { backgroundColor: '#F9FAFB', borderRadius: 10, padding: 10, marginTop: 10 },
-  descripcionTexto: { fontSize: 15, color: '#4B5563', lineHeight: 18 },
+  descripcionTexto: { fontSize: 15, color: '#4B5563', lineHeight: 21 },
   miniatura: { width: 72, height: 72, borderRadius: 8, marginRight: 8, backgroundColor: '#E5E7EB' },
   botonPrincipal: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', borderRadius: 10, paddingVertical: 12, marginTop: 12 },
   botonPrincipalTexto: { color: '#FFF', fontWeight: 'bold', fontSize: 15, marginLeft: 6 },

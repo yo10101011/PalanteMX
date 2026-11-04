@@ -683,6 +683,8 @@ const crearContrato = async (env: Env, uid: string, quienInicia: 'contratista' |
         nombre_trabajador: `${texto(trabajador.fields.nombre)} ${texto(trabajador.fields.apellidos)}`.trim(),
         id_contratista: idContratista,
         contratista: texto(vacante.fields.contratista),
+        // DÍA EN QUE EMPIEZA LA OBRA ('AAAA-MM-DD'): ANTES DE ESE DÍA LAS REGLAS NO DEJAN LLENAR LA BITÁCORA
+        inicio_obra: texto(vacante.fields.inicio_obra),
         // OFICIO DEL TRABAJADOR AL POSTULARSE: SI NO ES EL QUE PIDE LA OBRA, LA APP MUESTRA UN AVISO A LOS DOS
         oficio_trabajador: texto(trabajador.fields.oficio_principal),
         // RESUMEN DE LA VACANTE PARA DIBUJAR LAS TARJETAS SIN TENER QUE LEERLA
@@ -727,6 +729,7 @@ type DatosContrato = {
   monto?: unknown; concepto?: unknown; comprobante?: unknown; // REGISTRAR UN PAGO
   id_pago?: unknown; recibido?: unknown;             // CONFIRMAR (O NO) UN PAGO
   devolver?: unknown;                                // ADMIN CANCELA: PESOS QUE EL TRABAJADOR DEBE DEVOLVER DE LO YA PAGADO
+  inicio_obra?: unknown;                             // CAMBIAR EL DÍA EN QUE EMPIEZA LA OBRA ('AAAA-MM-DD')
 };
 
 // DINERO QUE EL CONTRATISTA YA PAGÓ EN UNA OBRA (REGISTRADO, CONFIRMADO O POR CONFIRMAR; NO CUENTA LO MARCADO COMO NO RECIBIDO)
@@ -912,6 +915,26 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
         cambioContrato({ estado: ESTADOS.ACTIVA }),
         nuevaNotificacion(env, c.idContratista, 'La obra aún no termina', `${await nombreDe('trabajador')} dice que "${tituloObra}" todavía no termina. La obra sigue activa; platiquen lo que falta.`, { destino: { abrir: 'obra', id_contrato: idContrato } }),
       ], ESTADOS.ACTIVA);
+    }
+
+    // ---- CAMBIAR EL DÍA EN QUE EMPIEZA LA OBRA: SOLO EL CONTRATISTA, ANTES DE QUE TERMINE. SE LE AVISA AL TRABAJADOR ----
+    // NO PUEDE SER UN DÍA QUE YA PASÓ, NI DEJAR FUERA DÍAS DE BITÁCORA QUE EL TRABAJADOR YA REGISTRÓ.
+    case 'cambiar_inicio': {
+      if (!c.soyContratista) return prohibido('Solo el contratista puede cambiar el día en que empieza la obra.');
+      if (c.estado !== ESTADOS.PENDIENTE && c.estado !== ESTADOS.PROPUESTA && c.estado !== ESTADOS.ACTIVA) return noSePuede();
+      const nueva = c.datos.inicio_obra;
+      if (typeof nueva !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(nueva)) return responder(400, { error: 'Elige el día en que empieza la obra.' });
+      const hoy = ahora.toLocaleDateString('en-CA', { timeZone: 'America/Mexico_City' }); // 'AAAA-MM-DD'
+      if (nueva < hoy) return responder(400, { error: 'La obra no puede empezar en un día que ya pasó.' });
+      if (c.estado === ESTADOS.ACTIVA) {
+        const dias = await idsDeDocumentos(env, `${c.rutaContrato}/Bitacora`);
+        if (dias.some(id => id < nueva)) return responder(409, { error: 'El trabajador ya registró días de bitácora antes de esa fecha; no se puede mover el inicio después de ellos.' });
+      }
+      const fechaTexto = new Date(`${nueva}T12:00:00`).toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'America/Mexico_City' });
+      return guardar([
+        cambioContrato({ inicio_obra: nueva }),
+        nuevaNotificacion(env, c.idTrabajador, 'Cambió el día de inicio', `${await nombreDe('contratista')} (contratista) cambió el inicio de "${tituloObra}" al ${fechaTexto}. Desde ese día podrás llenar la bitácora. Si no te queda, platíquenlo en el chat.`, { destino: { abrir: 'obra', id_contrato: idContrato }, tipo: 'contrato', importante: true }),
+      ], c.estado);
     }
 
     // ---- CANCELAR: CUALQUIERA DE LOS DOS. SE LEVANTA UN REPORTE AUTOMÁTICO Y LA OBRA QUEDA SUSPENDIDA ----
@@ -1563,6 +1586,15 @@ const consultarDocumentos = async (env: Env, coleccion: string, filtros: [string
   return resultados
     .filter(r => r.document)
     .map(r => ({ id: r.document!.name.split('/').pop() as string, fields: r.document!.fields || {}, updateTime: r.document!.updateTime }));
+};
+
+// IDS DE LOS DOCUMENTOS DE UNA SUBCOLECCIÓN (P. EJ. LOS DÍAS 'AAAA-MM-DD' DE UNA BITÁCORA), SIN LEER SUS DATOS
+const idsDeDocumentos = async (env: Env, ruta: string) => {
+  const token = await obtenerTokenGoogle(env);
+  const respuesta = await fetch(`${urlDocumentos(env)}/${ruta}?pageSize=500&mask.fieldPaths=__name__`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!respuesta.ok) throw new Error(`Firestore respondió ${respuesta.status}: ${await respuesta.text()}`);
+  const datos = (await respuesta.json()) as { documents?: { name: string }[] };
+  return (datos.documents || []).map(d => d.name.split('/').pop() as string);
 };
 
 const numero = (valor: ValorFirestore | undefined) => Number(valor?.integerValue ?? valor?.doubleValue ?? 0) || 0;

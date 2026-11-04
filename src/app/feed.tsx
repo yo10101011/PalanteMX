@@ -8,7 +8,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 // @ts-ignore
 import { collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
 import { auth, db } from '../../firebaseConfig';
-import { abrirChatCon, accionContrato, ESTADOS, estiloEstado, MENSAJES_INICIALES } from '@/lib/contratos';
+import { abrirChatCon, accionContrato, ESTADOS, estiloEstado, MENSAJES_INICIALES, textoFecha } from '@/lib/contratos';
 import { coincide } from '@/lib/busqueda';
 import { useMensajesSinLeer } from '@/lib/mensajes';
 import { OFICIOS, oficioCoincide } from '@/lib/oficios';
@@ -291,6 +291,12 @@ export default function FeedTrabajador() {
                         <Ionicons name="location-outline" size={15} color="#6B7280" />
                         <Text style={styles.jobDetailText} numberOfLines={1}>{[item.ubicacion, item.estado_republica].filter(Boolean).join(', ')}{item.distancia !== null ? ` · ${textoDistancia(item.distancia)}` : ''}</Text>
                       </View>
+                      {item.inicio_obra ? (
+                        <View style={styles.jobDetailRow}>
+                          <Ionicons name="calendar-outline" size={15} color="#6B7280" />
+                          <Text style={styles.jobDetailText} numberOfLines={1}>Empieza el {textoFecha(item.inicio_obra)}</Text>
+                        </View>
+                      ) : null}
                       {item.horario ? (
                         <View style={styles.jobDetailRow}>
                           <Ionicons name="time-outline" size={15} color="#6B7280" />

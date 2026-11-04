@@ -77,7 +77,7 @@ const styles = StyleSheet.create({
   caja: { backgroundColor: '#FFF', borderRadius: 20, padding: 22 },
   encabezado: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
   titulo: { fontSize: 20, fontWeight: 'bold', color: '#0D2340' },
-  texto: { fontSize: 15, color: '#4B5563', marginBottom: 12, lineHeight: 19 },
+  texto: { fontSize: 15, color: '#4B5563', marginBottom: 12, lineHeight: 21 },
   etiqueta: { fontSize: 14, fontWeight: 'bold', color: '#6B7280', marginBottom: 5 },
   pickerCaja: { borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, backgroundColor: '#F9FAFB', marginBottom: 10, overflow: 'hidden' },
   input: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, padding: 12, height: 90, textAlignVertical: 'top', fontSize: 16, color: '#1F2937' },

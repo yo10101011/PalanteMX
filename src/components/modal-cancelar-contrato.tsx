@@ -76,7 +76,7 @@ const styles = StyleSheet.create({
   dineroTexto: { flex: 1, marginLeft: 8, fontSize: 14, color: '#92400E' },
   encabezado: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
   titulo: { fontSize: 20, fontWeight: 'bold', color: '#0D2340' },
-  texto: { fontSize: 15, color: '#4B5563', marginBottom: 15, lineHeight: 19 },
+  texto: { fontSize: 15, color: '#4B5563', marginBottom: 15, lineHeight: 21 },
   etiqueta: { fontSize: 14, fontWeight: 'bold', color: '#6B7280', marginBottom: 5 },
   input: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, padding: 12, height: 100, textAlignVertical: 'top', fontSize: 16, color: '#1F2937' },
   botones: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 15 },

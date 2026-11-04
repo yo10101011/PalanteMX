@@ -6,7 +6,7 @@ import { Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { VisorFoto } from '@/components/visor-foto';
 import { VistaCondiciones } from '@/components/condiciones-obra';
-import { ajustesDePago, estiloEstado, pagosPorConfirmar, tieneReporteAbierto } from '@/lib/contratos';
+import { ajustesDePago, estiloEstado, pagosPorConfirmar, textoFecha, tieneReporteAbierto, yaEmpezo } from '@/lib/contratos';
 
 export type BotonContrato = {
   texto: string;
@@ -53,12 +53,13 @@ export function TarjetaContrato({ contrato, otraParte, aviso, botones, deshabili
         </TouchableOpacity>
       ) : null}
 
-      {(vacante.ubicacion || vacante.pago || vacante.horario || vacante.descripcion) ? (
+      {(vacante.ubicacion || vacante.pago || vacante.horario || vacante.descripcion || contrato.inicio_obra) ? (
         <View style={styles.detalles}>
           {vacante.ubicacion ? <View style={styles.fila}><Ionicons name="location-outline" size={14} color="#6B7280" /><Text style={styles.detalleTexto}>{vacante.ubicacion}</Text></View> : null}
           {vacante.pago ? <View style={styles.fila}><Ionicons name="cash-outline" size={14} color="#00D06C" /><Text style={[styles.detalleTexto, { color: '#00D06C', fontWeight: 'bold' }]}>{vacante.pago}</Text></View> : null}
           {vacante.horario ? <View style={styles.fila}><Ionicons name="time-outline" size={14} color="#B45309" /><Text style={styles.detalleTexto}>{vacante.horario}</Text></View> : null}
-          {contrato.fecha_inicio ? <View style={styles.fila}><Ionicons name="calendar-outline" size={14} color="#6B7280" /><Text style={styles.detalleTexto}>Inició: {contrato.fecha_inicio}{contrato.fecha_fin ? ` • Terminó: ${contrato.fecha_fin}` : ''}</Text></View> : null}
+          {contrato.inicio_obra ? <View style={styles.fila}><Ionicons name="calendar-outline" size={14} color="#1D4ED8" /><Text style={[styles.detalleTexto, { color: '#1D4ED8', fontWeight: 'bold' }]}>{yaEmpezo(contrato) ? 'Empezó' : 'Empieza'} el {textoFecha(contrato.inicio_obra)}</Text></View> : null}
+          {contrato.fecha_inicio ? <View style={styles.fila}><Ionicons name="calendar-outline" size={14} color="#6B7280" /><Text style={styles.detalleTexto}>Trato cerrado: {contrato.fecha_inicio}{contrato.fecha_fin ? ` • Terminó: ${contrato.fecha_fin}` : ''}</Text></View> : null}
           {vacante.lugar_texto ? <View style={styles.fila}><Ionicons name="pin-outline" size={14} color="#DC2626" /><Text style={styles.detalleTexto}>Lugar de la obra: {vacante.lugar_texto}</Text></View> : null}
           {vacante.descripcion ? <Text style={styles.descripcion}>{vacante.descripcion}</Text> : null}
         </View>
@@ -119,7 +120,7 @@ const styles = StyleSheet.create({
   detalles: { backgroundColor: '#F9FAFB', borderRadius: 10, padding: 10, marginTop: 10 },
   fila: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
   detalleTexto: { fontSize: 14, color: '#4B5563', marginLeft: 6, flexShrink: 1 },
-  descripcion: { fontSize: 14, color: '#4B5563', marginTop: 4, lineHeight: 17 },
+  descripcion: { fontSize: 14, color: '#4B5563', marginTop: 4, lineHeight: 20 },
   fotoObra: { width: '100%', height: 170, borderRadius: 12, marginTop: 10, backgroundColor: '#E5E7EB' },
   fotoAviso: { position: 'absolute', bottom: 8, right: 8, flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 },
   fotoAvisoTexto: { color: '#FFF', fontSize: 13, fontWeight: 'bold', marginLeft: 4 },
