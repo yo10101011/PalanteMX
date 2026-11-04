@@ -67,7 +67,7 @@ const TIPOS_REPORTE: Record<TipoReporte, { texto: string; explicacion: string; c
   otro: { texto: 'Chat y otros', explicacion: 'Reportes del chat o del menú de ajustes (insultos, fraude, etc.).', color: '#2563EB', icono: 'chatbubbles' },
 };
 
-const esCancelacion = (q: any) => !!q.id_contrato && (q.tipo === 'cancelacion' || (!q.tipo && q.motivo === 'Cancelación de obra'));
+const esCancelacion = (q: any) => !!q?.id_contrato && (q.tipo === 'cancelacion' || (!q.tipo && q.motivo === 'Cancelación de obra'));
 const tipoDe = (q: any): TipoReporte => esCancelacion(q) ? 'cancelacion' : (['bitacora', 'incumplimiento', 'pago'].includes(q.tipo) ? q.tipo : 'otro');
 
 // "JOCELYN (TRABAJADOR)"
