@@ -1,8 +1,9 @@
-// PANEL DEL ADMINISTRADOR. 5 PESTAÑAS ABAJO, CADA UNA CON UNA SOLA COSA (SIN REPETIR INFORMACIÓN):
+// PANEL DEL ADMINISTRADOR. 6 PESTAÑAS ABAJO, CADA UNA CON UNA SOLA COSA (SIN REPETIR INFORMACIÓN):
 //   INICIO   = SOLO LO QUE HAY QUE ATENDER (REPORTES POR RESOLVER, POR TIPO)
 //   REPORTES = TODOS LOS REPORTES (POR RESOLVER / YA RESUELTOS)
 //   USUARIOS = TRABAJADORES Y CONTRATISTAS
 //   OBRAS    = CONTRATOS Y VACANTES
+//   DATOS    = ANALÍTICA: GRÁFICAS DE USO DÍA CON DÍA (USUARIOS ACTIVOS, VACANTES, REPORTES, OFICIOS...)
 //   MI CUENTA= MI PERFIL Y EL EQUIPO
 // CÓDIGO DE COLORES FIJO:
 //   REPORTES:  ROJO = CANCELACIÓN · NARANJA = BITÁCORA · MORADO = INCUMPLIMIENTO · VERDE AZULADO = PAGOS · AZUL = CHAT / OTROS
@@ -44,6 +45,7 @@ import { subirFotoACloudinary } from '@/lib/cloudinary';
 import { eliminarCuentaEnServidor } from '@/lib/cuenta';
 import { coincide } from '@/lib/busqueda';
 import { accionContrato, adminPerfiles, gestionarEquipo, ajustesDePago, ESTADOS, estiloEstado, pagosPorConfirmar, resolverReporte, totalRecibido } from '@/lib/contratos';
+import { AnaliticaAdmin } from '@/components/analitica-admin';
 import { PerfilTrabajador, quitarUnaObra } from '@/components/perfil-trabajador';
 import { VisorFoto } from '@/components/visor-foto';
 
@@ -106,6 +108,7 @@ const PESTAÑAS = [
   { clave: 'Reportes', icono: 'shield' },
   { clave: 'Usuarios', icono: 'people' },
   { clave: 'Obras', icono: 'construct' },
+  { clave: 'Datos', icono: 'bar-chart' },
   { clave: 'Mi cuenta', icono: 'person-circle' },
 ] as const;
 
@@ -581,6 +584,11 @@ export default function AdminDashboard() {
               En PalanteMX hay {trabajadores.length} trabajadores, {contratistas.length} contratistas y {enGrupo(GRUPOS_OBRA[0])} obras en curso.
             </Text>
           </View>
+        )}
+
+        {/* ---------------------------------------------------------------- DATOS: ANALÍTICA CON GRÁFICAS */}
+        {pestañaActiva === 'Datos' && (
+          <AnaliticaAdmin trabajadores={trabajadores} contratistas={contratistas} vacantes={vacantes} contratos={contratos} quejas={quejas} />
         )}
 
         {/* ---------------------------------------------------------------- REPORTES */}

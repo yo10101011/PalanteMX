@@ -18,6 +18,7 @@ import { abrirChatCon, accionContrato, AccionContrato, ESTADOS, MENSAJES_INICIAL
 import { useMensajesSinLeer } from '@/lib/mensajes';
 import { DIAS_SEMANA, PERIODOS_PAGO, textoPrecio, actualizarMiUbicacion } from '@/lib/ubicacion';
 import { BarraSuperior } from '@/components/barra-superior';
+import { registrarActividad } from '@/lib/actividad';
 import { DatosTrabajador } from '@/components/datos-trabajador';
 import { CampanaNotificaciones } from '@/components/campana-notificaciones';
 import { ModalPagos } from '@/components/modal-pagos';
@@ -160,7 +161,7 @@ export default function DashboardTrabajador() {
     } catch (error) { if (auth.currentUser) console.log("Error cargando el perfil del trabajador:", error); } finally { setCargando(false); }
   };
 
-  useEffect(() => { cargarPerfil(); }, []);
+  useEffect(() => { cargarPerfil(); registrarActividad('Trabajador'); }, []);
 
   const onRefresh = async () => {
     setRefreshing(true);

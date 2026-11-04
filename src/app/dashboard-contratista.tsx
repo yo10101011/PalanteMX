@@ -23,6 +23,7 @@ import { useMensajesSinLeer } from '@/lib/mensajes';
 import { distanciaKm, ESTADOS_MEXICO, nombreDeLugar, PERIODOS_PAGO, textoDias, textoDistancia, textoPrecio, actualizarMiUbicacion, ubicacionPrecisa } from '@/lib/ubicacion';
 import { BuscadorConSugerencias } from '@/components/buscador-sugerencias';
 import { BarraSuperior } from '@/components/barra-superior';
+import { registrarActividad } from '@/lib/actividad';
 import { CampanaNotificaciones } from '@/components/campana-notificaciones';
 import { FiltrosBusqueda, TODOS_LOS_ESTADOS } from '@/components/filtros-busqueda';
 import { PerfilTrabajador } from '@/components/perfil-trabajador';
@@ -206,7 +207,7 @@ export default function DashboardContratista() {
 
   const refrescar = async () => { setRefrescando(true); await cargarPerfil(); setRefrescando(false); };
 
-  useEffect(() => { cargarPerfil(); }, []);
+  useEffect(() => { cargarPerfil(); registrarActividad('Contratista'); }, []);
   useEffect(() => { if (pestañaActiva === 'Explorar' && !cargando) cargarDirectorio(); }, [pestañaActiva]);
 
   // SI VENIMOS DE OTRA PANTALLA (P. EJ. LA BARRA DE MENSAJES), ABRIR LA PESTAÑA QUE PIDIÓ

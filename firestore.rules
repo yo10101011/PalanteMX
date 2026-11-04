@@ -203,6 +203,16 @@ service cloud.firestore {
         || (esYo(id) && esAdmin() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['estado_cuenta', 'ultimo_acceso']));
     }
 
+    // ACTIVIDAD DIARIA PARA LA ANALÍTICA: Actividad/{AAAA-MM-DD}_{uid}. CADA QUIEN CREA EL SUYO UNA VEZ AL DÍA
+    // (NO HAY update, ASÍ QUE NO SE PUEDE INFLAR). SOLO EL ADMIN LOS LEE PARA CONTAR LOS USUARIOS ACTIVOS POR DÍA.
+    match /Actividad/{id} {
+      allow read: if esAdmin();
+      allow create: if conSesion()
+        && request.resource.data.uid == request.auth.uid
+        && id == request.resource.data.fecha + '_' + request.auth.uid
+        && request.resource.data.keys().hasOnly(['uid', 'fecha', 'rol']);
+    }
+
     match /Sistema/{id} {
       allow read: if esAdmin();
       allow write: if esAdminPrincipal();
