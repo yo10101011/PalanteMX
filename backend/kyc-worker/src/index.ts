@@ -685,6 +685,8 @@ const crearContrato = async (env: Env, uid: string, quienInicia: 'contratista' |
         contratista: texto(vacante.fields.contratista),
         // DÍA EN QUE EMPIEZA LA OBRA ('AAAA-MM-DD'): ANTES DE ESE DÍA LAS REGLAS NO DEJAN LLENAR LA BITÁCORA
         inicio_obra: texto(vacante.fields.inicio_obra),
+        fin_obra: texto(vacante.fields.fin_obra),
+        dias_obra: (deFirestore(vacante.fields.dias_obra) as string[]) || [],
         // OFICIO DEL TRABAJADOR AL POSTULARSE: SI NO ES EL QUE PIDE LA OBRA, LA APP MUESTRA UN AVISO A LOS DOS
         oficio_trabajador: texto(trabajador.fields.oficio_principal),
         // RESUMEN DE LA VACANTE PARA DIBUJAR LAS TARJETAS SIN TENER QUE LEERLA
@@ -729,7 +731,7 @@ type DatosContrato = {
   monto?: unknown; concepto?: unknown; comprobante?: unknown; // REGISTRAR UN PAGO
   id_pago?: unknown; recibido?: unknown;             // CONFIRMAR (O NO) UN PAGO
   devolver?: unknown;                                // ADMIN CANCELA: PESOS QUE EL TRABAJADOR DEBE DEVOLVER DE LO YA PAGADO
-  inicio_obra?: unknown;                             // CAMBIAR EL DÍA EN QUE EMPIEZA LA OBRA ('AAAA-MM-DD')
+  inicio_obra?: unknown; fin_obra?: unknown; dias_obra?: unknown; // CAMBIAR LOS DÍAS DE TRABAJO DE LA OBRA
 };
 
 // DINERO QUE EL CONTRATISTA YA PAGÓ EN UNA OBRA (REGISTRADO, CONFIRMADO O POR CONFIRMAR; NO CUENTA LO MARCADO COMO NO RECIBIDO)
@@ -917,23 +919,30 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
       ], ESTADOS.ACTIVA);
     }
 
-    // ---- CAMBIAR EL DÍA EN QUE EMPIEZA LA OBRA: SOLO EL CONTRATISTA, ANTES DE QUE TERMINE. SE LE AVISA AL TRABAJADOR ----
-    // NO PUEDE SER UN DÍA QUE YA PASÓ, NI DEJAR FUERA DÍAS DE BITÁCORA QUE EL TRABAJADOR YA REGISTRÓ.
+    // ---- CAMBIAR LOS DÍAS DE TRABAJO (INICIO, FIN Y DÍAS DE LA SEMANA): SOLO EL CONTRATISTA, ANTES DE QUE TERMINE ----
+    // SE LE AVISA AL TRABAJADOR. EL INICIO NO PUEDE SER UN DÍA QUE YA PASÓ, NI DEJAR FUERA DÍAS DE BITÁCORA YA REGISTRADOS.
     case 'cambiar_inicio': {
       if (!c.soyContratista) return prohibido('Solo el contratista puede cambiar el día en que empieza la obra.');
       if (c.estado !== ESTADOS.PENDIENTE && c.estado !== ESTADOS.PROPUESTA && c.estado !== ESTADOS.ACTIVA) return noSePuede();
       const nueva = c.datos.inicio_obra;
       if (typeof nueva !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(nueva)) return responder(400, { error: 'Elige el día en que empieza la obra.' });
       const hoy = ahora.toLocaleDateString('en-CA', { timeZone: 'America/Mexico_City' }); // 'AAAA-MM-DD'
-      if (nueva < hoy) return responder(400, { error: 'La obra no puede empezar en un día que ya pasó.' });
+      const fin = typeof c.datos.fin_obra === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(c.datos.fin_obra) ? c.datos.fin_obra : '';
+      const DIAS = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
+      const diasObra = Array.isArray(c.datos.dias_obra) ? DIAS.filter(d => (c.datos.dias_obra as unknown[]).includes(d)) : [];
+      if (fin && fin < nueva) return responder(400, { error: 'El último día no puede ser antes del primero.' });
+      const antes = texto(c.contrato.fields.inicio_obra);
+      // UNA OBRA YA ACTIVA SÍ PUEDE TENER UN INICIO PASADO (SE ESTÁ CORRIGIENDO); UNA QUE AÚN NO SE ACEPTA, NO
+      if (nueva < hoy && nueva !== antes && c.estado !== ESTADOS.ACTIVA) return responder(400, { error: 'La obra no puede empezar en un día que ya pasó.' });
       if (c.estado === ESTADOS.ACTIVA) {
         const dias = await idsDeDocumentos(env, `${c.rutaContrato}/Bitacora`);
         if (dias.some(id => id < nueva)) return responder(409, { error: 'El trabajador ya registró días de bitácora antes de esa fecha; no se puede mover el inicio después de ellos.' });
       }
-      const fechaTexto = new Date(`${nueva}T12:00:00`).toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'America/Mexico_City' });
+      const fechaTexto = (f: string) => new Date(`${f}T12:00:00`).toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'America/Mexico_City' });
+      const resumen = fin === nueva ? `solo el ${fechaTexto(nueva)}` : `${fin ? `del ${fechaTexto(nueva)} al ${fechaTexto(fin)}` : `desde el ${fechaTexto(nueva)}`}${diasObra.length ? ` (${diasObra.join(', ')})` : ''}`;
       return guardar([
-        cambioContrato({ inicio_obra: nueva }),
-        nuevaNotificacion(env, c.idTrabajador, 'Cambió el día de inicio', `${await nombreDe('contratista')} (contratista) cambió el inicio de "${tituloObra}" al ${fechaTexto}. Desde ese día podrás llenar la bitácora. Si no te queda, platíquenlo en el chat.`, { destino: { abrir: 'obra', id_contrato: idContrato }, tipo: 'contrato', importante: true }),
+        cambioContrato({ inicio_obra: nueva, fin_obra: fin, dias_obra: diasObra }),
+        nuevaNotificacion(env, c.idTrabajador, 'Cambiaron los días de trabajo', `${await nombreDe('contratista')} (contratista) cambió los días de trabajo de "${tituloObra}": ${resumen}. La bitácora solo se podrá llenar esos días. Si no te queda, platíquenlo en el chat.`, { destino: { abrir: 'obra', id_contrato: idContrato }, tipo: 'contrato', importante: true }),
       ], c.estado);
     }
 

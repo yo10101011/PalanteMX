@@ -17,7 +17,7 @@ import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, query,
 import { auth, db } from '../../firebaseConfig';
 import { subirFotoACloudinary } from '@/lib/cloudinary';
 import { eliminarCuentaEnServidor } from '@/lib/cuenta';
-import { abrirChatCon, accionContrato, AccionContrato, ESTADOS, MENSAJES_INICIALES, sePuedeCalificar, textoFecha, tieneReporteAbierto } from '@/lib/contratos';
+import { abrirChatCon, accionContrato, AccionContrato, ESTADOS, MENSAJES_INICIALES, sePuedeCalificar, textoDiasObra, tieneReporteAbierto, diasObraDe, type DiasObra } from '@/lib/contratos';
 import { coincide } from '@/lib/busqueda';
 import { useMensajesSinLeer } from '@/lib/mensajes';
 import { distanciaKm, ESTADOS_MEXICO, nombreDeLugar, PERIODOS_PAGO, textoDias, textoDistancia, textoPrecio, actualizarMiUbicacion, ubicacionPrecisa } from '@/lib/ubicacion';
@@ -30,7 +30,7 @@ import { FormCondiciones } from '@/components/condiciones-obra';
 import { ModalPagos } from '@/components/modal-pagos';
 import { SelectorMapa } from '@/components/selector-mapa';
 import { SelectorOficio } from '@/components/selector-oficio';
-import { SelectorFecha } from '@/components/selector-fecha';
+import { SelectorDiasObra } from '@/components/selector-dias-obra';
 import { SelectorUbicacion } from '@/components/selector-ubicacion';
 import { avisoOficio, OFICIOS, oficioCoincide } from '@/lib/oficios';
 import { ModalBitacora } from '@/components/modal-bitacora';
@@ -103,9 +103,9 @@ export default function DashboardContratista() {
   // SE GUARDA EL ID (NO EL CONTRATO) PARA QUE LA VENTANA DE PAGOS MUESTRE LOS DATOS RECIÉN RECARGADOS
   const [idContratoPagos, setIdContratoPagos] = useState<string | null>(null);
   const [vacanteHorario, setVacanteHorario] = useState('');
-  const [vacanteInicio, setVacanteInicio] = useState(''); // DÍA EN QUE EMPIEZA LA OBRA ('AAAA-MM-DD')
-  const [contratoFecha, setContratoFecha] = useState<any>(null); // CONTRATO AL QUE SE LE CAMBIA EL DÍA DE INICIO
-  const [nuevaFechaInicio, setNuevaFechaInicio] = useState('');
+  const [vacanteDias, setVacanteDias] = useState<DiasObra>({ inicio: '', fin: '', dias: [] }); // CUÁNDO SE TRABAJA
+  const [contratoFecha, setContratoFecha] = useState<any>(null); // CONTRATO AL QUE SE LE CAMBIAN LOS DÍAS DE TRABAJO
+  const [nuevosDias, setNuevosDias] = useState<DiasObra>({ inicio: '', fin: '', dias: [] });
   const [vacanteDesc, setVacanteDesc] = useState('');
   const [vacanteCupo, setVacanteCupo] = useState('1'); 
   const [vacanteCategoria, setVacanteCategoria] = useState('Albañilería');
@@ -263,7 +263,7 @@ export default function DashboardContratista() {
 
   const abrirModalNuevaVacante = () => {
     setVacanteLugar(null); setVacanteLugarTexto(''); setVacanteCondiciones({});
-    setVacanteEditandoId(null); setVacanteTitulo(''); setVacanteUbicacion(userData?.ubicacion_texto || ''); setVacantePago(''); setVacantePeriodo('por semana'); setVacanteEstado(userData?.ubicacion_estado || ''); setVacanteHorario(''); setVacanteInicio(''); setVacanteDesc(''); setVacanteCupo('1'); setVacanteFoto(null); setVacanteCategoria('');
+    setVacanteEditandoId(null); setVacanteTitulo(''); setVacanteUbicacion(userData?.ubicacion_texto || ''); setVacantePago(''); setVacantePeriodo('por semana'); setVacanteEstado(userData?.ubicacion_estado || ''); setVacanteHorario(''); setVacanteDias({ inicio: '', fin: '', dias: [] }); setVacanteDesc(''); setVacanteCupo('1'); setVacanteFoto(null); setVacanteCategoria('');
     setModalVacante(true);
   };
 
@@ -280,7 +280,7 @@ export default function DashboardContratista() {
     setVacanteLugarTexto(vacante.lugar_obra_texto || '');
     setVacanteCondiciones(vacante.condiciones || {});
     setVacanteHorario(vacante.horario);
-    setVacanteInicio(vacante.inicio_obra || '');
+    setVacanteDias(diasObraDe(vacante));
     setVacanteDesc(vacante.descripcion);
     setVacanteCupo(vacante.cupo_total ? vacante.cupo_total.toString() : '1');
     setVacanteCategoria(vacante.categoria);
@@ -292,7 +292,8 @@ export default function DashboardContratista() {
     if (!vacanteTitulo || !vacanteCategoria || !vacanteUbicacion || !vacanteDesc || !vacanteHorario || !vacanteEstado) {
       Alert.alert("Aviso", "Faltan campos obligatorios: título, oficio, estado, municipio, horario y descripción."); return;
     }
-    if (!vacanteInicio) { Alert.alert("Aviso", "Elige el día en que empieza la obra. Antes de ese día el trabajador no podrá llenar la bitácora."); return; }
+    if (!vacanteDias.inicio) { Alert.alert("Aviso", "Elige el día en que empieza la obra. Antes de ese día el trabajador no podrá llenar la bitácora."); return; }
+    if (vacanteDias.fin !== vacanteDias.inicio && vacanteDias.dias.length === 0) { Alert.alert("Aviso", "Elige qué días de la semana se trabaja. La bitácora solo se podrá llenar esos días."); return; }
     if (!vacanteCondiciones.material || !vacanteCondiciones.cuando_pago) {
       Alert.alert("Aviso", "Contesta al menos quién pone el material y cuándo se paga: así el trabajador sabe qué esperar y queda como evidencia."); return;
     }
@@ -307,7 +308,7 @@ export default function DashboardContratista() {
       const datosVacante = {
         titulo: vacanteTitulo, ubicacion: vacanteUbicacion, estado_republica: vacanteEstado,
         pago: textoPrecio(monto, vacantePeriodo), pago_monto: monto, pago_periodo: vacantePeriodo,
-        horario: vacanteHorario, inicio_obra: vacanteInicio, descripcion: vacanteDesc, categoria: vacanteCategoria, cupo_total: parseInt(vacanteCupo) || 1, foto_trabajo: urlFotoTrabajo,
+        horario: vacanteHorario, inicio_obra: vacanteDias.inicio, fin_obra: vacanteDias.fin, dias_obra: vacanteDias.dias, descripcion: vacanteDesc, categoria: vacanteCategoria, cupo_total: parseInt(vacanteCupo) || 1, foto_trabajo: urlFotoTrabajo,
         coordenadas: vacanteLugar || userData.ubicacion || null, // PARA ORDENAR "MÁS CERCA DE MÍ" EN LA BOLSA DE TRABAJO
         coordenadas_obra: vacanteLugar,                          // LUGAR EXACTO PARA EL CHECK GPS DE LA BITÁCORA
         lugar_obra_texto: vacanteLugarTexto,                     // SU NOMBRE NORMAL, PARA MOSTRARLO EN LUGAR DE NÚMEROS
@@ -549,7 +550,7 @@ export default function DashboardContratista() {
     };
 
     const pagos: BotonContrato = { texto: 'Pagos', icono: 'cash-outline', color: '#059669', onPress: () => setIdContratoPagos(contrato.id) };
-    const cambiarInicio: BotonContrato = { texto: 'Cambiar día de inicio', icono: 'calendar-outline', color: '#1D4ED8', onPress: () => { setContratoFecha(contrato); setNuevaFechaInicio(contrato.inicio_obra || ''); } };
+    const cambiarInicio: BotonContrato = { texto: 'Días de trabajo', icono: 'calendar-outline', color: '#1D4ED8', onPress: () => { setContratoFecha(contrato); setNuevosDias(diasObraDe(contrato)); } };
 
     switch (contrato.estado) {
       // LA PROPUESTA TAMBIÉN LA ACEPTA EL CONTRATISTA EN EL CHAT (LOS DOS TIENEN QUE ACEPTAR)
@@ -940,26 +941,29 @@ export default function DashboardContratista() {
         </TouchableOpacity>
       </View>
 
-      {/* CAMBIAR EL DÍA EN QUE EMPIEZA UNA OBRA (SE LE AVISA AL TRABAJADOR) */}
+      {/* CAMBIAR LOS DÍAS DE TRABAJO DE UNA OBRA (SE LE AVISA AL TRABAJADOR) */}
       <Modal visible={!!contratoFecha} animationType="fade" transparent onRequestClose={() => setContratoFecha(null)}>
         <View style={styles.modalBg}>
-          <View style={styles.modalContainer}>
-            <Text style={styles.modalTitle}>Cambiar día de inicio</Text>
-            <Text style={{fontSize: 15, color: '#6B7280', marginBottom: 12}}>"{contratoFecha?.titulo_vacante}". {contratoFecha?.trabajador?.nombre || 'El trabajador'} podrá llenar la bitácora desde el día que elijas, y le avisaremos del cambio.</Text>
-            <SelectorFecha valor={nuevaFechaInicio} onCambio={setNuevaFechaInicio} />
+          <View style={[styles.modalContainer, {maxHeight: '90%'}]}>
+            <ScrollView showsVerticalScrollIndicator={false}>
+            <Text style={styles.modalTitle}>Días de trabajo</Text>
+            <Text style={{fontSize: 15, color: '#6B7280', marginBottom: 12}}>"{contratoFecha?.titulo_vacante}". {contratoFecha?.trabajador?.nombre || 'El trabajador'} solo podrá llenar la bitácora en los días que elijas, y le avisaremos del cambio.</Text>
+            <SelectorDiasObra valor={nuevosDias} onCambio={setNuevosDias} diasAtras={contratoFecha?.estado === ESTADOS.ACTIVA ? 30 : 0} />
             <View style={styles.modalBtnRow}>
               <TouchableOpacity style={styles.modalBtnCancel} onPress={() => setContratoFecha(null)}><Text style={styles.modalBtnTextC}>Volver</Text></TouchableOpacity>
-              <TouchableOpacity style={styles.modalBtnSave} disabled={procesando || !nuevaFechaInicio} onPress={async () => {
+              <TouchableOpacity style={styles.modalBtnSave} disabled={procesando || !nuevosDias.inicio} onPress={async () => {
+                if (nuevosDias.fin !== nuevosDias.inicio && nuevosDias.dias.length === 0) { Alert.alert("Aviso", "Elige qué días de la semana se trabaja."); return; }
                 setProcesando(true);
                 try {
-                  await accionContrato('cambiar_inicio', { id_contrato: contratoFecha.id, inicio_obra: nuevaFechaInicio });
+                  await accionContrato('cambiar_inicio', { id_contrato: contratoFecha.id, inicio_obra: nuevosDias.inicio, fin_obra: nuevosDias.fin, dias_obra: nuevosDias.dias });
                   setContratoFecha(null);
-                  Alert.alert("Listo", `La obra ahora empieza el ${textoFecha(nuevaFechaInicio)}. Le avisamos al trabajador.`);
+                  Alert.alert("Listo", `Días de trabajo: ${textoDiasObra({ inicio_obra: nuevosDias.inicio, fin_obra: nuevosDias.fin, dias_obra: nuevosDias.dias })}. Le avisamos al trabajador.`);
                   await cargarPerfil();
                 } catch (error: any) { Alert.alert("No se pudo", error?.message || "Intenta de nuevo."); }
                 setProcesando(false);
               }}>{procesando ? <ActivityIndicator color="#FFF" /> : <Text style={styles.modalBtnTextS}>Guardar</Text>}</TouchableOpacity>
             </View>
+            </ScrollView>
           </View>
         </View>
       </Modal>
@@ -1085,8 +1089,7 @@ export default function DashboardContratista() {
                   </View>
                 </View>
               </View>
-              <Text style={styles.modalLabel}>¿Qué día empieza la obra?</Text>
-              <SelectorFecha valor={vacanteInicio} onCambio={setVacanteInicio} />
+              <SelectorDiasObra valor={vacanteDias} onCambio={setVacanteDias} />
               <Text style={styles.modalLabel}>Horario / Días de Trabajo</Text><TextInput style={styles.modalInput} placeholder="Ej. Lunes a Sábado de 8 a 5" value={vacanteHorario} onChangeText={setVacanteHorario} />
               <Text style={styles.modalLabel}>Descripción del Trabajo (Sé específico)</Text><TextInput style={[styles.modalInput, {height: 80, textAlignVertical: 'top'}]} placeholder="Se requiere levantar muros..." multiline value={vacanteDesc} onChangeText={setVacanteDesc} />
               {/* CONDICIONES: QUEDAN COMO EVIDENCIA EN EL CONTRATO DE LO QUE PROMETISTE (MATERIAL, HERRAMIENTA...) */}

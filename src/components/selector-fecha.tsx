@@ -7,17 +7,18 @@ import { claveDia } from '@/lib/contratos';
 const DIAS_CORTOS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
 const MESES_CORTOS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
 
-export function SelectorFecha({ valor, onCambio, dias = 60 }: { valor: string; onCambio: (fecha: string) => void; dias?: number }) {
+// diasAtras: CUÁNTOS DÍAS ANTES DE HOY TAMBIÉN SE PUEDEN ELEGIR (P. EJ. PARA CORREGIR UNA OBRA QUE YA EMPEZÓ)
+export function SelectorFecha({ valor, onCambio, dias = 60, diasAtras = 0 }: { valor: string; onCambio: (fecha: string) => void; dias?: number; diasAtras?: number }) {
   const hoy = new Date();
-  const fechas = Array.from({ length: dias }, (_, i) => new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() + i));
+  const fechas = Array.from({ length: dias + diasAtras }, (_, i) => new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() + i - diasAtras));
   return (
-    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }} contentOffset={{ x: diasAtras * 68, y: 0 }}>
       {fechas.map((f, i) => {
         const clave = claveDia(f);
         const elegido = clave === valor;
         return (
           <TouchableOpacity key={clave} style={[styles.dia, elegido && styles.diaElegido]} onPress={() => onCambio(clave)}>
-            <Text style={[styles.semana, elegido && styles.blanco]}>{i === 0 ? 'Hoy' : i === 1 ? 'Mañana' : DIAS_CORTOS[f.getDay()]}</Text>
+            <Text style={[styles.semana, elegido && styles.blanco]}>{i === diasAtras ? 'Hoy' : i === diasAtras + 1 ? 'Mañana' : i === diasAtras - 1 ? 'Ayer' : DIAS_CORTOS[f.getDay()]}</Text>
             <Text style={[styles.numero, elegido && styles.blanco]}>{f.getDate()}</Text>
             <Text style={[styles.mes, elegido && styles.blanco]}>{MESES_CORTOS[f.getMonth()]}</Text>
           </TouchableOpacity>

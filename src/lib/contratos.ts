@@ -8,6 +8,7 @@
 import { router } from 'expo-router';
 import { collection, doc, getDocs, setDoc } from 'firebase/firestore';
 import { auth, db } from '../../firebaseConfig';
+import { DIAS_SEMANA, textoDias } from '@/lib/ubicacion';
 
 // ABRE EL CHAT CON LA OTRA PARTE (SI NO EXISTE, MENSAJES LO CREA). EL TRATO SE PLATICA Y SE ACEPTA AHÍ.
 // mensaje: TEXTO YA ESCRITO EN LA CAJA (P. EJ. "HOLA, VI TU PERFIL..."); LA PERSONA LO PUEDE CAMBIAR ANTES DE ENVIARLO.
@@ -73,7 +74,7 @@ type DatosAccion = {
   monto?: number; concepto?: string; comprobante?: string; // REGISTRAR UN PAGO
   id_pago?: string; recibido?: boolean;                    // CONFIRMAR UN PAGO
   devolver?: number;                                       // ADMIN CANCELA: PESOS QUE EL TRABAJADOR DEBE DEVOLVER
-  inicio_obra?: string;                                    // CAMBIAR EL DÍA EN QUE EMPIEZA LA OBRA ('AAAA-MM-DD')
+  inicio_obra?: string; fin_obra?: string; dias_obra?: string[]; // CAMBIAR LOS DÍAS DE TRABAJO DE LA OBRA
 };
 
 // LO QUE EL CONTRATISTA YA PAGÓ (CONFIRMADO O POR CONFIRMAR; NO CUENTA LO MARCADO COMO NO RECIBIDO)
@@ -171,9 +172,39 @@ export const estiloDia = (dia: any): { texto: string; color: string } => {
 export const claveDia = (fecha: Date) =>
   `${fecha.getFullYear()}-${String(fecha.getMonth() + 1).padStart(2, '0')}-${String(fecha.getDate()).padStart(2, '0')}`;
 
-// DÍA EN QUE EMPIEZA LA OBRA ('AAAA-MM-DD'), ELEGIDO AL PUBLICAR LA VACANTE. ANTES DE ESE DÍA NO SE LLENA LA BITÁCORA.
-// (NO CONFUNDIR CON fecha_inicio, QUE ES CUÁNDO SE ACEPTÓ EL TRATO.) LAS OBRAS VIEJAS NO LO TIENEN: EMPIEZAN YA.
-export const yaEmpezo = (contrato: any) => !contrato?.inicio_obra || claveDia(new Date()) >= contrato.inicio_obra;
+// DÍAS DE TRABAJO DE LA OBRA, ELEGIDOS AL PUBLICAR LA VACANTE (Y COPIADOS AL CONTRATO):
+//   inicio_obra / fin_obra: 'AAAA-MM-DD' (fin VACÍO = SIN FECHA DE FIN; IGUAL AL INICIO = OBRA DE UN SOLO DÍA)
+//   dias_obra: DÍAS DE LA SEMANA QUE SE TRABAJA ('Lun', 'Mar'...; VACÍO = TODOS)
+// (NO CONFUNDIR CON fecha_inicio, QUE ES CUÁNDO SE ACEPTÓ EL TRATO.) LAS OBRAS VIEJAS NO LOS TIENEN: NO TIENEN LÍMITE.
+export type DiasObra = { inicio: string; fin: string; dias: string[] };
+export const diasObraDe = (c: any): DiasObra => ({ inicio: c?.inicio_obra || '', fin: c?.fin_obra || '', dias: c?.dias_obra || [] });
+
+// 'AAAA-MM-DD' -> 'Lun', 'Mar'... (COMO EN DIAS_SEMANA)
+export const diaDeSemana = (clave: string) => {
+  const [a, m, d] = clave.split('-').map(Number);
+  return DIAS_SEMANA[(new Date(a, m - 1, d).getDay() + 6) % 7];
+};
+
+// POR QUÉ HOY NO SE PUEDE LLENAR LA BITÁCORA ('' = SÍ SE PUEDE)
+export const motivoSinBitacora = (contrato: any) => {
+  const { inicio, fin, dias } = diasObraDe(contrato);
+  const hoy = claveDia(new Date());
+  if (inicio && hoy < inicio) return `La obra empieza el ${textoFecha(inicio)}. Desde ese día podrás llenar tu bitácora.`;
+  if (fin && hoy > fin) return fin === inicio
+    ? `Esta obra era solo del ${textoFecha(fin)}. Ya no hay días por registrar.`
+    : `La obra era hasta el ${textoFecha(fin)}. Ya no hay días por registrar; si siguió, pide al contratista que cambie los días de trabajo.`;
+  if (dias.length && !dias.includes(diaDeSemana(hoy))) return `Hoy no es día de trabajo en esta obra (se trabaja: ${textoDias(dias)}). La bitácora solo se llena los días de trabajo.`;
+  return '';
+};
+
+// "Solo el lunes 10 de noviembre" / "Del lunes 10 de noviembre al viernes 14 de noviembre · Lun a Vie" / "Desde el ... · Lun, Mié"
+export const textoDiasObra = (c: any) => {
+  const { inicio, fin, dias } = diasObraDe(c);
+  if (!inicio) return '';
+  if (fin === inicio) return `Solo el ${textoFecha(inicio)}`;
+  const rango = fin ? `Del ${textoFecha(inicio)} al ${textoFecha(fin)}` : `Desde el ${textoFecha(inicio)}`;
+  return dias.length ? `${rango} · ${textoDias(dias)}` : rango;
+};
 
 // 'AAAA-MM-DD' -> "lunes 10 de noviembre"
 export const textoFecha = (clave?: string) => {

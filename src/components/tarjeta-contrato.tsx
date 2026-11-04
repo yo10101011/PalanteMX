@@ -6,7 +6,7 @@ import { Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { VisorFoto } from '@/components/visor-foto';
 import { VistaCondiciones } from '@/components/condiciones-obra';
-import { ajustesDePago, estiloEstado, pagosPorConfirmar, textoFecha, tieneReporteAbierto, yaEmpezo } from '@/lib/contratos';
+import { ajustesDePago, estiloEstado, pagosPorConfirmar, textoDiasObra, tieneReporteAbierto } from '@/lib/contratos';
 
 export type BotonContrato = {
   texto: string;
@@ -58,7 +58,7 @@ export function TarjetaContrato({ contrato, otraParte, aviso, botones, deshabili
           {vacante.ubicacion ? <View style={styles.fila}><Ionicons name="location-outline" size={14} color="#6B7280" /><Text style={styles.detalleTexto}>{vacante.ubicacion}</Text></View> : null}
           {vacante.pago ? <View style={styles.fila}><Ionicons name="cash-outline" size={14} color="#00D06C" /><Text style={[styles.detalleTexto, { color: '#00D06C', fontWeight: 'bold' }]}>{vacante.pago}</Text></View> : null}
           {vacante.horario ? <View style={styles.fila}><Ionicons name="time-outline" size={14} color="#B45309" /><Text style={styles.detalleTexto}>{vacante.horario}</Text></View> : null}
-          {contrato.inicio_obra ? <View style={styles.fila}><Ionicons name="calendar-outline" size={14} color="#1D4ED8" /><Text style={[styles.detalleTexto, { color: '#1D4ED8', fontWeight: 'bold' }]}>{yaEmpezo(contrato) ? 'Empezó' : 'Empieza'} el {textoFecha(contrato.inicio_obra)}</Text></View> : null}
+          {contrato.inicio_obra ? <View style={styles.fila}><Ionicons name="calendar-outline" size={14} color="#1D4ED8" /><Text style={[styles.detalleTexto, { color: '#1D4ED8', fontWeight: 'bold' }]}>{textoDiasObra(contrato)}</Text></View> : null}
           {contrato.fecha_inicio ? <View style={styles.fila}><Ionicons name="calendar-outline" size={14} color="#6B7280" /><Text style={styles.detalleTexto}>Trato cerrado: {contrato.fecha_inicio}{contrato.fecha_fin ? ` • Terminó: ${contrato.fecha_fin}` : ''}</Text></View> : null}
           {vacante.lugar_texto ? <View style={styles.fila}><Ionicons name="pin-outline" size={14} color="#DC2626" /><Text style={styles.detalleTexto}>Lugar de la obra: {vacante.lugar_texto}</Text></View> : null}
           {vacante.descripcion ? <Text style={styles.descripcion}>{vacante.descripcion}</Text> : null}

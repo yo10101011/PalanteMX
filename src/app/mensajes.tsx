@@ -41,7 +41,7 @@ import {
 } from 'firebase/firestore';
 import { auth, db } from '../../firebaseConfig';
 import { subirACloudinary, subirFotoACloudinary } from '@/lib/cloudinary';
-import { accionContrato, ESTADOS, RESPUESTAS_RAPIDAS, textoFecha } from '@/lib/contratos';
+import { accionContrato, ESTADOS, RESPUESTAS_RAPIDAS, textoDiasObra } from '@/lib/contratos';
 import { avisoOficio, oficioCoincide } from '@/lib/oficios';
 import { useTecladoVisible } from '@/lib/teclado';
 import { SelectorFotos, subirFotos } from '@/components/selector-fotos';
@@ -514,7 +514,7 @@ export default function Mensajes() {
                 {tratoAbierto && (
                   <View style={{marginTop: 8}}>
                     {trato.vacante?.pago ? <Text style={styles.tratoDato}>{trato.vacante.pago}{trato.vacante.ubicacion ? ` • ${trato.vacante.ubicacion}` : ''}</Text> : null}
-                    {trato.inicio_obra ? <Text style={styles.tratoAyuda}>Empieza el {textoFecha(trato.inicio_obra)}</Text> : null}
+                    {trato.inicio_obra ? <Text style={styles.tratoAyuda}>{textoDiasObra(trato)}</Text> : null}
                     {!oficioCoincide(trato.oficio_trabajador, trato.vacante?.oficio) && (
                       <View style={styles.avisoOficio}>
                         <Ionicons name="alert-circle-outline" size={16} color="#B45309" />

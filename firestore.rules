@@ -127,6 +127,7 @@ service cloud.firestore {
           && request.auth.uid == contrato().id_trabajador
           && contrato().estado == 'Aceptada (En Proceso)'
           && entradaId >= contrato().get('inicio_obra', '')
+          && (contrato().get('fin_obra', '') == '' || entradaId <= contrato().get('fin_obra', ''))
           && request.resource.data.autor_id == request.auth.uid
           && request.resource.data.keys().hasOnly(['asistio', 'nota', 'evidencia', 'autor_id', 'fecha', 'timestamp',
                                                    'ubicacion_registro', 'distancia_obra_km', 'lugar_registro']);
