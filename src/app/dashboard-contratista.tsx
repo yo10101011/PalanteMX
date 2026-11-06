@@ -17,7 +17,7 @@ import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, query,
 import { auth, db } from '../../firebaseConfig';
 import { subirFotoACloudinary } from '@/lib/cloudinary';
 import { eliminarCuentaEnServidor } from '@/lib/cuenta';
-import { abrirChatCon, accionContrato, AccionContrato, ESTADOS, MENSAJES_INICIALES, sePuedeCalificar, textoDiasObra, tieneReporteAbierto, diasObraDe, type DiasObra } from '@/lib/contratos';
+import { abrirChatCon, accionContrato, AccionContrato, ESTADOS, claveDia, MENSAJES_INICIALES, sePuedeCalificar, sePuedeRepublicar, textoDiasObra, tieneReporteAbierto, diasObraDe, type DiasObra } from '@/lib/contratos';
 import { coincide } from '@/lib/busqueda';
 import { useMensajesSinLeer } from '@/lib/mensajes';
 import { distanciaKm, ESTADOS_MEXICO, nombreDeLugar, PERIODOS_PAGO, textoDias, textoDistancia, textoPrecio, actualizarMiUbicacion, ubicacionPrecisa } from '@/lib/ubicacion';
@@ -37,6 +37,8 @@ import { avisoOficio, OFICIOS, oficioCoincide } from '@/lib/oficios';
 import { ModalBitacora } from '@/components/modal-bitacora';
 import { ModalCancelarContrato } from '@/components/modal-cancelar-contrato';
 import { ModalReportarProblema } from '@/components/modal-reportar-problema';
+import { ModalReportesObra } from '@/components/modal-reportes-obra';
+import { ModalRepublicar } from '@/components/modal-republicar';
 import { BotonContrato, TarjetaContrato } from '@/components/tarjeta-contrato';
 import { VisorFoto } from '@/components/visor-foto';
 
@@ -120,6 +122,8 @@ export default function DashboardContratista() {
   const [contratoBitacora, setContratoBitacora] = useState<any>(null);
   const [contratoCancelar, setContratoCancelar] = useState<any>(null);
   const [contratoReportar, setContratoReportar] = useState<any>(null);
+  const [contratoReportes, setContratoReportes] = useState<any>(null);     // REPORTES DE LA OBRA (LAS DOS VERSIONES)
+  const [contratoRepublicar, setContratoRepublicar] = useState<any>(null); // OBRA CANCELADA QUE SE VUELVE A PUBLICAR
   const [modalContratarDirecto, setModalContratarDirecto] = useState(false);
   const [trabajadorParaContratar, setTrabajadorParaContratar] = useState<any>(null);
   const [vacanteSeleccionadaParaContratar, setVacanteSeleccionadaParaContratar] = useState<string>('');
@@ -225,6 +229,8 @@ export default function DashboardContratista() {
     avisoAtendidoRef.current = String(params.t);
     if (params.abrir === 'bitacora') setContratoBitacora(contrato);
     if (params.abrir === 'pagos') setIdContratoPagos(contrato.id);
+    if (params.abrir === 'reportes') setContratoReportes(contrato);
+    if (params.abrir === 'republicar' && sePuedeRepublicar(contrato)) setContratoRepublicar(contrato);
   }, [params.t, cargando, candidatos.length]);
 
 
@@ -354,6 +360,29 @@ export default function DashboardContratista() {
           await cargarPerfil();
           setProcesando(false);
           setVacanteExpandida(null);
+        }
+      }
+    ]);
+  };
+
+  // VUELVE A PONER EN LA BOLSA DE TRABAJO UNA VACANTE CERRADA QUE TODAVÍA TIENE LUGARES LIBRES
+  const reabrirVacante = (vacante: any) => {
+    const hoy = claveDia(new Date());
+    if (vacante.inicio_obra && vacante.inicio_obra < hoy) {
+      Alert.alert("Cambia la fecha", "El día de inicio de esta vacante ya pasó. Usa \"Editar Datos\" para poner los nuevos días de trabajo y después vuelve a abrirla.");
+      return;
+    }
+    Alert.alert("Volver a abrir", `"${vacante.titulo}" aparecerá otra vez en la Bolsa de Trabajo para que se postulen trabajadores.`, [
+      { text: "Cancelar", style: "cancel" },
+      { text: "Abrir", onPress: async () => {
+          setProcesando(true);
+          try {
+            await updateDoc(doc(db, 'Vacantes', vacante.id), { estado: 'Activa', fecha_publicacion: new Date().toISOString() });
+            await cargarPerfil();
+            setVacanteExpandida(null);
+            Alert.alert("Vacante abierta", "Ya está otra vez en la Bolsa de Trabajo.");
+          } catch (error: any) { Alert.alert("No se pudo", error?.message || "Intenta de nuevo."); }
+          setProcesando(false);
         }
       }
     ]);
@@ -552,6 +581,11 @@ export default function DashboardContratista() {
 
     const pagos: BotonContrato = { texto: 'Pagos', icono: 'cash-outline', color: '#059669', onPress: () => setIdContratoPagos(contrato.id) };
     const cambiarInicio: BotonContrato = { texto: 'Días de trabajo', icono: 'calendar-outline', color: '#1D4ED8', onPress: () => { setContratoFecha(contrato); setNuevosDias(diasObraDe(contrato)); } };
+    const reportes: BotonContrato = { texto: 'Reportes', icono: 'document-text-outline', color: '#7C3AED', onPress: () => setContratoReportes(contrato) };
+    const republicar: BotonContrato = { texto: 'Volver a publicar la obra', icono: 'refresh-circle-outline', color: '#2563EB', relleno: true, onPress: () => setContratoRepublicar(contrato) };
+    // LOS REPORTES SOLO APARECEN SI LA OBRA TUVO ALGUNO (ABIERTO, POR CANCELACIÓN O CON AJUSTES DE DINERO)
+    const conReportes = tieneReporteAbierto(contrato) || !!contrato.id_queja || (contrato.ajustes_pago || []).length > 0;
+    const verReportes = conReportes ? [reportes] : [];
 
     switch (contrato.estado) {
       // LA PROPUESTA TAMBIÉN LA ACEPTA EL CONTRATISTA EN EL CHAT (LOS DOS TIENEN QUE ACEPTAR)
@@ -568,15 +602,30 @@ export default function DashboardContratista() {
         reportar,
         cambiarInicio,
         { texto: 'Cancelar obra', icono: 'warning-outline', color: '#DC2626', onPress: () => setContratoCancelar(contrato) },
+        ...verReportes,
       ];
       // YA SE MARCÓ COMO TERMINADA: YA NO SE PUEDE CANCELAR (SI HAY UN PROBLEMA, SE REPORTA)
-      case ESTADOS.POR_CONFIRMAR_FIN: return [bitacora, chatear, pagos, reportar];
-      // TERMINADA, SUSPENDIDA O CANCELADA: SOLO VER, PAGAR Y CALIFICAR
+      case ESTADOS.POR_CONFIRMAR_FIN: return [bitacora, chatear, pagos, reportar, ...verReportes];
+      // TERMINADA, SUSPENDIDA O CANCELADA: SOLO VER, PAGAR Y CALIFICAR (Y, SI SE CANCELÓ, VOLVER A PUBLICARLA)
       case ESTADOS.SUSPENDIDA:
       case ESTADOS.FINALIZADA:
-      case ESTADOS.CANCELADA: return [bitacora, { ...pagos, relleno: contrato.estado === ESTADOS.FINALIZADA && !(contrato.pagos || []).length }, perfil, calificar];
+      case ESTADOS.CANCELADA: return [
+        ...(sePuedeRepublicar(contrato) ? [republicar] : []),
+        ...verReportes,
+        bitacora, { ...pagos, relleno: contrato.estado === ESTADOS.FINALIZADA && !(contrato.pagos || []).length }, perfil, calificar,
+      ];
       default: return [];
     }
+  };
+
+  // QUIÉN CANCELÓ, CON CUÁNTO AVISO Y SI YA SE VOLVIÓ A PUBLICAR (EN OBRAS SUSPENDIDAS O CANCELADAS)
+  const avisoCancelacion = (contrato: any) => {
+    if (![ESTADOS.SUSPENDIDA, ESTADOS.CANCELADA].includes(contrato.estado) || !contrato.motivo_cancelacion) return '';
+    const quien = contrato.cancelado_por === userData?.id ? 'Tú cancelaste esta obra' : `${contrato.trabajador?.nombre || 'El trabajador'} canceló esta obra`;
+    const cuando = contrato.cancelacion_tardia ? ' tarde (con menos de 48 horas de aviso)' : contrato.cancelacion_tardia === false ? ' con tiempo' : '';
+    const revision = contrato.estado === ESTADOS.SUSPENDIDA ? ' El administrador la está revisando.' : '';
+    const publicada = contrato.republicada ? ' Ya la volviste a publicar.' : '';
+    return `${quien}${cuando}: "${contrato.motivo_cancelacion}".${revision}${publicada}`;
   };
 
   // UNA SECCIÓN DE CONTRATOS (SOLO APARECE SI TIENE ALGUNO)
@@ -591,7 +640,7 @@ export default function DashboardContratista() {
             key={contrato.id}
             contrato={contrato}
             otraParte={{ nombre: `${contrato.trabajador?.nombre || ''} ${contrato.trabajador?.apellidos || ''}`.trim() || 'Trabajador', foto: contrato.trabajador?.foto_rostro_url, detalle: contrato.trabajador?.oficio_principal }}
-            aviso={contrato.estado === ESTADOS.SUSPENDIDA && contrato.cancelado_por === userData?.id ? 'Tú cancelaste esta obra. El administrador la está revisando.' : aviso}
+            aviso={avisoCancelacion(contrato) || aviso}
             botones={botonesDelContrato(contrato).filter(b => b.texto !== 'Calificar' || sePuedeCalificar(contrato.estado))}
             deshabilitado={procesando}
           />
@@ -1024,6 +1073,8 @@ export default function DashboardContratista() {
               </View>
               <View style={{flexDirection: 'row', justifyContent: 'space-between', marginTop: 10}}>
                 {vacanteExpandida?.estado === 'Activa' && (<TouchableOpacity style={[styles.candBtnAccion, {backgroundColor: '#FEE2E2', borderColor: '#F87171'}]} onPress={() => cerrarVacante(vacanteExpandida.id)}><Ionicons name="power" size={20} color="#DC2626" /><Text style={[styles.candBtnText, {color: '#DC2626'}]}>Cerrar Oferta</Text></TouchableOpacity>)}
+                {/* UNA VACANTE CERRADA CON LUGARES LIBRES (P. EJ. PORQUE SE CANCELÓ UNA OBRA) SE PUEDE VOLVER A ABRIR */}
+                {vacanteExpandida?.estado === 'Cerrada' && (vacanteExpandida.cupo_actual || 0) < (vacanteExpandida.cupo_total || 1) && (<TouchableOpacity style={[styles.candBtnAccion, {backgroundColor: '#DBEAFE', borderColor: '#60A5FA'}]} onPress={() => reabrirVacante(vacanteExpandida)}><Ionicons name="refresh" size={20} color="#1D4ED8" /><Text style={[styles.candBtnText, {color: '#1D4ED8'}]}>Volver a abrir</Text></TouchableOpacity>)}
                 <TouchableOpacity style={[styles.candBtnAccion, {backgroundColor: '#0D2340', borderColor: '#0D2340'}]} onPress={() => abrirModalEditarVacante(vacanteExpandida)}><Ionicons name="pencil" size={20} color="#FFF" /><Text style={[styles.candBtnText, {color: '#FFF'}]}>Editar Datos</Text></TouchableOpacity>
               </View>
               <TouchableOpacity style={[styles.candBtnAccion, {backgroundColor: '#FEE2E2', borderColor: '#F87171', marginTop: 15}]} onPress={() => eliminarVacante(vacanteExpandida.id)} disabled={procesando}><Ionicons name="trash" size={20} color="#DC2626" /><Text style={[styles.candBtnText, {color: '#DC2626'}]}>Eliminar Definitivamente</Text></TouchableOpacity>
@@ -1215,8 +1266,16 @@ export default function DashboardContratista() {
 
       {/* BITÁCORA (LA MISMA QUE LLENA EL TRABAJADOR; AQUÍ SOLO SE LEE) Y VENTANA PARA CANCELAR UNA OBRA */}
       <ModalBitacora contrato={contratoBitacora} rol="contratista" onClose={() => setContratoBitacora(null)} />
-      <ModalCancelarContrato contrato={contratoCancelar} onClose={() => setContratoCancelar(null)} onCancelado={() => { setContratoCancelar(null); cargarPerfil(); }} />
+      {/* AL CANCELAR, EL CONTRATISTA DECIDE AHÍ MISMO SI VUELVE A PUBLICAR LA OBRA PARA BUSCAR A OTRO TRABAJADOR */}
+      <ModalCancelarContrato contrato={contratoCancelar} onClose={() => setContratoCancelar(null)} onCancelado={(estado) => {
+        const cancelado = contratoCancelar;
+        setContratoCancelar(null);
+        cargarPerfil();
+        setContratoRepublicar({ ...cancelado, estado: estado || ESTADOS.SUSPENDIDA, cancelado_por: userData?.id });
+      }} />
       <ModalReportarProblema contrato={contratoReportar} rol="contratista" onClose={() => setContratoReportar(null)} />
+      <ModalReportesObra contrato={contratoReportes} onClose={() => { setContratoReportes(null); cargarPerfil(); }} />
+      <ModalRepublicar contrato={contratoRepublicar} onClose={() => setContratoRepublicar(null)} onPublicada={() => { setContratoRepublicar(null); cargarPerfil(); }} />
       <ModalPagos contrato={candidatos.find(c => c.id === idContratoPagos) || null} rol="contratista" onClose={() => setIdContratoPagos(null)} onCambio={cargarPerfil} />
       <SelectorMapa
         visible={mapaVisible}

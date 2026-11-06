@@ -122,7 +122,7 @@ export function CampanaNotificaciones({ onNuevos, colorIcono = '#FFF', style, va
                       <Text style={styles.avisoTexto}>{a.mensaje}</Text>
                       <View style={styles.pie}>
                         <Text style={[styles.avisoFecha, !a.leida && { color: '#2563EB', fontWeight: 'bold' }]}>{hace(a.timestamp || 0)}</Text>
-                        <Text style={styles.irChat}>{a.chat_con ? 'Ir al chat ›' : a.destino?.abrir === 'pagos' ? 'Ver pagos ›' : a.destino?.abrir === 'bitacora' ? 'Ver bitácora ›' : a.tipo === 'resena' ? 'Ver reseñas ›' : 'Ver obra ›'}</Text>
+                        <Text style={styles.irChat}>{a.chat_con ? 'Ir al chat ›' : a.destino?.abrir === 'pagos' ? 'Ver pagos ›' : a.destino?.abrir === 'bitacora' ? 'Ver bitácora ›' : a.destino?.abrir === 'reportes' ? 'Ver reportes ›' : a.destino?.abrir === 'republicar' ? 'Volver a publicar ›' : a.tipo === 'resena' ? 'Ver reseñas ›' : 'Ver obra ›'}</Text>
                       </View>
                     </View>
                     {!a.leida && <View style={styles.punto} />}

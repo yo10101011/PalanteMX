@@ -5,8 +5,9 @@
 //   Propuesta ──┼─► Aceptada (En Proceso) ─► Por confirmar fin ─► Finalizada
 //               │            │                      │
 //               └─► Rechazada └──── cancelar ───────┴─► Suspendida ─► (admin) Cancelada, o reactivada
+//                                 (con 48 h de aviso, antes de empezar y sin pagos: directo a Cancelada)
 import { router } from 'expo-router';
-import { collection, doc, getDocs, setDoc } from 'firebase/firestore';
+import { collection, doc, getDocs, query, setDoc, where } from 'firebase/firestore';
 import { auth, db } from '../../firebaseConfig';
 import { DIAS_SEMANA, textoDias } from '@/lib/ubicacion';
 
@@ -65,7 +66,8 @@ export type AccionContrato =
   | 'solicitar_fin' | 'confirmar_fin' | 'rechazar_fin' | 'cancelar'
   | 'revisar_bitacora' | 'reportar_problema'
   | 'registrar_pago' | 'confirmar_pago'
-  | 'admin_reactivar' | 'admin_cancelar' | 'cambiar_inicio';
+  | 'admin_reactivar' | 'admin_cancelar' | 'cambiar_inicio'
+  | 'republicar' | 'dar_version';
 
 type DatosAccion = {
   id_contrato?: string; id_vacante?: string; id_trabajador?: string; motivo?: string;
@@ -74,11 +76,55 @@ type DatosAccion = {
   monto?: number; concepto?: string; comprobante?: string; // REGISTRAR UN PAGO
   id_pago?: string; recibido?: boolean;                    // CONFIRMAR UN PAGO
   devolver?: number;                                       // ADMIN CANCELA: PESOS QUE EL TRABAJADOR DEBE DEVOLVER
-  inicio_obra?: string; fin_obra?: string; dias_obra?: string[]; // CAMBIAR LOS DÍAS DE TRABAJO DE LA OBRA
+  responsable?: 'quien_cancelo' | 'otra_parte' | 'nadie';  // ADMIN DECIDE UNA CANCELACIÓN: QUIÉN TUVO LA CULPA
+  bloquear?: boolean;                                      // ... Y SI SE LE BLOQUEA LA CUENTA
+  inicio_obra?: string; fin_obra?: string; dias_obra?: string[]; // CAMBIAR LOS DÍAS DE TRABAJO (O AL VOLVER A PUBLICAR)
+  id_queja?: string; de_acuerdo?: boolean;                 // DAR MI VERSIÓN DE UN REPORTE
 };
 
 // LO QUE EL CONTRATISTA YA PAGÓ (CONFIRMADO O POR CONFIRMAR; NO CUENTA LO MARCADO COMO NO RECIBIDO)
 export const dineroYaPagado = (contrato: any) => (contrato?.pagos || []).filter((p: any) => p.estado !== ESTADO_PAGO.NO_RECIBIDO).reduce((s: number, p: any) => s + (p.monto || 0), 0);
+
+// ---------------------------------------------------------------- CANCELACIÓN CON AVISO
+// SE PIDEN 48 HORAS DE AVISO ANTES DE QUE EMPIECE LA OBRA (LA MISMA REGLA QUE APLICA EL SERVIDOR). CON ESE AVISO,
+// SIN PAGOS NI REPORTES ABIERTOS, SE CANCELA AL MOMENTO Y SIN SANCIÓN; SI NO, ES UNA CANCELACIÓN TARDÍA QUE REVISA EL ADMIN.
+export const HORAS_AVISO_CANCELACION = 48;
+// HORAS QUE FALTAN PARA LAS 00:00 DEL DÍA EN QUE EMPIEZA LA OBRA (HORA DEL TELÉFONO). NEGATIVO = YA EMPEZÓ
+export const horasParaInicio = (contrato: any) => {
+  const inicio = contrato?.inicio_obra;
+  if (!inicio || !/^\d{4}-\d{2}-\d{2}$/.test(inicio)) return -1;
+  const [a, m, d] = inicio.split('-').map(Number);
+  return (new Date(a, m - 1, d).getTime() - Date.now()) / 3_600_000;
+};
+export const cancelacionATiempo = (contrato: any) =>
+  horasParaInicio(contrato) >= HORAS_AVISO_CANCELACION && dineroYaPagado(contrato) === 0 && !tieneReporteAbierto(contrato);
+// "3 días antes de empezar" / "10 horas antes de empezar" / "con la obra ya empezada"
+export const textoAvisoCancelacion = (horas: number) => horas < 0 ? 'con la obra ya empezada'
+  : horas < 24 ? `${Math.max(Math.floor(horas), 0)} horas antes de empezar`
+  : `${Math.floor(horas / 24)} día(s) antes de empezar`;
+
+// ¿EL CONTRATISTA PUEDE VOLVER A PUBLICAR ESTA OBRA CANCELADA PARA BUSCAR A OTRO TRABAJADOR?
+export const sePuedeRepublicar = (contrato: any) =>
+  [ESTADOS.SUSPENDIDA, ESTADOS.CANCELADA].includes(contrato?.estado) && !!contrato?.motivo_cancelacion && !contrato?.republicada;
+
+// ---------------------------------------------------------------- REPORTES DE UNA OBRA
+// CADA PERSONA SOLO PUEDE LEER LOS REPORTES DONDE APARECE (LOS QUE LEVANTÓ Y LOS QUE LE HICIERON): POR ESO SON DOS CONSULTAS
+export const leerReportesDeObra = async (idContrato: string) => {
+  const uid = auth.currentUser?.uid;
+  if (!uid) return [];
+  const [mios, contraMi] = await Promise.all([
+    getDocs(query(collection(db, 'Quejas_Soporte'), where('id_contrato', '==', idContrato), where('id_reportante', '==', uid))),
+    getDocs(query(collection(db, 'Quejas_Soporte'), where('id_contrato', '==', idContrato), where('id_acusado', '==', uid))),
+  ]);
+  const todos = new Map<string, any>();
+  [...mios.docs, ...contraMi.docs].forEach(d => todos.set(d.id, { id: d.id, ...d.data() }));
+  return [...todos.values()].sort((a, b) => new Date(b.fecha_reporte).getTime() - new Date(a.fecha_reporte).getTime());
+};
+
+// TEXTO CORTO DEL TIPO DE REPORTE (PARA LAS PARTES)
+export const TIPO_REPORTE_TEXTO: Record<string, string> = {
+  cancelacion: 'Cancelación de la obra', bitacora: 'Día de bitácora rechazado', incumplimiento: 'No se cumplió lo acordado', pago: 'Pago',
+};
 
 // ---------------------------------------------------------------- PAGOS
 // EL DINERO SE PAGA POR FUERA (EFECTIVO O TRANSFERENCIA). EN LA APP QUEDA LA EVIDENCIA: EL CONTRATISTA SUBE EL

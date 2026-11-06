@@ -28,6 +28,7 @@ import { SelectorUbicacion } from '@/components/selector-ubicacion';
 import { ModalBitacora } from '@/components/modal-bitacora';
 import { ModalCancelarContrato } from '@/components/modal-cancelar-contrato';
 import { ModalReportarProblema } from '@/components/modal-reportar-problema';
+import { ModalReportesObra } from '@/components/modal-reportes-obra';
 import { BotonContrato, TarjetaContrato } from '@/components/tarjeta-contrato';
 
 const { width } = Dimensions.get('window');
@@ -90,6 +91,7 @@ export default function DashboardTrabajador() {
   const [contratoBitacora, setContratoBitacora] = useState<any>(null);
   const [contratoCancelar, setContratoCancelar] = useState<any>(null);
   const [contratoReportar, setContratoReportar] = useState<any>(null);
+  const [contratoReportes, setContratoReportes] = useState<any>(null); // REPORTES DE LA OBRA (LAS DOS VERSIONES)
   // SE GUARDA EL ID (NO EL CONTRATO) PARA QUE LA VENTANA DE PAGOS MUESTRE LOS DATOS RECIÉN RECARGADOS
   const [idContratoPagos, setIdContratoPagos] = useState<string | null>(null);
   const mensajesSinLeer = useMensajesSinLeer(); // PUNTO ROJO DEL BOTÓN "MENSAJES", EN TIEMPO REAL
@@ -108,6 +110,7 @@ export default function DashboardTrabajador() {
     avisoAtendidoRef.current = String(params.t);
     if (params.abrir === 'bitacora') setContratoBitacora(contrato);
     if (params.abrir === 'pagos') setIdContratoPagos(contrato.id);
+    if (params.abrir === 'reportes') setContratoReportes(contrato);
   }, [params.t, cargando, contratos.length]);
 
   const cargarPerfil = async () => {
@@ -369,6 +372,9 @@ export default function DashboardTrabajador() {
     const reportar: BotonContrato = { texto: 'Reportar problema', icono: 'flag-outline', color: '#EA580C', onPress: () => setContratoReportar(contrato) };
     const porConfirmar = pagosPorConfirmar(contrato).length;
     const pagos: BotonContrato = { texto: porConfirmar ? `Pagos (${porConfirmar} por confirmar)` : 'Pagos', icono: 'cash-outline', color: '#059669', relleno: porConfirmar > 0, onPress: () => setIdContratoPagos(contrato.id) };
+    // LOS REPORTES SOLO APARECEN SI LA OBRA TUVO ALGUNO (ABIERTO, POR CANCELACIÓN O CON AJUSTES DE DINERO)
+    const conReportes = tieneReporteAbierto(contrato) || !!contrato.id_queja || (contrato.ajustes_pago || []).length > 0;
+    const verReportes: BotonContrato[] = conReportes ? [{ texto: 'Reportes', icono: 'document-text-outline', color: '#7C3AED', onPress: () => setContratoReportes(contrato) }] : [];
 
     switch (contrato.estado) {
       // LA PROPUESTA NO SE ACEPTA AQUÍ: PRIMERO SE PLATICA EN EL CHAT, Y AHÍ MISMO SE ACEPTA EL TRATO
@@ -382,6 +388,7 @@ export default function DashboardTrabajador() {
         pagos,
         reportar,
         { texto: 'Cancelar obra', icono: 'warning-outline', color: '#DC2626', onPress: () => setContratoCancelar(contrato) },
+        ...verReportes,
       ];
       case ESTADOS.POR_CONFIRMAR_FIN: return [
         { texto: 'Sí, terminó', icono: 'flag', color: tieneReporteAbierto(contrato) ? '#9CA3AF' : '#00D06C', relleno: true, onPress: () => tieneReporteAbierto(contrato) ? Alert.alert("Todavía no", "Hay un reporte de esta obra que el administrador está revisando. Podrás confirmar el fin cuando lo resuelva; te avisaremos.") : confirmarAccion('confirmar_fin', contrato, "Confirmar fin de obra", "¿Confirmas que la obra ya terminó? Pasará a tu historial y a tu portafolio.", "¡Obra finalizada! Ya puedes calificar al contratista.") },
@@ -390,13 +397,23 @@ export default function DashboardTrabajador() {
         chatear,
         pagos,
         reportar,
+        ...verReportes,
       ];
-      // TERMINADA, SUSPENDIDA O CANCELADA: SOLO VER (BITÁCORA, PAGOS) Y CALIFICAR; YA NO SE PUEDE CANCELAR NI LLENAR NADA
-      case ESTADOS.SUSPENDIDA: return [bitacora, pagos, calificar];
-      case ESTADOS.FINALIZADA: return [bitacora, pagos, calificar];
-      case ESTADOS.CANCELADA: return [bitacora, pagos, calificar];
+      // TERMINADA, SUSPENDIDA O CANCELADA: SOLO VER (BITÁCORA, PAGOS, REPORTES) Y CALIFICAR; YA NO SE PUEDE CANCELAR NI LLENAR NADA
+      case ESTADOS.SUSPENDIDA:
+      case ESTADOS.FINALIZADA:
+      case ESTADOS.CANCELADA: return [...verReportes, bitacora, pagos, calificar];
       default: return [];
     }
+  };
+
+  // QUIÉN CANCELÓ Y CON CUÁNTO AVISO (EN OBRAS SUSPENDIDAS O CANCELADAS)
+  const avisoCancelacion = (contrato: any) => {
+    if (![ESTADOS.SUSPENDIDA, ESTADOS.CANCELADA].includes(contrato.estado) || !contrato.motivo_cancelacion) return '';
+    const quien = contrato.cancelado_por === userData?.id ? 'Tú cancelaste esta obra' : `${datosContratista(contrato).nombre} (contratista) canceló esta obra`;
+    const cuando = contrato.cancelacion_tardia ? ' tarde (con menos de 48 horas de aviso)' : contrato.cancelacion_tardia === false ? ' con tiempo' : '';
+    const revision = contrato.estado === ESTADOS.SUSPENDIDA ? ' El administrador la está revisando.' : '';
+    return `${quien}${cuando}: "${contrato.motivo_cancelacion}".${revision}`;
   };
 
   // UNA SECCIÓN DE LA PESTAÑA "OBRAS" (SOLO APARECE SI TIENE CONTRATOS)
@@ -413,7 +430,7 @@ export default function DashboardTrabajador() {
               key={contrato.id}
               contrato={contrato}
               otraParte={{ nombre: contratista.nombre, foto: contratista.foto, detalle: 'Contratista' }}
-              aviso={contrato.estado === ESTADOS.SUSPENDIDA && contrato.cancelado_por === userData?.id ? 'Tú cancelaste esta obra. El administrador la está revisando.' : aviso}
+              aviso={avisoCancelacion(contrato) || aviso}
               botones={botonesDelContrato(contrato).filter(b => b.texto !== 'Calificar' || sePuedeCalificar(contrato.estado))}
               deshabilitado={procesando}
             />
@@ -826,6 +843,7 @@ export default function DashboardTrabajador() {
       <ModalBitacora contrato={contratoBitacora} rol="trabajador" onClose={() => setContratoBitacora(null)} />
       <ModalCancelarContrato contrato={contratoCancelar} onClose={() => setContratoCancelar(null)} onCancelado={() => { setContratoCancelar(null); cargarPerfil(); }} />
       <ModalReportarProblema contrato={contratoReportar} rol="trabajador" onClose={() => setContratoReportar(null)} />
+      <ModalReportesObra contrato={contratoReportes} onClose={() => { setContratoReportes(null); cargarPerfil(); }} />
       <ModalPagos contrato={contratos.find(c => c.id === idContratoPagos) || null} rol="trabajador" onClose={() => setIdContratoPagos(null)} onCambio={cargarPerfil} />
 
       <Modal visible={modalQueja} animationType="fade" transparent>

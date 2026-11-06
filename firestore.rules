@@ -172,9 +172,15 @@ service cloud.firestore {
 
     // ---------------------------------------------------------------- REPORTES Y RESEÑAS
 
+    // LAS DOS PARTES DE UN REPORTE (QUIEN REPORTA Y QUIEN FUE REPORTADO) LO PUEDEN LEER: ASÍ CADA UNA VE LA VERSIÓN
+    // DE LA OTRA Y LA DECISIÓN DEL ADMIN. SU VERSIÓN LA GUARDA EL WORKER (RUTA /contratos, ACCIÓN dar_version).
+    // EL ADMIN PUEDE ACTUALIZARLO (P. EJ. "TOMAR EL CASO": asignado_a) Y BORRARLO.
     match /Quejas_Soporte/{quejaId} {
       allow create: if cuentaActiva() && request.resource.data.id_reportante == request.auth.uid;
-      allow read, update, delete: if esAdmin();
+      allow read: if esAdmin()
+        || (conSesion() && (resource.data.id_reportante == request.auth.uid
+                            || resource.data.get('id_acusado', '') == request.auth.uid));
+      allow update, delete: if esAdmin();
     }
 
     // AVISOS PARA CADA USUARIO (DECISIONES DEL ADMIN, BITÁCORA RECHAZADA...). LOS CREA SOLO EL WORKER;

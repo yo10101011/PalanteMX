@@ -1,8 +1,9 @@
 // PANEL DEL ADMINISTRADOR. 6 PESTAÑAS ABAJO, CADA UNA CON UNA SOLA COSA (SIN REPETIR INFORMACIÓN):
-//   INICIO   = SOLO LO QUE HAY QUE ATENDER (REPORTES POR RESOLVER, POR TIPO)
-//   REPORTES = TODOS LOS REPORTES (POR RESOLVER / YA RESUELTOS)
-//   USUARIOS = TRABAJADORES Y CONTRATISTAS
-//   OBRAS    = CONTRATOS Y VACANTES
+//   INICIO   = BUSCADOR GENERAL (PERSONAS, OBRAS, VACANTES Y REPORTES A LA VEZ) Y LO QUE HAY QUE ATENDER
+//   REPORTES = TODOS LOS REPORTES, CON LAS DOS VERSIONES; CADA ADMIN "TOMA" SUS CASOS PARA NO PISARSE CON OTRO
+//   USUARIOS = TRABAJADORES Y CONTRATISTAS (BUSCAR, FILTRAR POR ESTADO, ORDENAR)
+//   OBRAS    = CONTRATOS (CADA UNO ABRE SU EXPEDIENTE: DINERO, REPORTES Y BITÁCORA) Y VACANTES
+// LAS LISTAS SE MUESTRAN DE 20 EN 20 ("VER MÁS") PARA QUE EL PANEL SIGA RÁPIDO CON MUCHOS USUARIOS.
 //   DATOS    = ANALÍTICA: GRÁFICAS DE USO DÍA CON DÍA (USUARIOS ACTIVOS, VACANTES, REPORTES, OFICIOS...)
 //   MI CUENTA= MI PERFIL Y EL EQUIPO
 // CÓDIGO DE COLORES FIJO:
@@ -44,7 +45,8 @@ import { auth, db } from '../../firebaseConfig';
 import { subirFotoACloudinary } from '@/lib/cloudinary';
 import { eliminarCuentaEnServidor } from '@/lib/cuenta';
 import { coincide } from '@/lib/busqueda';
-import { accionContrato, adminPerfiles, gestionarEquipo, ajustesDePago, ESTADOS, estiloEstado, pagosPorConfirmar, resolverReporte, totalRecibido } from '@/lib/contratos';
+import { accionContrato, adminPerfiles, gestionarEquipo, ajustesDePago, dineroYaPagado, ESTADOS, estiloDia, estiloEstado, leerBitacora, pagosPorConfirmar, resolverReporte, textoDiasObra, totalRecibido } from '@/lib/contratos';
+import { ESTADOS_MEXICO } from '@/lib/ubicacion';
 import { AnaliticaAdmin } from '@/components/analitica-admin';
 import { PerfilTrabajador, quitarUnaObra } from '@/components/perfil-trabajador';
 import { VisorFoto } from '@/components/visor-foto';
@@ -72,8 +74,14 @@ const TIPOS_REPORTE: Record<TipoReporte, { texto: string; explicacion: string; c
 const esCancelacion = (q: any) => !!q?.id_contrato && (q.tipo === 'cancelacion' || (!q.tipo && q.motivo === 'Cancelación de obra'));
 const tipoDe = (q: any): TipoReporte => esCancelacion(q) ? 'cancelacion' : (['bitacora', 'incumplimiento', 'pago'].includes(q.tipo) ? q.tipo : 'otro');
 
+// LOS REPORTES VIEJOS DEL CHAT PUEDEN TRAER 'Desconocido' EN LUGAR DE UN USUARIO
+const esUsuarioReal = (id?: string) => /^[A-Za-z0-9]{10,128}$/.test(id || '');
+
+// FECHA DE UN REGISTRO EN MILISEGUNDOS (LOS USUARIOS TRAEN fecha_registro; LOS REPORTES, fecha_reporte)
+const tiempo = (fecha?: string) => (fecha ? new Date(fecha).getTime() || 0 : 0);
+
 // "JOCELYN (TRABAJADOR)"
-const conRol = (nombre?: string, rol?: string) => `${nombre || 'Sin nombre'} (${(rol || 'usuario').toLowerCase()})`;
+const conRol =(nombre?: string, rol?: string) => `${nombre || 'Sin nombre'} (${(rol || 'usuario').toLowerCase()})`;
 
 // QUÉ PUEDE DECIDIR EL ADMIN EN CADA TIPO DE REPORTE. favorece = QUIÉN TIENE LA RAZÓN CON ESA DECISIÓN
 type Opcion = { valor: string; texto: string; color: string; favorece: 'reportante' | 'acusado' | null };
@@ -130,6 +138,22 @@ export default function AdminDashboard() {
   const [soloBloqueadas, setSoloBloqueadas] = useState(false);
   const [vistaObras, setVistaObras] = useState<'Contratos' | 'Vacantes'>('Contratos');
   const [grupoObra, setGrupoObra] = useState('curso');
+  // BUSCADORES Y FILTROS (PENSADOS PARA MUCHOS USUARIOS: SE BUSCA SIN IMPORTAR ACENTOS NI UNA LETRA EQUIVOCADA)
+  const [busquedaGlobal, setBusquedaGlobal] = useState('');          // INICIO: BUSCA EN TODO A LA VEZ
+  const [busquedaReportes, setBusquedaReportes] = useState('');
+  const [asignacion, setAsignacion] = useState<'todos' | 'mios' | 'sin_asignar'>('todos');
+  const [periodoReportes, setPeriodoReportes] = useState<'todo' | '7' | '30'>('todo');
+  const [ordenReportes, setOrdenReportes] = useState<'antiguos' | 'recientes'>('antiguos'); // LOS QUE MÁS LLEVAN ESPERANDO PRIMERO
+  const [estadoUsuarios, setEstadoUsuarios] = useState('');          // ESTADO DE LA REPÚBLICA ('' = TODOS)
+  const [ordenUsuarios, setOrdenUsuarios] = useState<'recientes' | 'calificacion' | 'reportes' | 'nombre'>('recientes');
+  const [busquedaObras, setBusquedaObras] = useState('');
+  const [busquedaVacantes, setBusquedaVacantes] = useState('');
+  const [filtroVacantes, setFiltroVacantes] = useState<'todas' | 'Activa' | 'Cerrada'>('todas');
+  // CUÁNTOS SE MUESTRAN DE CADA LISTA (DE 20 EN 20, CON "VER MÁS"): CON MILES DE REGISTROS LA PANTALLA SIGUE RÁPIDA
+  const [limites, setLimites] = useState<Record<string, number>>({});
+  // EXPEDIENTE DE UNA OBRA: TODO JUNTO (PARTES, DÍAS, PAGOS, BITÁCORA Y REPORTES)
+  const [obraExpandida, setObraExpandida] = useState<any>(null);
+  const [bitacoraObra, setBitacoraObra] = useState<any[] | null>(null);
 
   // DATOS DEL SISTEMA
   const [adminData, setAdminData] = useState<any>({ nombre: 'Administrador Principal', cargo: 'Super Admin', foto: '' });
@@ -151,6 +175,7 @@ export default function AdminDashboard() {
   const [ajuste, setAjuste] = useState('');
   const [devolver, setDevolver] = useState(''); // AL CANCELAR UNA OBRA: PESOS QUE EL TRABAJADOR DEVUELVE DE LO YA PAGADO
   const [bloquear, setBloquear] = useState(false);
+  const [responsable, setResponsable] = useState<'quien_cancelo' | 'otra_parte' | 'nadie' | ''>(''); // CULPA DE UNA CANCELACIÓN
 
   const [modalEditarAdmin, setModalEditarAdmin] = useState(false);
   const [editAdminNombre, setEditAdminNombre] = useState('');
@@ -407,7 +432,42 @@ export default function AdminDashboard() {
     else Alert.alert("Perfil no encontrado", "Esta cuenta ya no existe o fue eliminada.");
   };
 
-  const abrirResolucion = (queja: any) => { setQuejaResolviendo(queja); setDecision(''); setNotaAdmin(''); setAjuste(''); setDevolver(''); setBloquear(false); };
+  const abrirResolucion = (queja: any) => { setQuejaResolviendo(queja); setDecision(''); setNotaAdmin(''); setAjuste(''); setDevolver(''); setBloquear(false); setResponsable(''); };
+
+  // QUIÉN SOY (PARA "TOMAR EL CASO" Y QUE DOS ADMINS NO ATIENDAN EL MISMO REPORTE A LA VEZ)
+  const miUid = auth.currentUser?.uid || '';
+  const miNombre = esPrincipal ? (adminData.nombre || 'Administrador Principal') : (miRegistroRef.current?.nombre || 'Personal');
+  const tomarCaso = async (queja: any, tomar: boolean) => {
+    if (tomar && queja.asignado_a?.uid && queja.asignado_a.uid !== miUid) {
+      const seguir = await new Promise<boolean>(r => Alert.alert("Caso tomado", `Este caso ya lo está atendiendo ${queja.asignado_a.nombre}. ¿Lo tomas tú?`, [
+        { text: "No", style: "cancel", onPress: () => r(false) }, { text: "Sí, tomarlo", onPress: () => r(true) },
+      ]));
+      if (!seguir) return;
+    }
+    setProcesando(true);
+    try {
+      const asignado_a = tomar ? { uid: miUid, nombre: miNombre, fecha: new Date().toISOString() } : null;
+      await updateDoc(doc(db, 'Quejas_Soporte', queja.id), { asignado_a });
+      setQuejas(lista => lista.map(q => q.id === queja.id ? { ...q, asignado_a } : q));
+    } catch (error: any) { Alert.alert("No se pudo", error?.message || "Intenta de nuevo."); }
+    setProcesando(false);
+  };
+
+  // EXPEDIENTE DE UNA OBRA: SE LEE SU BITÁCORA AL ABRIRLO (LO DEMÁS YA ESTÁ CARGADO)
+  const abrirExpediente = async (contrato: any) => {
+    setObraExpandida(contrato);
+    setBitacoraObra(null);
+    try { setBitacoraObra(await leerBitacora(contrato.id)); } catch { setBitacoraObra([]); }
+  };
+  const abrirExpedientePorId = (idContrato?: string) => {
+    const contrato = contratos.find(c => c.id === idContrato);
+    if (contrato) abrirExpediente(contrato);
+    else Alert.alert("Obra no encontrada", "Esta obra ya no existe.");
+  };
+
+  // "VER MÁS" DE CADA LISTA
+  const limiteDe = (clave: string) => limites[clave] || 20;
+  const verMas = (clave: string) => setLimites(l => ({ ...l, [clave]: limiteDe(clave) + 20 }));
 
   // QUIÉN TIENE LA RAZÓN CON LA DECISIÓN ELEGIDA, Y QUIÉN NO
   const opcionElegida = quejaResolviendo ? opcionesDeReporte(quejaResolviendo).find(o => o.valor === decision) : undefined;
@@ -426,12 +486,23 @@ export default function AdminDashboard() {
   // ARCHIVA EL REPORTE Y LES MANDA UNA NOTIFICACIÓN CON LA NOTA A LAS DOS PARTES
   const confirmarResolucion = async () => {
     if (!decision) { Alert.alert("Aviso", "Elige tu decisión."); return; }
+    if (esCancelacion(quejaResolviendo) && !responsable) { Alert.alert("Aviso", "Indica quién tuvo la culpa de la cancelación (o que nadie)."); return; }
+    if (esCancelacion(quejaResolviendo) && decision === 'admin_cancelar' && montoPagado > 0 && devolver === '') { Alert.alert("Aviso", `Ya se habían pagado $${montoPagado.toLocaleString('es-MX')}. Indica cuánto debe devolver el trabajador (0 si se lo queda).`); return; }
     if (!notaAdmin.trim()) { Alert.alert("Aviso", "Escribe una nota explicando tu decisión. Les llegará a las dos partes."); return; }
+    // LO JUSTO ES ESCUCHAR A LOS DOS: SI LA PERSONA REPORTADA NO HA DADO SU VERSIÓN, SE PIDE CONFIRMAR
+    if (!quejaResolviendo.version_acusado && esUsuarioReal(quejaResolviendo.id_acusado)) {
+      const seguir = await new Promise<boolean>(r => Alert.alert("Falta una versión", `${conRol(quejaResolviendo.acusado, quejaResolviendo.rol_acusado)} todavía no da su versión. ¿Decidir de todos modos?`, [
+        { text: "Esperar", style: "cancel", onPress: () => r(false) }, { text: "Decidir ya", style: 'destructive', onPress: () => r(true) },
+      ]));
+      if (!seguir) return;
+    }
     setProcesando(true);
     try {
       if (esCancelacion(quejaResolviendo)) {
-        if (decision === 'admin_cancelar' && montoPagado > 0 && devolver === '') { setProcesando(false); Alert.alert("Aviso", `Ya se habían pagado $${montoPagado.toLocaleString('es-MX')}. Indica cuánto debe devolver el trabajador (0 si se lo queda).`); return; }
-        await accionContrato(decision as 'admin_reactivar' | 'admin_cancelar', { id_contrato: quejaResolviendo.id_contrato, nota: notaAdmin.trim(), devolver: decision === 'admin_cancelar' ? parseInt(devolver) || 0 : 0 });
+        await accionContrato(decision as 'admin_reactivar' | 'admin_cancelar', {
+          id_contrato: quejaResolviendo.id_contrato, nota: notaAdmin.trim(), devolver: decision === 'admin_cancelar' ? parseInt(devolver) || 0 : 0,
+          responsable: responsable || 'nadie', bloquear: bloquear && responsable !== 'nadie',
+        });
       } else {
         await resolverReporte(quejaResolviendo.id, decision, notaAdmin.trim(), permiteAjuste ? parseInt(ajuste) || 0 : 0, bloquear);
       }
@@ -448,17 +519,56 @@ export default function AdminDashboard() {
 
   const quejasPendientes = quejas.filter(q => q.estado !== 'Resuelta');
   const quejasResueltas = quejas.filter(q => q.estado === 'Resuelta');
-  const reportesVisibles = (vistaReportes === 'Pendientes' ? quejasPendientes : quejasResueltas).filter(q => filtroTipo === 'todos' || tipoDe(q) === filtroTipo);
   const pendientesDe = (t: TipoReporte) => quejasPendientes.filter(q => tipoDe(q) === t).length;
+  const misCasos = quejasPendientes.filter(q => q.asignado_a?.uid === miUid).length;
 
+  // TEXTO EN EL QUE SE BUSCA CADA COSA (NOMBRES, CORREOS, TELÉFONOS, TÍTULOS, IDS...)
+  const textoUsuario = (u: any) => `${u.nombre} ${u.apellidos} ${u.correo || ''} ${u.numero_telefono || ''} ${u.nombre_usuario || ''} ${u.oficio_principal || ''} ${u.empresa || ''} ${u.ubicacion_texto || ''} ${u.ubicacion_estado || ''} ${u.id}`;
+  const textoContrato = (c: any) => `${c.titulo_vacante || c.vacante?.titulo || ''} ${c.nombre_trabajador || ''} ${c.contratista || c.vacante?.contratista || ''} ${c.vacante?.ubicacion || ''} ${c.vacante?.oficio || ''} ${c.id}`;
+  const textoVacante = (v: any) => `${v.titulo} ${v.contratista || ''} ${v.empresa || ''} ${v.categoria || ''} ${v.ubicacion || ''} ${v.estado_republica || ''} ${v.id}`;
+  const textoReporte = (q: any) => `${q.motivo || ''} ${q.titulo_obra || ''} ${q.nombre_reportante || ''} ${q.acusado || ''} ${q.descripcion || ''} ${q.asignado_a?.nombre || ''} ${q.id} ${q.id_contrato || ''}`;
+
+  const desde = periodoReportes === 'todo' ? 0 : Date.now() - parseInt(periodoReportes) * 24 * 60 * 60 * 1000;
+  const reportesVisibles = (vistaReportes === 'Pendientes' ? quejasPendientes : quejasResueltas)
+    .filter(q => filtroTipo === 'todos' || tipoDe(q) === filtroTipo)
+    .filter(q => asignacion === 'todos' || (asignacion === 'mios' ? q.asignado_a?.uid === miUid : !q.asignado_a?.uid))
+    .filter(q => tiempo(q.fecha_reporte) >= desde)
+    .filter(q => coincide(textoReporte(q), busquedaReportes))
+    // POR RESOLVER: LOS MÁS VIEJOS PRIMERO (LLEVAN MÁS TIEMPO ESPERANDO); YA RESUELTOS: LOS MÁS NUEVOS PRIMERO
+    .sort((a, b) => {
+      const antiguos = vistaReportes === 'Pendientes' ? ordenReportes === 'antiguos' : ordenReportes !== 'antiguos';
+      return antiguos ? tiempo(a.fecha_reporte) - tiempo(b.fecha_reporte) : tiempo(b.fecha_reporte) - tiempo(a.fecha_reporte);
+    });
+
+  const reportesContra = (id: string) => quejas.filter(q => q.id_acusado === id);
+  // CANCELACIONES TARDÍAS (CON MENOS DE 48 HORAS DE AVISO) QUE HIZO CADA PERSONA: SIRVEN PARA DECIDIR SANCIONES
+  const cancelacionesTardiasDe = (id: string) => contratos.filter(c => c.cancelado_por === id && c.cancelacion_tardia).length;
   const usuariosVisibles = (vistaUsuarios === 'Trabajadores' ? trabajadores : contratistas)
     .filter(u => !soloBloqueadas || u.estado_cuenta === 'Bloqueada')
-    .filter(u => coincide(`${u.nombre} ${u.apellidos} ${u.correo || ''} ${u.nombre_usuario || ''} ${u.oficio_principal || ''} ${u.empresa || ''} ${u.ubicacion_texto || ''} ${u.ubicacion_estado || ''}`, busquedaUsuarios));
-  const reportesContra = (id: string) => quejas.filter(q => q.id_acusado === id);
+    .filter(u => !estadoUsuarios || u.ubicacion_estado === estadoUsuarios)
+    .filter(u => coincide(textoUsuario(u), busquedaUsuarios))
+    .sort((a, b) => {
+      if (ordenUsuarios === 'calificacion') return (parseFloat(b.calificacion) || 0) - (parseFloat(a.calificacion) || 0);
+      if (ordenUsuarios === 'reportes') return reportesContra(b.id).length - reportesContra(a.id).length;
+      if (ordenUsuarios === 'nombre') return `${a.nombre} ${a.apellidos}`.localeCompare(`${b.nombre} ${b.apellidos}`, 'es');
+      return tiempo(b.fecha_registro) - tiempo(a.fecha_registro);
+    });
+  const estadosConUsuarios = [...new Set([...trabajadores, ...contratistas].map(u => u.ubicacion_estado).filter(Boolean))].sort((a, b) => ESTADOS_MEXICO.indexOf(a) - ESTADOS_MEXICO.indexOf(b));
 
   const grupo = GRUPOS_OBRA.find(g => g.clave === grupoObra) || GRUPOS_OBRA[0];
-  const contratosVisibles = contratos.filter(c => grupo.estados.includes(c.estado));
+  const contratosVisibles = contratos.filter(c => grupo.estados.includes(c.estado)).filter(c => coincide(textoContrato(c), busquedaObras));
   const enGrupo = (g: typeof GRUPOS_OBRA[number]) => contratos.filter(c => g.estados.includes(c.estado)).length;
+  const vacantesVisibles = vacantes.filter(v => filtroVacantes === 'todas' || v.estado === filtroVacantes).filter(v => coincide(textoVacante(v), busquedaVacantes));
+
+  // BUSCADOR GENERAL DEL INICIO: LO PRIMERO QUE COINCIDE EN CADA LUGAR (CON 2 LETRAS O MÁS)
+  const hayBusquedaGlobal = busquedaGlobal.trim().length >= 2;
+  const encontrados = hayBusquedaGlobal ? {
+    usuarios: [...trabajadores, ...contratistas].filter(u => coincide(textoUsuario(u), busquedaGlobal)),
+    obras: contratos.filter(c => coincide(textoContrato(c), busquedaGlobal)),
+    vacantes: vacantes.filter(v => coincide(textoVacante(v), busquedaGlobal)),
+    reportes: quejas.filter(q => coincide(textoReporte(q), busquedaGlobal)),
+  } : null;
+  const reportesDeObra = (idContrato: string) => quejas.filter(q => q.id_contrato === idContrato);
   const obrasEnCursoDe = (idTrabajador: string) => contratos.filter(c => c.id_trabajador === idTrabajador && [ESTADOS.ACTIVA, ESTADOS.POR_CONFIRMAR_FIN, ESTADOS.SUSPENDIDA].includes(c.estado));
 
   // ---------------------------------------------------------------- PIEZAS DE INTERFAZ
@@ -483,6 +593,29 @@ export default function AdminDashboard() {
     <View style={[styles.etiqueta, { backgroundColor: fondo || color }]}><Text style={[styles.etiquetaTexto, { color: fondo ? color : '#FFF' }]}>{texto}</Text></View>
   );
 
+  // OJO: SE LLAMA COMO FUNCIÓN (NO COMO <Buscador />) PARA QUE EL TECLADO NO SE CIERRE AL ESCRIBIR CADA LETRA
+  const buscador = (valor: string, onCambio: (t: string) => void, placeholder: string) => (
+    <View style={styles.buscador}>
+      <Ionicons name="search" size={18} color="#9CA3AF" />
+      <TextInput style={styles.buscadorInput} placeholder={placeholder} value={valor} onChangeText={onCambio} autoCorrect={false} />
+      {valor ? <TouchableOpacity onPress={() => onCambio('')}><Ionicons name="close-circle" size={18} color="#9CA3AF" /></TouchableOpacity> : null}
+    </View>
+  );
+
+  // MUESTRA LOS PRIMEROS 20 DE UNA LISTA Y UN BOTÓN "VER MÁS" PARA LOS SIGUIENTES
+  const paginado = <T,>(clave: string, lista: T[], dibujar: (x: T) => React.ReactNode, vacio: string) => (
+    <>
+      {lista.length > 0 && <Text style={styles.conteo}>{lista.length} resultado{lista.length === 1 ? '' : 's'}</Text>}
+      {lista.slice(0, limiteDe(clave)).map(dibujar)}
+      {lista.length > limiteDe(clave) && (
+        <TouchableOpacity style={styles.verMas} onPress={() => verMas(clave)}>
+          <Text style={styles.verMasTexto}>Ver más (faltan {lista.length - limiteDe(clave)})</Text>
+        </TouchableOpacity>
+      )}
+      {lista.length === 0 && <Text style={styles.vacioTexto}>{vacio}</Text>}
+    </>
+  );
+
   const fotosDe = (q: any): string[] => [...new Set([q.foto_evidencia, ...(q.fotos_evidencia || [])].filter(Boolean))];
 
   const TarjetaReporte = ({ queja }: { queja: any }) => {
@@ -498,8 +631,15 @@ export default function AdminDashboard() {
           <Etiqueta texto={resuelta ? 'RESUELTO' : 'POR RESOLVER'} color={resuelta ? COLOR.resuelto : COLOR.pendiente} />
         </View>
         <Text style={styles.tituloTarjeta}>{queja.motivo}</Text>
-        {queja.titulo_obra ? <Text style={styles.obraTexto}>Obra: "{queja.titulo_obra}"</Text> : null}
-        <Text style={styles.fecha}>{new Date(queja.fecha_reporte).toLocaleString('es-MX')}</Text>
+        {queja.titulo_obra ? (
+          <TouchableOpacity onPress={() => abrirExpedientePorId(queja.id_contrato)}><Text style={styles.obraTexto}>Obra: "{queja.titulo_obra}" · Ver expediente ›</Text></TouchableOpacity>
+        ) : null}
+        <Text style={styles.fecha}>{new Date(queja.fecha_reporte).toLocaleString('es-MX')}{!resuelta ? ` · lleva ${Math.max(Math.floor((Date.now() - tiempo(queja.fecha_reporte)) / 86400000), 0)} día(s) esperando` : ''}</Text>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 6 }}>
+          {queja.cancelacion_tardia && <Etiqueta texto="CANCELACIÓN TARDÍA (MENOS DE 48 H)" color="#B91C1C" fondo="#FEE2E2" />}
+          {queja.monto_pagado > 0 && <Etiqueta texto={`YA SE HABÍAN PAGADO $${Number(queja.monto_pagado).toLocaleString('es-MX')}`} color="#92400E" fondo="#FEF3C7" />}
+          {queja.asignado_a?.uid && <Etiqueta texto={queja.asignado_a.uid === miUid ? 'LO ATIENDES TÚ' : `LO ATIENDE ${String(queja.asignado_a.nombre).toUpperCase()}`} color="#1D4ED8" fondo="#DBEAFE" />}
+        </View>
 
         {/* QUIÉN REPORTA Y A QUIÉN: SE TOCA PARA VER SU PERFIL COMPLETO */}
         <View style={styles.partes}>
@@ -516,19 +656,52 @@ export default function AdminDashboard() {
           </TouchableOpacity>
         </View>
 
-        <View style={styles.descripcion}><Text style={styles.descripcionTexto}>{queja.descripcion}</Text></View>
-        {fotosDe(queja).length > 0 && (
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 8 }}>
-            {fotosDe(queja).map((f, i) => (
-              <TouchableOpacity key={i} onPress={() => setFotoGrande(f)}><Image source={{ uri: f }} style={styles.miniatura} /></TouchableOpacity>
-            ))}
-          </ScrollView>
+        {/* LAS DOS VERSIONES: LA DE QUIEN REPORTA Y LA DE QUIEN FUE REPORTADO */}
+        <View style={styles.descripcion}>
+          <Text style={styles.versionTitulo}>Versión de {conRol(queja.nombre_reportante, queja.rol_reportante)}</Text>
+          <Text style={styles.descripcionTexto}>{queja.descripcion}</Text>
+          {fotosDe(queja).length > 0 && (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 8 }}>
+              {fotosDe(queja).map((f, i) => (
+                <TouchableOpacity key={i} onPress={() => setFotoGrande(f)}><Image source={{ uri: f }} style={styles.miniatura} /></TouchableOpacity>
+              ))}
+            </ScrollView>
+          )}
+        </View>
+        {esUsuarioReal(queja.id_acusado) && (
+          <View style={[styles.descripcion, { backgroundColor: '#EFF6FF' }]}>
+            <Text style={styles.versionTitulo}>Versión de {conRol(queja.acusado, queja.rol_acusado)}</Text>
+            {queja.version_acusado ? (
+              <>
+                <Text style={[styles.versionTitulo, { color: queja.version_acusado.de_acuerdo ? COLOR.resuelto : COLOR.bloqueada }]}>
+                  {queja.version_acusado.de_acuerdo ? 'Está de acuerdo con lo que se pide' : 'No está de acuerdo'}
+                </Text>
+                <Text style={styles.descripcionTexto}>{queja.version_acusado.texto}</Text>
+                {(queja.version_acusado.fotos || []).length > 0 && (
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 8 }}>
+                    {queja.version_acusado.fotos.map((f: string, i: number) => (
+                      <TouchableOpacity key={i} onPress={() => setFotoGrande(f)}><Image source={{ uri: f }} style={styles.miniatura} /></TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                )}
+              </>
+            ) : (
+              <Text style={[styles.descripcionTexto, { fontStyle: 'italic', color: '#B45309' }]}>{resuelta ? 'No dio su versión.' : 'Todavía no da su versión. Ya se le avisó.'}</Text>
+            )}
+          </View>
         )}
 
         {!resuelta ? (
-          <TouchableOpacity style={[styles.botonPrincipal, { backgroundColor: tipo.color }]} disabled={procesando} onPress={() => abrirResolucion(queja)}>
-            <Ionicons name="hammer" size={16} color="#FFF" /><Text style={styles.botonPrincipalTexto}>Decidir quién tiene razón</Text>
-          </TouchableOpacity>
+          <View style={{ flexDirection: 'row' }}>
+            <TouchableOpacity style={[styles.botonPrincipal, { flex: 1, marginRight: 6, backgroundColor: '#FFF', borderWidth: 1.5, borderColor: '#1D4ED8' }]} disabled={procesando}
+              onPress={() => tomarCaso(queja, queja.asignado_a?.uid !== miUid)}>
+              <Ionicons name={queja.asignado_a?.uid === miUid ? 'person-remove-outline' : 'person-add-outline'} size={16} color="#1D4ED8" />
+              <Text style={[styles.botonPrincipalTexto, { color: '#1D4ED8' }]}>{queja.asignado_a?.uid === miUid ? 'Soltar caso' : 'Tomar caso'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.botonPrincipal, { flex: 1.4, backgroundColor: tipo.color }]} disabled={procesando} onPress={() => abrirResolucion(queja)}>
+              <Ionicons name="hammer" size={16} color="#FFF" /><Text style={styles.botonPrincipalTexto}>Decidir</Text>
+            </TouchableOpacity>
+          </View>
         ) : (
           <View style={styles.resolucion}>
             {queja.resolucion ? <Text style={styles.resolucionTexto}>Decisión: {queja.resolucion}</Text> : null}
@@ -558,6 +731,63 @@ export default function AdminDashboard() {
         {/* ---------------------------------------------------------------- INICIO: SOLO LO QUE HAY QUE ATENDER */}
         {pestañaActiva === 'Inicio' && (
           <View>
+            {/* BUSCADOR GENERAL: UNA PERSONA, OBRA, VACANTE O REPORTE, POR NOMBRE, CORREO, TELÉFONO, TÍTULO O ID */}
+            {buscador(busquedaGlobal, setBusquedaGlobal, 'Buscar en todo: nombre, correo, teléfono, obra, ID...')}
+            {encontrados && (
+              <View style={{ marginBottom: 10 }}>
+                {encontrados.usuarios.length + encontrados.obras.length + encontrados.vacantes.length + encontrados.reportes.length === 0 && (
+                  <Text style={styles.vacioTexto}>No se encontró nada con "{busquedaGlobal}".</Text>
+                )}
+                {encontrados.usuarios.length > 0 && <Text style={styles.seccionChica}>PERSONAS ({encontrados.usuarios.length})</Text>}
+                {encontrados.usuarios.slice(0, 5).map(u => (
+                  <TouchableOpacity key={u.id} style={styles.resultado} onPress={() => setUsuarioExpandido(u)}>
+                    <Ionicons name="person-circle-outline" size={20} color={u.rol === 'Trabajador' ? COLOR.trabajador : COLOR.contratista} />
+                    <Text style={styles.resultadoTexto} numberOfLines={1}>{u.nombre} {u.apellidos} · {u.rol}{u.estado_cuenta === 'Bloqueada' ? ' · BLOQUEADA' : ''}</Text>
+                  </TouchableOpacity>
+                ))}
+                {encontrados.usuarios.length > 5 && <TouchableOpacity onPress={() => { setPestañaActiva('Usuarios'); setBusquedaUsuarios(busquedaGlobal); }}><Text style={styles.verTodos}>Ver las {encontrados.usuarios.length} personas ›</Text></TouchableOpacity>}
+
+                {encontrados.obras.length > 0 && <Text style={styles.seccionChica}>OBRAS ({encontrados.obras.length})</Text>}
+                {encontrados.obras.slice(0, 5).map(c => (
+                  <TouchableOpacity key={c.id} style={styles.resultado} onPress={() => abrirExpediente(c)}>
+                    <Ionicons name="construct-outline" size={20} color={estiloEstado(c.estado).color} />
+                    <Text style={styles.resultadoTexto} numberOfLines={1}>{c.titulo_vacante || c.vacante?.titulo} · {estiloEstado(c.estado).texto}</Text>
+                  </TouchableOpacity>
+                ))}
+                {encontrados.obras.length > 5 && <TouchableOpacity onPress={() => { setPestañaActiva('Obras'); setVistaObras('Contratos'); setBusquedaObras(busquedaGlobal); }}><Text style={styles.verTodos}>Ver las {encontrados.obras.length} obras ›</Text></TouchableOpacity>}
+
+                {encontrados.vacantes.length > 0 && <Text style={styles.seccionChica}>VACANTES ({encontrados.vacantes.length})</Text>}
+                {encontrados.vacantes.slice(0, 5).map(v => (
+                  <TouchableOpacity key={v.id} style={styles.resultado} onPress={() => setVacanteExpandida(v)}>
+                    <Ionicons name="briefcase-outline" size={20} color="#7C3AED" />
+                    <Text style={styles.resultadoTexto} numberOfLines={1}>{v.titulo} · {v.contratista} · {v.estado === 'Activa' ? 'Abierta' : 'Cerrada'}</Text>
+                  </TouchableOpacity>
+                ))}
+                {encontrados.vacantes.length > 5 && <TouchableOpacity onPress={() => { setPestañaActiva('Obras'); setVistaObras('Vacantes'); setBusquedaVacantes(busquedaGlobal); }}><Text style={styles.verTodos}>Ver las {encontrados.vacantes.length} vacantes ›</Text></TouchableOpacity>}
+
+                {encontrados.reportes.length > 0 && <Text style={styles.seccionChica}>REPORTES ({encontrados.reportes.length})</Text>}
+                {encontrados.reportes.slice(0, 5).map(q => (
+                  <TouchableOpacity key={q.id} style={styles.resultado} onPress={() => { setPestañaActiva('Reportes'); setVistaReportes(q.estado === 'Resuelta' ? 'Historial' : 'Pendientes'); setFiltroTipo('todos'); setBusquedaReportes(q.id); }}>
+                    <Ionicons name={TIPOS_REPORTE[tipoDe(q)].icono} size={20} color={TIPOS_REPORTE[tipoDe(q)].color} />
+                    <Text style={styles.resultadoTexto} numberOfLines={1}>{q.motivo} · {q.nombre_reportante} · {q.estado === 'Resuelta' ? 'Resuelto' : 'Por resolver'}</Text>
+                  </TouchableOpacity>
+                ))}
+                {encontrados.reportes.length > 5 && <TouchableOpacity onPress={() => { setPestañaActiva('Reportes'); setFiltroTipo('todos'); setBusquedaReportes(busquedaGlobal); }}><Text style={styles.verTodos}>Ver los {encontrados.reportes.length} reportes ›</Text></TouchableOpacity>}
+              </View>
+            )}
+
+            {misCasos > 0 && (
+              <TouchableOpacity style={[styles.tarjeta, styles.filaAtender, { borderLeftColor: '#1D4ED8' }]} activeOpacity={0.8}
+                onPress={() => { setPestañaActiva('Reportes'); setVistaReportes('Pendientes'); setFiltroTipo('todos'); setAsignacion('mios'); }}>
+                <View style={[styles.iconoAtender, { backgroundColor: '#1D4ED8' }]}><Ionicons name="person" size={20} color="#FFF" /></View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.tituloTarjeta}>Mis casos: {misCasos}</Text>
+                  <Text style={styles.datoChico}>Reportes que tomaste y todavía no resuelves.</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color="#9CA3AF" />
+              </TouchableOpacity>
+            )}
+
             {quejasPendientes.length === 0 ? (
               <View style={[styles.tarjeta, { alignItems: 'center', paddingVertical: 30 }]}>
                 <Ionicons name="checkmark-circle" size={56} color={COLOR.resuelto} />
@@ -569,7 +799,7 @@ export default function AdminDashboard() {
                 <Text style={styles.seccion}>Tienes {quejasPendientes.length} reporte{quejasPendientes.length > 1 ? 's' : ''} por resolver</Text>
                 {(Object.keys(TIPOS_REPORTE) as TipoReporte[]).filter(t => pendientesDe(t) > 0).map(t => (
                   <TouchableOpacity key={t} style={[styles.tarjeta, styles.filaAtender, { borderLeftColor: TIPOS_REPORTE[t].color }]} activeOpacity={0.8}
-                    onPress={() => { setPestañaActiva('Reportes'); setVistaReportes('Pendientes'); setFiltroTipo(t); }}>
+                    onPress={() => { setPestañaActiva('Reportes'); setVistaReportes('Pendientes'); setFiltroTipo(t); setAsignacion('todos'); setBusquedaReportes(''); }}>
                     <View style={[styles.iconoAtender, { backgroundColor: TIPOS_REPORTE[t].color }]}><Ionicons name={TIPOS_REPORTE[t].icono} size={20} color="#FFF" /></View>
                     <View style={{ flex: 1 }}>
                       <Text style={styles.tituloTarjeta}>{TIPOS_REPORTE[t].texto}: {pendientesDe(t)}</Text>
@@ -601,9 +831,22 @@ export default function AdminDashboard() {
                 <Chip key={t} texto={TIPOS_REPORTE[t].texto} color={TIPOS_REPORTE[t].color} activo={filtroTipo === t} onPress={() => setFiltroTipo(t)} />
               ))}
             </ScrollView>
-            {reportesVisibles.length > 0 ? reportesVisibles.map(q => <TarjetaReporte key={q.id} queja={q} />) : (
-              <Text style={styles.vacioTexto}>{vistaReportes === 'Pendientes' ? 'No hay reportes por resolver aquí.' : 'Todavía no hay reportes resueltos aquí.'}</Text>
-            )}
+            {buscador(busquedaReportes, setBusquedaReportes, 'Buscar por persona, obra, motivo o ID...')}
+            {/* QUIÉN LO ATIENDE (VARIOS ADMINS SIN PISARSE), DE CUÁNDO Y EN QUÉ ORDEN */}
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
+              {vistaReportes === 'Pendientes' && <>
+                <Chip texto="Todos" color="#1D4ED8" activo={asignacion === 'todos'} onPress={() => setAsignacion('todos')} />
+                <Chip texto={`Mis casos (${misCasos})`} color="#1D4ED8" activo={asignacion === 'mios'} onPress={() => setAsignacion('mios')} />
+                <Chip texto="Sin asignar" color="#1D4ED8" activo={asignacion === 'sin_asignar'} onPress={() => setAsignacion('sin_asignar')} />
+              </>}
+              <Chip texto="Cualquier fecha" color="#6B7280" activo={periodoReportes === 'todo'} onPress={() => setPeriodoReportes('todo')} />
+              <Chip texto="Últimos 7 días" color="#6B7280" activo={periodoReportes === '7'} onPress={() => setPeriodoReportes('7')} />
+              <Chip texto="Últimos 30 días" color="#6B7280" activo={periodoReportes === '30'} onPress={() => setPeriodoReportes('30')} />
+              <Chip texto={ordenReportes === 'antiguos' ? (vistaReportes === 'Pendientes' ? 'Más viejos primero' : 'Más nuevos primero') : (vistaReportes === 'Pendientes' ? 'Más nuevos primero' : 'Más viejos primero')} color={COLOR.marino} activo={false}
+                onPress={() => setOrdenReportes(ordenReportes === 'antiguos' ? 'recientes' : 'antiguos')} />
+            </ScrollView>
+            {paginado(`reportes-${vistaReportes}`, reportesVisibles, q => <TarjetaReporte key={q.id} queja={q} />,
+              vistaReportes === 'Pendientes' ? 'No hay reportes por resolver con estos filtros.' : 'No hay reportes resueltos con estos filtros.')}
           </View>
         )}
 
@@ -611,16 +854,24 @@ export default function AdminDashboard() {
         {pestañaActiva === 'Usuarios' && (
           <View>
             <Segmentos opciones={[{ valor: 'Trabajadores', texto: `Trabajadores (${trabajadores.length})` }, { valor: 'Contratistas', texto: `Contratistas (${contratistas.length})` }]} valor={vistaUsuarios} onCambio={setVistaUsuarios} />
-            <View style={styles.buscador}>
-              <Ionicons name="search" size={18} color="#9CA3AF" />
-              <TextInput style={styles.buscadorInput} placeholder="Buscar por nombre, correo, oficio, ciudad..." value={busquedaUsuarios} onChangeText={setBusquedaUsuarios} />
-            </View>
-            <View style={{ flexDirection: 'row', marginBottom: 12 }}>
+            {buscador(busquedaUsuarios, setBusquedaUsuarios, 'Nombre, correo, teléfono, usuario, oficio, ciudad o ID...')}
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 8 }}>
               <Chip texto={soloBloqueadas ? 'Solo bloqueadas ✓' : 'Solo bloqueadas'} color={COLOR.bloqueada} activo={soloBloqueadas} onPress={() => setSoloBloqueadas(!soloBloqueadas)} />
+              {([['recientes', 'Más recientes'], ['calificacion', 'Mejor calificados'], ['reportes', 'Más reportados'], ['nombre', 'Por nombre']] as const).map(([valor, textoOrden]) => (
+                <Chip key={valor} texto={textoOrden} color={COLOR.marino} activo={ordenUsuarios === valor} onPress={() => setOrdenUsuarios(valor)} />
+              ))}
+            </ScrollView>
+            {/* FILTRO POR ESTADO DE LA REPÚBLICA (SOLO LOS ESTADOS DONDE HAY USUARIOS) */}
+            <View style={styles.pickerCaja}>
+              <Picker selectedValue={estadoUsuarios} onValueChange={setEstadoUsuarios}>
+                <Picker.Item label="Todos los estados" value="" />
+                {estadosConUsuarios.map(e => <Picker.Item key={e} label={e} value={e} />)}
+              </Picker>
             </View>
-            {usuariosVisibles.map(u => {
+            {paginado(`usuarios-${vistaUsuarios}`, usuariosVisibles, u => {
               const colorRol = u.rol === 'Trabajador' ? COLOR.trabajador : COLOR.contratista;
               const reportes = reportesContra(u.id);
+              const tardias = cancelacionesTardiasDe(u.id);
               return (
                 <TouchableOpacity key={u.id} style={[styles.tarjeta, { borderLeftWidth: 5, borderLeftColor: u.estado_cuenta === 'Bloqueada' ? COLOR.bloqueada : colorRol }]} activeOpacity={0.8} onPress={() => setUsuarioExpandido(u)}>
                   <View style={{ flexDirection: 'row', alignItems: 'center' }}>
@@ -632,6 +883,7 @@ export default function AdminDashboard() {
                         <Etiqueta texto={u.rol.toUpperCase()} color={colorRol} fondo={`${colorRol}1A`} />
                         <Etiqueta texto={`★ ${u.calificacion || '0.0'}`} color="#B45309" fondo="#FEF3C7" />
                         {reportes.length > 0 && <Etiqueta texto={`${reportes.length} reporte${reportes.length > 1 ? 's' : ''} en contra`} color="#DC2626" fondo="#FEE2E2" />}
+                        {tardias > 0 && <Etiqueta texto={`${tardias} cancelación${tardias > 1 ? 'es' : ''} tardía${tardias > 1 ? 's' : ''}`} color="#B45309" fondo="#FEF3C7" />}
                         {u.estado_cuenta === 'Bloqueada' && <Etiqueta texto="BLOQUEADA" color={COLOR.bloqueada} />}
                       </View>
                     </View>
@@ -639,8 +891,7 @@ export default function AdminDashboard() {
                   </View>
                 </TouchableOpacity>
               );
-            })}
-            {usuariosVisibles.length === 0 && <Text style={styles.vacioTexto}>No hay usuarios con esa búsqueda.</Text>}
+            }, 'No hay usuarios con esa búsqueda.')}
           </View>
         )}
 
@@ -654,11 +905,12 @@ export default function AdminDashboard() {
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
                   {GRUPOS_OBRA.map(g => <Chip key={g.clave} texto={`${g.texto} (${enGrupo(g)})`} color={g.color} activo={grupoObra === g.clave} onPress={() => setGrupoObra(g.clave)} />)}
                 </ScrollView>
-                {contratosVisibles.map(c => {
+                {buscador(busquedaObras, setBusquedaObras, 'Obra, trabajador, contratista, lugar o ID...')}
+                {paginado(`obras-${grupoObra}`, contratosVisibles, c => {
                   const estilo = estiloEstado(c.estado);
                   const ajustes = ajustesDePago(c);
                   return (
-                    <View key={c.id} style={[styles.tarjeta, { borderLeftWidth: 5, borderLeftColor: estilo.color }]}>
+                    <TouchableOpacity key={c.id} activeOpacity={0.85} onPress={() => abrirExpediente(c)} style={[styles.tarjeta, { borderLeftWidth: 5, borderLeftColor: estilo.color }]}>
                       <View style={styles.filaEntre}>
                         <Text style={[styles.tituloTarjeta, { flex: 1 }]} numberOfLines={2}>{c.titulo_vacante || c.vacante?.titulo}</Text>
                         <Etiqueta texto={estilo.texto} color={estilo.color} />
@@ -668,15 +920,25 @@ export default function AdminDashboard() {
                       <Text style={styles.datoChico}>Pago acordado: {c.vacante?.pago || 'A convenir'}{c.fecha_inicio ? ` · Empezó: ${c.fecha_inicio}` : ''}{c.fecha_fin ? ` · Terminó: ${c.fecha_fin}` : ''}</Text>
                       <Text style={styles.datoChico}>Pagado y confirmado: ${totalRecibido(c).toLocaleString('es-MX')}{pagosPorConfirmar(c).length ? ` · ${pagosPorConfirmar(c).length} pago(s) sin confirmar` : ''}</Text>
                       {ajustes.map((a: any, i: number) => <Text key={i} style={[styles.datoChico, { color: a.tipo === 'extra' ? '#047857' : '#B91C1C', fontWeight: 'bold' }]}>{a.tipo === 'extra' ? '+' : '−'} {a.texto}</Text>)}
-                      {(c.reportes_abiertos || 0) > 0 && <View style={{ marginTop: 6 }}><Etiqueta texto={`${c.reportes_abiertos} reporte(s) por resolver`} color={COLOR.pendiente} fondo="#FEF3C7" /></View>}
-                    </View>
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 6 }}>
+                        {(c.reportes_abiertos || 0) > 0 && <Etiqueta texto={`${c.reportes_abiertos} reporte(s) por resolver`} color={COLOR.pendiente} fondo="#FEF3C7" />}
+                        {c.cancelacion_tardia && <Etiqueta texto="CANCELACIÓN TARDÍA" color="#B91C1C" fondo="#FEE2E2" />}
+                        {c.republicada && <Etiqueta texto="EL CONTRATISTA LA VOLVIÓ A PUBLICAR" color="#1D4ED8" fondo="#DBEAFE" />}
+                      </View>
+                      <Text style={[styles.datoChico, { color: COLOR.marino, fontWeight: 'bold' }]}>Ver expediente completo ›</Text>
+                    </TouchableOpacity>
                   );
-                })}
-                {contratosVisibles.length === 0 && <Text style={styles.vacioTexto}>No hay obras aquí.</Text>}
+                }, 'No hay obras aquí con esa búsqueda.')}
               </View>
             ) : (
               <View>
-                {vacantes.map(v => (
+                {buscador(busquedaVacantes, setBusquedaVacantes, 'Título, contratista, oficio, lugar o ID...')}
+                <View style={{ flexDirection: 'row', marginBottom: 12 }}>
+                  <Chip texto="Todas" color="#7C3AED" activo={filtroVacantes === 'todas'} onPress={() => setFiltroVacantes('todas')} />
+                  <Chip texto="Abiertas" color="#7C3AED" activo={filtroVacantes === 'Activa'} onPress={() => setFiltroVacantes('Activa')} />
+                  <Chip texto="Cerradas" color="#6B7280" activo={filtroVacantes === 'Cerrada'} onPress={() => setFiltroVacantes('Cerrada')} />
+                </View>
+                {paginado('vacantes', vacantesVisibles, v => (
                   <TouchableOpacity key={v.id} style={[styles.tarjeta, { borderLeftWidth: 5, borderLeftColor: v.estado === 'Activa' ? '#7C3AED' : '#9CA3AF' }]} activeOpacity={0.8} onPress={() => setVacanteExpandida(v)}>
                     <View style={styles.filaEntre}>
                       <Text style={[styles.tituloTarjeta, { flex: 1 }]} numberOfLines={2}>{v.titulo}</Text>
@@ -685,8 +947,7 @@ export default function AdminDashboard() {
                     <Text style={styles.datoChico}>Publicó: {conRol(v.contratista, 'contratista')} · {new Date(v.fecha_publicacion).toLocaleDateString('es-MX')}</Text>
                     <Text style={styles.datoChico}>{[v.ubicacion, v.estado_republica].filter(Boolean).join(', ')} · {v.pago} · {v.cupo_actual || 0}/{v.cupo_total || 1} contratados</Text>
                   </TouchableOpacity>
-                ))}
-                {vacantes.length === 0 && <Text style={styles.vacioTexto}>No hay vacantes publicadas.</Text>}
+                ), 'No hay vacantes con esa búsqueda.')}
               </View>
             )}
           </View>
@@ -796,8 +1057,27 @@ export default function AdminDashboard() {
                     {conRol(quejaResolviendo.nombre_reportante, quejaResolviendo.rol_reportante)} reportó a {conRol(quejaResolviendo.acusado, quejaResolviendo.rol_acusado)}
                   </Text>
 
+                  {/* ANTES DE DECIDIR: ¿YA HABLARON LOS DOS? */}
+                  {esUsuarioReal(quejaResolviendo.id_acusado) && (
+                    <View style={[styles.descripcion, { marginTop: 0, marginBottom: 12, backgroundColor: quejaResolviendo.version_acusado ? '#ECFDF5' : '#FFFBEB' }]}>
+                      <Text style={[styles.versionTitulo, { color: quejaResolviendo.version_acusado ? '#065F46' : '#92400E' }]}>
+                        {quejaResolviendo.version_acusado
+                          ? `${conRol(quejaResolviendo.acusado, quejaResolviendo.rol_acusado)} ya dio su versión y ${quejaResolviendo.version_acusado.de_acuerdo ? 'ESTÁ de acuerdo' : 'NO está de acuerdo'}.`
+                          : `${conRol(quejaResolviendo.acusado, quejaResolviendo.rol_acusado)} todavía no da su versión. Lo justo es esperarla, salvo que el caso sea urgente.`}
+                      </Text>
+                    </View>
+                  )}
+                  {quejaResolviendo.cancelacion_tardia && (
+                    <Text style={[styles.datoChico, { color: '#B91C1C', fontWeight: 'bold', marginBottom: 10 }]}>
+                      Cancelación tardía: se canceló con menos de 48 horas de aviso{quejaResolviendo.horas_aviso < 0 ? ' (la obra ya había empezado)' : ''}.
+                    </Text>
+                  )}
+
                   <Text style={styles.modalEtiqueta}>1. Tu decisión</Text>
-                  {opcionesDeReporte(quejaResolviendo).map(op => (
+                  {opcionesDeReporte(quejaResolviendo)
+                    // SI EL CONTRATISTA YA VOLVIÓ A PUBLICAR LA OBRA, YA NO SE PUEDE REGRESAR A ESTE TRABAJADOR
+                    .filter(op => op.valor !== 'admin_reactivar' || !contratos.find(c => c.id === quejaResolviendo.id_contrato)?.republicada)
+                    .map(op => (
                     <TouchableOpacity key={op.valor} style={[styles.opcion, decision === op.valor && { borderColor: op.color, backgroundColor: `${op.color}14` }]} onPress={() => setDecision(op.valor)}>
                       <Ionicons name={decision === op.valor ? 'radio-button-on' : 'radio-button-off'} size={20} color={op.color} />
                       <Text style={styles.opcionTexto}>{op.texto}</Text>
@@ -831,6 +1111,32 @@ export default function AdminDashboard() {
                         </TouchableOpacity>
                       </View>
                       <TextInput style={styles.modalInput} keyboardType="numeric" placeholder="O escribe otra cantidad" value={devolver} onChangeText={t => setDevolver(t.replace(/[^0-9]/g, ''))} />
+                    </>
+                  )}
+
+                  {/* CANCELACIÓN: ¿QUIÉN TUVO LA CULPA? (QUIEN CANCELÓ, LA OTRA PARTE O NADIE) Y SI SE LE BLOQUEA */}
+                  {esCancelacion(quejaResolviendo) && (
+                    <>
+                      <Text style={[styles.modalEtiqueta, { marginTop: 8 }]}>¿Quién tuvo la culpa de la cancelación?</Text>
+                      {([
+                        ['quien_cancelo', `${conRol(quejaResolviendo.nombre_reportante, quejaResolviendo.rol_reportante)}, quien canceló`],
+                        ['otra_parte', `${conRol(quejaResolviendo.acusado, quejaResolviendo.rol_acusado)} (la otra parte lo provocó)`],
+                        ['nadie', 'Nadie (causa de fuerza mayor o de común acuerdo)'],
+                      ] as const).map(([valor, textoOpcion]) => (
+                        <TouchableOpacity key={valor} style={[styles.opcion, responsable === valor && { borderColor: COLOR.marino, backgroundColor: '#EEF2FF' }]} onPress={() => { setResponsable(valor); if (valor === 'nadie') setBloquear(false); }}>
+                          <Ionicons name={responsable === valor ? 'radio-button-on' : 'radio-button-off'} size={20} color={COLOR.marino} />
+                          <Text style={styles.opcionTexto}>{textoOpcion}</Text>
+                        </TouchableOpacity>
+                      ))}
+                      {(responsable === 'quien_cancelo' || responsable === 'otra_parte') && (
+                        <View style={styles.filaBloquear}>
+                          <Text style={[styles.opcionTexto, { marginLeft: 0 }]}>
+                            Bloquear la cuenta de {responsable === 'quien_cancelo' ? conRol(quejaResolviendo.nombre_reportante, quejaResolviendo.rol_reportante) : conRol(quejaResolviendo.acusado, quejaResolviendo.rol_acusado)}
+                            {cancelacionesTardiasDe(responsable === 'quien_cancelo' ? quejaResolviendo.id_reportante : quejaResolviendo.id_acusado) > 1 ? ` (ya lleva ${cancelacionesTardiasDe(responsable === 'quien_cancelo' ? quejaResolviendo.id_reportante : quejaResolviendo.id_acusado)} cancelaciones tardías)` : ''}
+                          </Text>
+                          <Switch value={bloquear} onValueChange={setBloquear} trackColor={{ true: '#FCA5A5', false: '#E5E7EB' }} thumbColor={bloquear ? COLOR.bloqueada : '#FFF'} />
+                        </View>
+                      )}
                     </>
                   )}
 
@@ -989,6 +1295,92 @@ export default function AdminDashboard() {
         </View>
       </Modal>
 
+      {/* EXPEDIENTE DE UNA OBRA: PARTES, DÍAS, CANCELACIÓN, DINERO, REPORTES Y BITÁCORA, TODO EN UN LUGAR */}
+      <Modal visible={!!obraExpandida} animationType="slide" transparent onRequestClose={() => setObraExpandida(null)}>
+        <View style={styles.modalFondoOscuro}>
+          {obraExpandida && (() => {
+            const c = obraExpandida;
+            const estilo = estiloEstado(c.estado);
+            const reportesObra = reportesDeObra(c.id);
+            const canceloTrabajador = c.cancelado_por === c.id_trabajador;
+            return (
+              <SafeAreaView style={styles.panelCompleto}>
+                <View style={[styles.panelEncabezado, { backgroundColor: estilo.color }]}>
+                  <Text style={[styles.panelTitulo, { flex: 1 }]} numberOfLines={1}>Expediente de la obra</Text>
+                  <TouchableOpacity onPress={() => setObraExpandida(null)}><Ionicons name="close-circle" size={28} color="#FFF" /></TouchableOpacity>
+                </View>
+                <ScrollView contentContainerStyle={{ padding: 16 }}>
+                  <View style={styles.tarjeta}>
+                    <Text style={styles.nombreAdmin}>{c.titulo_vacante || c.vacante?.titulo}</Text>
+                    <View style={{ alignSelf: 'center', marginTop: 6 }}><Etiqueta texto={estilo.texto} color={estilo.color} /></View>
+                    <Text style={[styles.datoChico, { textAlign: 'center' }]}>ID: {c.id}</Text>
+                    <TouchableOpacity onPress={() => verPerfilDe(c.id_trabajador)}><Text style={[styles.datoChico, { marginTop: 8 }]}><Text style={{ color: COLOR.trabajador, fontWeight: 'bold' }}>Trabajador:</Text> {c.nombre_trabajador || '—'} ›</Text></TouchableOpacity>
+                    <TouchableOpacity onPress={() => verPerfilDe(c.id_contratista)}><Text style={styles.datoChico}><Text style={{ color: COLOR.contratista, fontWeight: 'bold' }}>Contratista:</Text> {c.contratista || c.vacante?.contratista || '—'} ›</Text></TouchableOpacity>
+                    {textoDiasObra(c) ? <Text style={styles.datoChico}>Días de trabajo: {textoDiasObra(c)}</Text> : null}
+                    <Text style={styles.datoChico}>{c.fecha_postulacion ? `Trato iniciado: ${c.fecha_postulacion}` : ''}{c.fecha_inicio ? ` · Aceptado: ${c.fecha_inicio}` : ''}{c.fecha_fin ? ` · Terminó: ${c.fecha_fin}` : ''}</Text>
+                    {c.vacante?.ubicacion ? <Text style={styles.datoChico}>Lugar: {c.vacante.lugar_texto || c.vacante.ubicacion}</Text> : null}
+                  </View>
+
+                  {c.motivo_cancelacion ? (
+                    <View style={[styles.tarjeta, { borderLeftWidth: 5, borderLeftColor: '#DC2626' }]}>
+                      <Text style={styles.seccionChica}>CANCELACIÓN</Text>
+                      <Text style={styles.datoChico}>La canceló: {canceloTrabajador ? conRol(c.nombre_trabajador, 'trabajador') : conRol(c.contratista, 'contratista')}{c.timestamp_cancelacion ? ` · ${new Date(c.timestamp_cancelacion).toLocaleString('es-MX')}` : ''}</Text>
+                      <Text style={[styles.descripcionTexto, { marginTop: 4 }]}>"{c.motivo_cancelacion}"</Text>
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 6 }}>
+                        {c.cancelacion_tardia ? <Etiqueta texto="TARDÍA (MENOS DE 48 H)" color="#B91C1C" fondo="#FEE2E2" /> : c.cancelacion_tardia === false ? <Etiqueta texto="CON TIEMPO" color={COLOR.resuelto} fondo="#ECFDF5" /> : null}
+                        {c.republicada && <Etiqueta texto="EL CONTRATISTA LA VOLVIÓ A PUBLICAR" color="#1D4ED8" fondo="#DBEAFE" />}
+                      </View>
+                    </View>
+                  ) : null}
+
+                  <View style={styles.tarjeta}>
+                    <Text style={styles.seccionChica}>DINERO</Text>
+                    <Text style={styles.datoChico}>Pago acordado: {c.vacante?.pago || 'A convenir'}</Text>
+                    <Text style={styles.datoChico}>Registrado por el contratista: ${dineroYaPagado(c).toLocaleString('es-MX')} · Confirmado por el trabajador: ${totalRecibido(c).toLocaleString('es-MX')}</Text>
+                    {(c.pagos || []).map((p: any) => (
+                      <TouchableOpacity key={p.id} style={styles.filaPago} onPress={() => p.comprobante && setFotoGrande(p.comprobante)}>
+                        <Text style={[styles.datoChico, { flex: 1, marginTop: 0 }]}>${Number(p.monto).toLocaleString('es-MX')} · {p.concepto} · {p.fecha}</Text>
+                        <Text style={[styles.datoChico, { marginTop: 0, fontWeight: 'bold', color: p.estado === 'Recibido' ? COLOR.resuelto : p.estado === 'No recibido' ? COLOR.bloqueada : COLOR.pendiente }]}>{p.estado}{p.comprobante ? ' ›' : ''}</Text>
+                      </TouchableOpacity>
+                    ))}
+                    {ajustesDePago(c).map((a: any, i: number) => <Text key={i} style={[styles.datoChico, { color: a.tipo === 'extra' ? '#047857' : '#B91C1C', fontWeight: 'bold' }]}>{a.tipo === 'extra' ? '+' : '−'} {a.texto}</Text>)}
+                  </View>
+
+                  <Text style={styles.seccion}>Reportes de esta obra ({reportesObra.length})</Text>
+                  {reportesObra.length === 0 ? <Text style={styles.vacioTexto}>No tiene reportes.</Text> : reportesObra.map(q => (
+                    <TouchableOpacity key={q.id} style={[styles.tarjeta, { borderLeftWidth: 5, borderLeftColor: TIPOS_REPORTE[tipoDe(q)].color }]}
+                      onPress={() => { setObraExpandida(null); setPestañaActiva('Reportes'); setVistaReportes(q.estado === 'Resuelta' ? 'Historial' : 'Pendientes'); setFiltroTipo('todos'); setAsignacion('todos'); setPeriodoReportes('todo'); setBusquedaReportes(q.id); }}>
+                      <View style={styles.filaEntre}>
+                        <Text style={[styles.tituloTarjeta, { flex: 1, fontSize: 15 }]}>{q.motivo}</Text>
+                        <Etiqueta texto={q.estado === 'Resuelta' ? 'RESUELTO' : 'POR RESOLVER'} color={q.estado === 'Resuelta' ? COLOR.resuelto : COLOR.pendiente} />
+                      </View>
+                      <Text style={styles.datoChico}>{conRol(q.nombre_reportante, q.rol_reportante)} · {new Date(q.fecha_reporte).toLocaleDateString('es-MX')} · {q.version_acusado ? 'Las dos versiones' : 'Falta la versión de la otra parte'}</Text>
+                      {q.resolucion ? <Text style={[styles.datoChico, { color: '#065F46' }]} numberOfLines={3}>Decisión: {q.resolucion}</Text> : null}
+                    </TouchableOpacity>
+                  ))}
+
+                  <Text style={styles.seccion}>Bitácora {bitacoraObra ? `(${bitacoraObra.length} días)` : ''}</Text>
+                  {!bitacoraObra ? <ActivityIndicator color={COLOR.marino} /> : bitacoraObra.length === 0 ? <Text style={styles.vacioTexto}>Todavía no hay días registrados.</Text>
+                    : [...bitacoraObra].reverse().map(d => {
+                      const e = estiloDia(d);
+                      return (
+                        <View key={d.id} style={[styles.tarjeta, { flexDirection: 'row', alignItems: 'center', borderLeftWidth: 5, borderLeftColor: e.color }]}>
+                          <View style={{ flex: 1 }}>
+                            <Text style={[styles.tituloTarjeta, { fontSize: 15 }]}>{d.fecha} · <Text style={{ color: e.color }}>{e.texto}</Text></Text>
+                            {d.nota ? <Text style={styles.datoChico} numberOfLines={3}>{d.nota}</Text> : null}
+                            {d.distancia_obra_km != null ? <Text style={styles.datoChico}>GPS: a {Number(d.distancia_obra_km).toFixed(2)} km de la obra{d.lugar_registro ? ` (${d.lugar_registro})` : ''}</Text> : null}
+                          </View>
+                          {d.evidencia ? <TouchableOpacity onPress={() => setFotoGrande(d.evidencia)}><Image source={{ uri: d.evidencia }} style={styles.miniatura} /></TouchableOpacity> : null}
+                        </View>
+                      );
+                    })}
+                </ScrollView>
+              </SafeAreaView>
+            );
+          })()}
+        </View>
+      </Modal>
+
       {/* EDITAR MI PERFIL */}
       <Modal visible={modalEditarAdmin} animationType="slide" transparent onRequestClose={() => setModalEditarAdmin(false)}>
         <KeyboardAvoidingView style={styles.modalFondo} behavior="padding">
@@ -1088,6 +1480,14 @@ const styles = StyleSheet.create({
   vacioTexto: { color: '#9CA3AF', textAlign: 'center', marginVertical: 12 },
 
   buscador: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF', borderRadius: 12, paddingHorizontal: 12, borderWidth: 1, borderColor: '#E5E7EB', marginBottom: 10 },
+  conteo: { fontSize: 13, color: '#9CA3AF', marginBottom: 8, fontWeight: '600' },
+  verMas: { backgroundColor: '#FFF', borderRadius: 12, paddingVertical: 12, alignItems: 'center', borderWidth: 1, borderColor: '#D1D5DB', marginBottom: 12 },
+  verMasTexto: { color: COLOR.marino, fontWeight: 'bold', fontSize: 15 },
+  resultado: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF', borderRadius: 10, padding: 10, marginBottom: 6 },
+  resultadoTexto: { flex: 1, marginLeft: 8, fontSize: 15, color: '#1F2937' },
+  verTodos: { color: '#2563EB', fontWeight: 'bold', fontSize: 14, marginBottom: 10, marginLeft: 4 },
+  versionTitulo: { fontSize: 13, fontWeight: 'bold', color: '#374151', marginBottom: 4 },
+  filaPago: { flexDirection: 'row', alignItems: 'center', borderTopWidth: 1, borderTopColor: '#F3F4F6', paddingVertical: 6, marginTop: 4 },
   buscadorInput: { flex: 1, paddingVertical: 10, marginLeft: 8, fontSize: 16, color: '#1F2937' },
   avatar: { width: 48, height: 48, borderRadius: 24, marginRight: 12, backgroundColor: '#E5E7EB' },
   datoChico: { fontSize: 14, color: '#6B7280', marginTop: 2 },

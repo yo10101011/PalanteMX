@@ -642,6 +642,7 @@ const trabajaronJuntos = async (env: Env, idA: string, idB: string) => {
 //   Propuesta ──┼─► Aceptada (En Proceso) ─► Por confirmar fin ─► Finalizada
 //               │            │                      │
 //               └─► Rechazada └──── cancelar ───────┴─► Suspendida ─► (admin) Cancelada, o reactivada
+//                                 (con 48 h de aviso, antes de empezar y sin pagos: directo a Cancelada)
 // =========================================================================
 const ESTADOS = {
   PENDIENTE: 'Pendiente',
@@ -702,6 +703,7 @@ const gestionarContrato = async (request: Request, env: Env) => {
 
       const resultado = await aplicarAccion(env, {
         accion: datos.accion, motivo: datos.motivo, datos, uid, esAdmin, soyTrabajador, soyContratista,
+        nombreAdmin: esAdmin ? texto(perfiles[`Administradores/${uid}`]?.fields.nombre) || 'Administrador' : '',
         rutaContrato, contrato, estado, idTrabajador, idContratista, idVacante, vacante,
       });
       if (resultado) return resultado;
@@ -811,7 +813,33 @@ type DatosContrato = {
   monto?: unknown; concepto?: unknown; comprobante?: unknown; // REGISTRAR UN PAGO
   id_pago?: unknown; recibido?: unknown;             // CONFIRMAR (O NO) UN PAGO
   devolver?: unknown;                                // ADMIN CANCELA: PESOS QUE EL TRABAJADOR DEBE DEVOLVER DE LO YA PAGADO
-  inicio_obra?: unknown; fin_obra?: unknown; dias_obra?: unknown; // CAMBIAR LOS DÍAS DE TRABAJO DE LA OBRA
+  inicio_obra?: unknown; fin_obra?: unknown; dias_obra?: unknown; // CAMBIAR LOS DÍAS DE TRABAJO (O AL VOLVER A PUBLICAR)
+  id_queja?: unknown; de_acuerdo?: unknown;          // DAR MI VERSIÓN DE UN REPORTE
+  responsable?: unknown; bloquear?: unknown;         // ADMIN DECIDE UNA CANCELACIÓN: QUIÉN TUVO LA CULPA Y SI SE LE BLOQUEA
+};
+
+// AVISO MÍNIMO PARA CANCELAR UNA OBRA SIN SANCIÓN: 48 HORAS ANTES DE QUE EMPIECE (EL MESERO QUE CANCELA EL MISMO DÍA
+// DEJA AL CONTRATISTA SIN NADIE). CON MENOS AVISO, O CON LA OBRA YA EMPEZADA, ES UNA CANCELACIÓN TARDÍA.
+const HORAS_AVISO_CANCELACION = 48;
+// HORAS QUE FALTAN PARA LAS 00:00 (HORA DEL CENTRO DE MÉXICO) DEL DÍA EN QUE EMPIEZA LA OBRA. NEGATIVO = YA EMPEZÓ.
+// LAS OBRAS VIEJAS SIN DÍA DE INICIO CUENTAN COMO YA EMPEZADAS.
+const horasParaInicio = (contrato: DocumentoLeido) => {
+  const inicio = texto(contrato.fields.inicio_obra);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(inicio)) return -1;
+  return (new Date(`${inicio}T00:00:00-06:00`).getTime() - Date.now()) / 3_600_000;
+};
+const textoAviso = (horas: number) => horas < 0 ? 'con la obra ya empezada'
+  : horas < 24 ? `${Math.max(Math.floor(horas), 0)} horas antes de empezar`
+  : `${Math.floor(horas / 24)} día(s) antes de empezar`;
+
+// DÍAS DE TRABAJO QUE MANDA LA APP (AL CAMBIARLOS O AL VOLVER A PUBLICAR). null = NO VIENE UN DÍA DE INICIO VÁLIDO
+const DIAS_VALIDOS = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
+const leerDiasObra = (datos: DatosContrato) => {
+  const inicio = datos.inicio_obra;
+  if (typeof inicio !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(inicio)) return null;
+  const fin = typeof datos.fin_obra === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(datos.fin_obra) ? datos.fin_obra : '';
+  const dias = Array.isArray(datos.dias_obra) ? DIAS_VALIDOS.filter(d => (datos.dias_obra as unknown[]).includes(d)) : [];
+  return { inicio, fin, dias };
 };
 
 // DINERO QUE EL CONTRATISTA YA PAGÓ EN UNA OBRA (REGISTRADO, CONFIRMADO O POR CONFIRMAR; NO CUENTA LO MARCADO COMO NO RECIBIDO)
@@ -836,6 +864,7 @@ const fotosValidas = (env: Env, valor: unknown): string[] => {
 
 type ContextoAccion = {
   accion: unknown; motivo: unknown; datos: DatosContrato; uid: string; esAdmin: boolean; soyTrabajador: boolean; soyContratista: boolean;
+  nombreAdmin: string; // NOMBRE DEL ADMIN QUE DECIDE (QUEDA EN EL HISTORIAL DEL REPORTE)
   rutaContrato: string; contrato: DocumentoLeido; estado: string;
   idTrabajador: string; idContratista: string; idVacante: string; vacante: DocumentoLeido | null;
 };
@@ -1026,7 +1055,12 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
       ], c.estado);
     }
 
-    // ---- CANCELAR: CUALQUIERA DE LOS DOS. SE LEVANTA UN REPORTE AUTOMÁTICO Y LA OBRA QUEDA SUSPENDIDA ----
+    // ---- CANCELAR: CUALQUIERA DE LOS DOS ----
+    //   A TIEMPO (48 HORAS O MÁS ANTES DE EMPEZAR, SIN DINERO PAGADO NI REPORTES ABIERTOS): SE CANCELA AL MOMENTO,
+    //     SIN SANCIÓN, Y SE LIBERA EL LUGAR EN LA VACANTE.
+    //   TARDE (MENOS DE 48 HORAS, O LA OBRA YA EMPEZÓ, O YA HAY DINERO DE POR MEDIO): SE LEVANTA UN REPORTE AUTOMÁTICO,
+    //     LA OBRA QUEDA SUSPENDIDA Y EL ADMIN DECIDE (DESPUÉS DE ESCUCHAR LAS DOS VERSIONES).
+    //   EN LOS DOS CASOS AL CONTRATISTA SE LE OFRECE VOLVER A PUBLICAR LA OBRA PARA BUSCAR A OTRO TRABAJADOR.
     case 'cancelar': {
       if (!c.soyTrabajador && !c.soyContratista) return prohibido('Este contrato no es tuyo.');
       // SOLO UNA OBRA EN CURSO SE PUEDE CANCELAR: SI YA SE MARCÓ COMO TERMINADA, TERMINADA O CANCELADA, YA NO
@@ -1034,21 +1068,102 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
       if (!textoValido(c.motivo, 1000)) return responder(400, { error: 'Explica por qué cancelas la obra.' });
 
       const nombres = await nombresDePartes(env, c.idTrabajador, c.idContratista);
-      const idQueja = crypto.randomUUID().replace(/-/g, '');
-      const quienCancela = c.soyTrabajador ? nombres.trabajador : nombres.contratista;
+      const quienCancela = c.soyTrabajador ? `${nombres.trabajador} (trabajador)` : `${nombres.contratista} (contratista)`;
+      const motivo = c.motivo.trim();
       // SI EL CONTRATISTA YA HABÍA PAGADO ALGO (P. EJ. LA MITAD AL INICIO), ESE DINERO NO SE PIERDE: QUEDA EN EL REPORTE
       // Y EL ADMIN DECIDE SI EL TRABAJADOR LO DEVUELVE (TODO O UNA PARTE) O SE LO QUEDA POR LO QUE YA TRABAJÓ
       const pagado = dineroYaPagado(c.contrato);
-      const avisoDinero = pagado > 0 ? ` El contratista ya había pagado $${pagado.toLocaleString('es-MX')}; el administrador decidirá si se devuelven.` : '';
+      const horas = horasParaInicio(c.contrato);
+      const tardia = horas < HORAS_AVISO_CANCELACION;
+      const cuando = textoAviso(horas);
+      // AL CONTRATISTA (SI NO FUE ÉL QUIEN CANCELÓ) SE LE PREGUNTA SI QUIERE VOLVER A PUBLICAR LA OBRA
+      const ofrecerRepublicar = c.soyTrabajador ? ' ¿Quieres volver a publicar la obra para buscar a otro trabajador? Toca aquí.' : '';
 
+      if (!tardia && pagado === 0 && numero(c.contrato.fields.reportes_abiertos) === 0) {
+        const writes: Record<string, unknown>[] = [
+          cambioContrato({ estado: ESTADOS.CANCELADA, cancelado_por: c.uid, motivo_cancelacion: motivo, timestamp_cancelacion: ahora.getTime(), cancelacion_tardia: false, horas_aviso: Math.floor(horas), cupo_liberado: true }),
+          nuevaNotificacion(env, otraParte, 'Obra cancelada con aviso', `${quienCancela} canceló "${tituloObra}" ${cuando}, a tiempo. Motivo: "${motivo}".${ofrecerRepublicar}`,
+            { destino: { abrir: c.soyTrabajador ? 'republicar' : 'obra', id_contrato: idContrato }, tipo: 'contrato', importante: true }),
+        ];
+        if (c.vacante) writes.push({
+          update: { name: `${nombreBase}/Vacantes/${c.idVacante}`, fields: aCamposFirestore({ cupo_actual: Math.max(numero(c.vacante.fields.cupo_actual) - 1, 0) }) },
+          updateMask: { fieldPaths: ['cupo_actual'] },
+          currentDocument: { updateTime: c.vacante.updateTime },
+        });
+        return guardar(writes, ESTADOS.CANCELADA);
+      }
+
+      const idQueja = crypto.randomUUID().replace(/-/g, '');
+      const avisoDinero = pagado > 0 ? ` El contratista ya había pagado $${pagado.toLocaleString('es-MX')}; el administrador decidirá si se devuelven.` : '';
       return guardar([
-        cambioContrato({ estado: ESTADOS.SUSPENDIDA, cancelado_por: c.uid, motivo_cancelacion: c.motivo.trim(), id_queja: idQueja, timestamp_cancelacion: ahora.getTime() }, [contadorReportes(1)]),
+        cambioContrato({ estado: ESTADOS.SUSPENDIDA, cancelado_por: c.uid, motivo_cancelacion: motivo, id_queja: idQueja, timestamp_cancelacion: ahora.getTime(), cancelacion_tardia: tardia, horas_aviso: Math.floor(horas) }, [contadorReportes(1)]),
         nuevoReporte(idQueja, nombres, {
-          tipo: 'cancelacion', motivo: 'Cancelación de obra', fotos_evidencia: fotosValidas(env, c.datos.fotos), monto_pagado: pagado,
-          descripcion: `${c.motivo.trim()}${pagado > 0 ? `\n\nDINERO YA PAGADO: el contratista ya había pagado $${pagado.toLocaleString('es-MX')} antes de la cancelación.` : ''}`,
+          tipo: 'cancelacion', motivo: tardia ? 'Cancelación tardía de obra' : 'Cancelación de obra', fotos_evidencia: fotosValidas(env, c.datos.fotos), monto_pagado: pagado,
+          cancelacion_tardia: tardia, horas_aviso: Math.floor(horas),
+          descripcion: `${motivo}\n\nAVISO: canceló ${cuando}${tardia ? ` (menos de las ${HORAS_AVISO_CANCELACION} horas que se piden).` : '.'}${pagado > 0 ? `\nDINERO YA PAGADO: el contratista ya había pagado $${pagado.toLocaleString('es-MX')} antes de la cancelación.` : ''}`,
         }),
-        nuevaNotificacion(env, otraParte, 'Obra suspendida', `${quienCancela} (${c.soyTrabajador ? 'trabajador' : 'contratista'}) canceló la obra "${tituloObra}". Queda suspendida mientras el administrador revisa el caso.${avisoDinero} Te avisaremos su decisión.`, { destino: { abrir: 'obra', id_contrato: idContrato }, tipo: 'reporte', importante: true }),
+        nuevaNotificacion(env, otraParte, 'Obra suspendida: da tu versión', `${quienCancela} canceló la obra "${tituloObra}" ${cuando}. Motivo: "${motivo}". Queda suspendida mientras el administrador revisa el caso.${avisoDinero} Toca aquí para dar tu versión antes de que decida.${c.soyTrabajador ? ' También puedes volver a publicar la obra desde Obras para buscar a otro trabajador.' : ''}`,
+          { destino: { abrir: 'reportes', id_contrato: idContrato }, tipo: 'reporte', importante: true }),
       ], ESTADOS.SUSPENDIDA);
+    }
+
+    // ---- EL CONTRATISTA VUELVE A PUBLICAR UNA OBRA QUE SE CANCELÓ, PARA BUSCAR A OTRO TRABAJADOR ----
+    // LA VACANTE SE ABRE OTRA VEZ EN LA BOLSA DE TRABAJO CON LOS NUEVOS DÍAS Y SE LIBERA EL LUGAR QUE OCUPABA ESTE CONTRATO.
+    // SI LA OBRA SIGUE SUSPENDIDA, EL ADMIN YA SOLO PUEDE CANCELARLA (EL CONTRATISTA YA NO QUIERE A ESTE TRABAJADOR),
+    // PERO SIGUE DECIDIENDO LO DEL DINERO Y QUIÉN TUVO LA CULPA.
+    case 'republicar': {
+      if (!c.soyContratista) return prohibido('Solo el contratista puede volver a publicar su obra.');
+      if (c.estado !== ESTADOS.SUSPENDIDA && c.estado !== ESTADOS.CANCELADA) return noSePuede();
+      if (c.contrato.fields.republicada?.booleanValue) return responder(409, { error: 'Ya volviste a publicar esta obra. Búscala en Mis anuncios.' });
+      if (!c.vacante) return responder(404, { error: 'La vacante de esta obra ya no existe. Publica una nueva desde Mis anuncios.' });
+      const dias = leerDiasObra(c.datos);
+      if (!dias) return responder(400, { error: 'Elige el día en que empieza la obra.' });
+      const hoy = ahora.toLocaleDateString('en-CA', { timeZone: 'America/Mexico_City' });
+      if (dias.inicio < hoy) return responder(400, { error: 'La obra no puede empezar en un día que ya pasó.' });
+      if (dias.fin && dias.fin < dias.inicio) return responder(400, { error: 'El último día no puede ser antes del primero.' });
+
+      const liberar = !c.contrato.fields.cupo_liberado?.booleanValue;
+      const cupoActual = Math.max(numero(c.vacante.fields.cupo_actual) - (liberar ? 1 : 0), 0);
+      return guardar([
+        cambioContrato({ republicada: true, cupo_liberado: true }),
+        {
+          update: { name: `${nombreBase}/Vacantes/${c.idVacante}`, fields: aCamposFirestore({ estado: 'Activa', cupo_actual: cupoActual, inicio_obra: dias.inicio, fin_obra: dias.fin, dias_obra: dias.dias, fecha_publicacion: ahora.toISOString(), fecha_republicada: ahora.toISOString() }) },
+          // fecha_publicacion NUEVA: ASÍ SALE HASTA ARRIBA EN LA BOLSA DE TRABAJO, COMO RECIÉN PUBLICADA
+          updateMask: { fieldPaths: ['estado', 'cupo_actual', 'inicio_obra', 'fin_obra', 'dias_obra', 'fecha_publicacion', 'fecha_republicada'] },
+          currentDocument: { updateTime: c.vacante.updateTime },
+        },
+        nuevaNotificacion(env, c.idTrabajador, 'La obra se volvió a publicar', `${await nombreDe('contratista')} (contratista) volvió a publicar "${tituloObra}" para buscar a otro trabajador.${c.estado === ESTADOS.SUSPENDIDA ? ' El administrador sigue revisando la cancelación y el dinero; te avisaremos su decisión.' : ''}`,
+          { destino: { abrir: 'obra', id_contrato: idContrato }, tipo: 'contrato' }),
+      ], c.estado);
+    }
+
+    // ---- LA PERSONA REPORTADA DA SU VERSIÓN (CON FOTOS) Y DICE SI ESTÁ DE ACUERDO CON LO QUE PIDE LA OTRA ----
+    // ASÍ EL ADMIN DECIDE CON LAS DOS VERSIONES Y NO SOLO CON LA DE QUIEN REPORTÓ. UNA SOLA VEZ, MIENTRAS NO SE RESUELVA.
+    case 'dar_version': {
+      if (!c.soyTrabajador && !c.soyContratista) return prohibido('Este contrato no es tuyo.');
+      if (!textoValido(c.datos.id_queja, 128) || !/^\w+$/.test(c.datos.id_queja)) return responder(400, { error: 'Falta el reporte.' });
+      if (!textoValido(c.motivo, 1500)) return responder(400, { error: 'Escribe tu versión de lo que pasó.' });
+      const rutaQueja = `Quejas_Soporte/${c.datos.id_queja}`;
+      const queja = (await leerDocumentos(env, [rutaQueja]))[rutaQueja];
+      if (!queja || texto(queja.fields.id_contrato) !== idContrato) return responder(404, { error: 'No se encontró ese reporte en esta obra.' });
+      if (texto(queja.fields.id_acusado) !== c.uid) return prohibido('Solo la persona reportada puede dar su versión.');
+      if (texto(queja.fields.estado) === 'Resuelta') return responder(409, { error: 'El administrador ya resolvió este reporte.' });
+      if (queja.fields.version_acusado) return responder(409, { error: 'Ya diste tu versión de este reporte.' });
+
+      const nombres = await nombresDePartes(env, c.idTrabajador, c.idContratista);
+      const yo = c.soyTrabajador ? `${nombres.trabajador} (trabajador)` : `${nombres.contratista} (contratista)`;
+      const deAcuerdo = c.datos.de_acuerdo === true;
+      const version = { texto: c.motivo.trim(), fotos: fotosValidas(env, c.datos.fotos), de_acuerdo: deAcuerdo, fecha: ahora.toISOString() };
+      const confirmado = await confirmarEscrituras(env, [
+        {
+          update: { name: `${nombreBase}/${rutaQueja}`, fields: aCamposFirestore({ version_acusado: version }) },
+          updateMask: { fieldPaths: ['version_acusado'] },
+          currentDocument: { updateTime: queja.updateTime },
+        },
+        nuevaNotificacion(env, texto(queja.fields.id_reportante), 'Ya dieron su versión', `${yo} dio su versión del reporte "${texto(queja.fields.motivo)}" en "${tituloObra}"${deAcuerdo ? ' y está de acuerdo con lo que pides' : ' y no está de acuerdo'}. El administrador decidirá con las dos versiones.`,
+          { destino: { abrir: 'reportes', id_contrato: idContrato }, tipo: 'reporte' }),
+      ]);
+      return confirmado ? responder(200, { estado: c.estado }) : null;
     }
 
     // ---- EL CONTRATISTA REVISA UN DÍA DE LA BITÁCORA: CONFIRMA QUE EL TRABAJADOR SÍ LO HIZO, O LO RECHAZA ----
@@ -1095,7 +1210,7 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
           id_entrada: idEntrada,
           fecha_dia: fechaDia,
         }),
-        nuevaNotificacion(env, c.idTrabajador, 'Bitácora rechazada', `${nombres.contratista} rechazó tu bitácora del ${fechaDia} en "${tituloObra}": "${c.motivo.trim()}". El administrador decidirá si ese día cuenta o se descuenta.`, { destino: { abrir: 'bitacora', id_contrato: idContrato }, tipo: 'bitacora', importante: true }),
+        nuevaNotificacion(env, c.idTrabajador, 'Bitácora rechazada', `${nombres.contratista} rechazó tu bitácora del ${fechaDia} en "${tituloObra}": "${c.motivo.trim()}". El administrador decidirá si ese día cuenta o se descuenta. Toca aquí para dar tu versión.`, { destino: { abrir: 'reportes', id_contrato: idContrato }, tipo: 'bitacora', importante: true }),
         cambioContrato({}, [contadorReportes(1)]),
       ], c.estado);
     }
@@ -1111,7 +1226,7 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
       const quienReporta = c.soyTrabajador ? nombres.trabajador : nombres.contratista;
       return guardar([
         nuevoReporte(crypto.randomUUID().replace(/-/g, ''), nombres, { tipo: 'incumplimiento', motivo: categoria, descripcion: c.motivo.trim(), fotos_evidencia: fotosValidas(env, c.datos.fotos) }),
-        nuevaNotificacion(env, otraParte, 'Te reportaron', `${quienReporta} (${c.soyTrabajador ? 'trabajador' : 'contratista'}) levantó un reporte en "${tituloObra}" (${categoria}): "${c.motivo.trim()}". El administrador lo revisará y te avisaremos. Mientras tanto la obra no se puede terminar.`, { destino: { abrir: 'obra', id_contrato: idContrato }, tipo: 'reporte', importante: true }),
+        nuevaNotificacion(env, otraParte, 'Te reportaron', `${quienReporta} (${c.soyTrabajador ? 'trabajador' : 'contratista'}) levantó un reporte en "${tituloObra}" (${categoria}): "${c.motivo.trim()}". Toca aquí para dar tu versión antes de que el administrador decida. Mientras tanto la obra no se puede terminar.`, { destino: { abrir: 'reportes', id_contrato: idContrato }, tipo: 'reporte', importante: true }),
         cambioContrato({}, [contadorReportes(1)]),
       ], c.estado);
     }
@@ -1160,7 +1275,7 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
           descripcion: `El contratista registró un pago de ${montoTexto} (${pago.concepto}) el ${pago.fecha}, pero el trabajador dice que no lo recibió: "${String(c.motivo).trim()}"`,
           foto_evidencia: pago.comprobante,
         }),
-        nuevaNotificacion(env, c.idContratista, 'Pago no recibido', `${nombres.trabajador} (trabajador) dice que no recibió el pago de ${montoTexto} de "${tituloObra}". El administrador revisará el comprobante que subiste.`, { destino: { abrir: 'pagos', id_contrato: idContrato }, tipo: 'reporte', importante: true }),
+        nuevaNotificacion(env, c.idContratista, 'Pago no recibido', `${nombres.trabajador} (trabajador) dice que no recibió el pago de ${montoTexto} de "${tituloObra}". El administrador revisará el comprobante que subiste. Toca aquí para dar tu versión.`, { destino: { abrir: 'reportes', id_contrato: idContrato }, tipo: 'reporte', importante: true }),
       ], c.estado);
     }
 
@@ -1172,42 +1287,69 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
 
       const cancelar = c.accion === 'admin_cancelar';
       const nota = textoValido(c.datos.nota, 1000) ? c.datos.nota.trim() : '';
+      if (!nota) return responder(400, { error: 'Escribe tu decisión para que las dos partes la lean.' });
+      // SI EL CONTRATISTA YA VOLVIÓ A PUBLICAR LA OBRA, YA BUSCA A OTRA PERSONA: NO SE PUEDE REGRESAR A ESTE TRABAJADOR
+      if (!cancelar && c.contrato.fields.republicada?.booleanValue) return responder(409, { error: 'El contratista ya volvió a publicar la obra para buscar a otro trabajador. Solo se puede cancelar (y decidir lo del dinero).' });
+
+      const nombres = await nombresDePartes(env, c.idTrabajador, c.idContratista);
+      const trabajador = `${nombres.trabajador} (trabajador)`;
+      const contratista = `${nombres.contratista} (contratista)`;
 
       // DINERO YA PAGADO: AL CANCELAR, EL ADMIN DICE CUÁNTO DEBE DEVOLVER EL TRABAJADOR (0 = SE LO QUEDA TODO)
       const pagado = dineroYaPagado(c.contrato);
       const devolver = cancelar && typeof c.datos.devolver === 'number' && Number.isFinite(c.datos.devolver) ? Math.round(c.datos.devolver) : 0;
       if (devolver < 0 || devolver > pagado) return responder(400, { error: `Lo que se devuelve debe ser entre $0 y $${pagado.toLocaleString('es-MX')} (lo que ya se pagó).` });
-      let textoDinero = '';
+      let textoDinero = cancelar ? 'No había dinero pagado: nadie le debe nada a nadie.' : '';
       let devolucion: Record<string, unknown> | null = null;
       if (cancelar && pagado > 0) {
-        const nombres = await nombresDePartes(env, c.idTrabajador, c.idContratista);
         textoDinero = devolver > 0
-          ? `${nombres.trabajador} (trabajador) debe devolverle $${devolver.toLocaleString('es-MX')} a ${nombres.contratista} (contratista) de los $${pagado.toLocaleString('es-MX')} que ya había recibido.`
-          : `${nombres.trabajador} (trabajador) se queda con los $${pagado.toLocaleString('es-MX')} que ya había recibido, por el trabajo que hizo.`;
+          ? `${trabajador} debe devolverle $${devolver.toLocaleString('es-MX')} a ${contratista} de los $${pagado.toLocaleString('es-MX')} que ya había recibido.`
+          : `${trabajador} se queda con los $${pagado.toLocaleString('es-MX')} que ya había recibido, por el trabajo que hizo.`;
         if (devolver > 0) devolucion = { tipo: 'devolucion', monto: devolver, texto: textoDinero, motivo: 'Cancelación de obra', fecha: ahora.toLocaleDateString('es-MX', { timeZone: 'America/Mexico_City' }) };
       }
 
-      const aviso = `${cancelar ? `La obra "${tituloObra}" quedó cancelada definitivamente. Ya pueden calificarse.` : `La obra "${tituloObra}" fue reactivada: sigue en curso y ya se puede llenar la bitácora.`}${textoDinero ? `\n\nDinero: ${textoDinero}` : ''}${nota ? `\n\nNota del administrador: ${nota}` : ''}`;
+      // QUIÉN TUVO LA CULPA DE LA CANCELACIÓN ('quien_cancelo' | 'otra_parte' | 'nadie') Y, SI SE PIDE, SE LE BLOQUEA
+      const canceloTrabajador = texto(c.contrato.fields.cancelado_por) === c.idTrabajador;
+      const culpaTrabajador = c.datos.responsable === 'quien_cancelo' ? canceloTrabajador : c.datos.responsable === 'otra_parte' ? !canceloTrabajador : null;
+      const textoCulpa = culpaTrabajador === null ? 'Nadie tuvo la culpa de la cancelación.' : `La cancelación fue responsabilidad de ${culpaTrabajador ? trabajador : contratista}.`;
+      const bloquear = c.datos.bloquear === true && culpaTrabajador !== null;
+      const idBloqueado = culpaTrabajador ? c.idTrabajador : c.idContratista;
+
+      const resolucion = [cancelar ? 'La obra queda CANCELADA definitivamente.' : 'La obra se REACTIVA: sigue en curso con el mismo trabajador.', textoCulpa, textoDinero,
+        bloquear ? `La cuenta de ${culpaTrabajador ? trabajador : contratista} quedó BLOQUEADA.` : ''].filter(Boolean).join(' ');
+      const aviso = `Obra "${tituloObra}". ${resolucion}${cancelar ? ' Ya pueden calificarse.' : ' Ya se puede llenar la bitácora otra vez.'}\n\nNota del administrador: ${nota}`;
       const transformaciones = [contadorReportes(-1)];
       if (devolucion) transformaciones.push({ fieldPath: 'ajustes_pago', appendMissingElements: { values: [aValorFirestore(devolucion)] } } as any);
+      // AL CANCELAR SE LIBERA EL LUGAR EN LA VACANTE (SI NO SE LIBERÓ YA, AL VOLVER A PUBLICARLA)
+      const liberar = cancelar && !c.contrato.fields.cupo_liberado?.booleanValue;
+      const yaRepublicada = !!c.contrato.fields.republicada?.booleanValue;
       const writes: Record<string, unknown>[] = [
-        cambioContrato({ estado: cancelar ? ESTADOS.CANCELADA : ESTADOS.ACTIVA, decidido_por_admin: c.uid }, transformaciones),
-        nuevaNotificacion(env, c.idTrabajador, 'Decisión del administrador', aviso, { destino: { abrir: 'obra', id_contrato: idContrato }, tipo: 'admin', importante: true }),
-        nuevaNotificacion(env, c.idContratista, 'Decisión del administrador', aviso, { destino: { abrir: 'obra', id_contrato: idContrato }, tipo: 'admin', importante: true }),
+        cambioContrato({ estado: cancelar ? ESTADOS.CANCELADA : ESTADOS.ACTIVA, decidido_por_admin: c.uid, ...(cancelar ? { cupo_liberado: true } : {}) }, transformaciones),
+        nuevaNotificacion(env, c.idTrabajador, 'Decisión del administrador', aviso, { destino: { abrir: 'reportes', id_contrato: idContrato }, tipo: 'admin', importante: true }),
+        // SI SE CANCELÓ Y EL CONTRATISTA NO HA VUELTO A PUBLICAR LA OBRA, SE LE PREGUNTA SI QUIERE HACERLO
+        nuevaNotificacion(env, c.idContratista, 'Decisión del administrador',
+          cancelar && !yaRepublicada ? `${aviso}\n\n¿Quieres volver a publicar la obra para buscar a otro trabajador? Toca aquí.` : aviso,
+          { destino: { abrir: cancelar && !yaRepublicada ? 'republicar' : 'reportes', id_contrato: idContrato }, tipo: 'admin', importante: true }),
       ];
-      // AL CANCELAR DEFINITIVAMENTE, SE LIBERA EL LUGAR QUE OCUPABA EN LA VACANTE
-      if (cancelar && c.vacante) {
+      if (liberar && c.vacante) {
         writes.push({
           update: { name: `${nombreBase}/Vacantes/${c.idVacante}`, fields: aCamposFirestore({ cupo_actual: Math.max(numero(c.vacante.fields.cupo_actual) - 1, 0) }) },
           updateMask: { fieldPaths: ['cupo_actual'] },
           currentDocument: { updateTime: c.vacante.updateTime },
         });
       }
+      if (bloquear) {
+        writes.push({
+          update: { name: `${nombreBase}/${culpaTrabajador ? 'Usuarios' : 'Contratistas'}/${idBloqueado}`, fields: aCamposFirestore({ estado_cuenta: 'Bloqueada' }) },
+          updateMask: { fieldPaths: ['estado_cuenta'] },
+          currentDocument: { exists: true },
+        });
+      }
       const idQueja = texto(c.contrato.fields.id_queja);
       if (idQueja) {
         writes.push({
-          update: { name: `${nombreBase}/Quejas_Soporte/${idQueja}`, fields: aCamposFirestore({ estado: 'Resuelta', fecha_resolucion: ahora.toISOString(), resolucion: `${cancelar ? 'Obra cancelada definitivamente.' : 'Obra reactivada.'}${textoDinero ? ` ${textoDinero}` : ''}`, nota_admin: nota }) },
-          updateMask: { fieldPaths: ['estado', 'fecha_resolucion', 'resolucion', 'nota_admin'] },
+          update: { name: `${nombreBase}/Quejas_Soporte/${idQueja}`, fields: aCamposFirestore({ estado: 'Resuelta', fecha_resolucion: ahora.toISOString(), resolucion, nota_admin: nota, atendida_por: c.nombreAdmin, atendida_por_uid: c.uid, responsable: culpaTrabajador === null ? 'nadie' : culpaTrabajador ? 'Trabajador' : 'Contratista' }) },
+          updateMask: { fieldPaths: ['estado', 'fecha_resolucion', 'resolucion', 'nota_admin', 'atendida_por', 'atendida_por_uid', 'responsable'] },
         });
       }
       return guardar(writes, cancelar ? ESTADOS.CANCELADA : ESTADOS.ACTIVA);
@@ -1241,11 +1383,12 @@ const nombresDePartes = async (env: Env, idTrabajador: string, idContratista: st
 //   tipo: 'contrato' | 'bitacora' | 'reporte' | 'admin' | 'resena' (DEFINE EL ÍCONO Y EL COLOR)
 //   importante: SE ABRE SOLO EN CUANTO LLEGA (DECISIONES DEL ADMIN, OBRA SUSPENDIDA...)
 //   chat_con: AL TOCAR EL AVISO SE ABRE EL CHAT CON ESA PERSONA (P. EJ. UNA PROPUESTA NUEVA)
-//   destino: A DÓNDE LLEVA AL TOCARLO ('obra' | 'bitacora' | 'pagos' | 'resenas', Y DE QUÉ CONTRATO)
+//   destino: A DÓNDE LLEVA AL TOCARLO ('obra' | 'bitacora' | 'pagos' | 'resenas', Y DE QUÉ CONTRATO;
+//            'reportes' = LOS REPORTES DE LA OBRA, PARA DAR SU VERSIÓN; 'republicar' = VOLVER A PUBLICAR LA OBRA CANCELADA)
 type ExtraNotificacion = {
   tipo?: string; importante?: boolean;
   chat_con?: { id: string; nombre: string; rol: string };
-  destino?: { abrir: 'obra' | 'bitacora' | 'pagos' | 'resenas'; id_contrato?: string };
+  destino?: { abrir: 'obra' | 'bitacora' | 'pagos' | 'resenas' | 'reportes' | 'republicar'; id_contrato?: string };
 };
 
 const nuevaNotificacion = (env: Env, idUsuario: string, titulo: string, mensaje: string, extra: ExtraNotificacion = {}) => ({
@@ -1415,13 +1558,15 @@ const resolverReporte = async (request: Request, env: Env) => {
       });
     }
 
+    // QUEDA EL NOMBRE DEL ADMIN QUE RESOLVIÓ (YA PUEDE HABER VARIOS: EL PRINCIPAL Y SU PERSONAL)
     const admin = docs['Sistema/AdminProfile'];
+    const atendidaPor = texto(docs[`Administradores/${sesion.uid}`]?.fields.nombre) || (admin && texto(admin.fields.nombre)) || 'Administrador';
     writes.push({
       update: {
         name: `${nombreBase}/${rutaQueja}`,
-        fields: aCamposFirestore({ estado: 'Resuelta', resolucion, nota_admin: nota, descuento, fecha_resolucion: new Date().toISOString(), atendida_por: (admin && texto(admin.fields.nombre)) || 'Administrador' }),
+        fields: aCamposFirestore({ estado: 'Resuelta', resolucion, nota_admin: nota, descuento, fecha_resolucion: new Date().toISOString(), atendida_por: atendidaPor, atendida_por_uid: sesion.uid, responsable: perdedor.rol }),
       },
-      updateMask: { fieldPaths: ['estado', 'resolucion', 'nota_admin', 'descuento', 'fecha_resolucion', 'atendida_por'] },
+      updateMask: { fieldPaths: ['estado', 'resolucion', 'nota_admin', 'descuento', 'fecha_resolucion', 'atendida_por', 'atendida_por_uid', 'responsable'] },
       currentDocument: { updateTime: queja.updateTime },
     });
 
@@ -1430,7 +1575,7 @@ const resolverReporte = async (request: Request, env: Env) => {
     const obra = texto(queja.fields.titulo_obra) ? ` en "${texto(queja.fields.titulo_obra)}"` : '';
     const extra: ExtraNotificacion = {
       tipo: 'admin', importante: true,
-      destino: idContrato ? { abrir: tipo === 'bitacora' ? 'bitacora' : tipo === 'pago' ? 'pagos' : 'obra', id_contrato: idContrato } : undefined,
+      destino: idContrato ? { abrir: 'reportes', id_contrato: idContrato } : undefined,
     };
     if (esUsuario(reportante.id)) writes.push(nuevaNotificacion(env, reportante.id, 'Tu reporte fue resuelto', `Reporte "${motivo}"${obra}: ${resolucion}\n\nNota del administrador: ${nota}`, extra));
     if (esUsuario(acusado.id)) writes.push(nuevaNotificacion(env, acusado.id, 'Se resolvió un reporte sobre ti', `Reporte "${motivo}"${obra}, levantado por ${conRol(reportante)}: ${resolucion}\n\nNota del administrador: ${nota}`, extra));
