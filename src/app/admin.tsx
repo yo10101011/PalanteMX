@@ -48,6 +48,7 @@ import { coincide } from '@/lib/busqueda';
 import { accionContrato, adminPerfiles, gestionarEquipo, ajustesDePago, dineroYaPagado, ESTADOS, estiloDia, estiloEstado, leerBitacora, pagosPorConfirmar, resolverReporte, textoDiasObra, totalRecibido } from '@/lib/contratos';
 import { ESTADOS_MEXICO } from '@/lib/ubicacion';
 import { AnaliticaAdmin } from '@/components/analitica-admin';
+import { ReporteFinanciero } from '@/components/reporte-financiero';
 import { PerfilTrabajador, quitarUnaObra } from '@/components/perfil-trabajador';
 import { VisorFoto } from '@/components/visor-foto';
 
@@ -167,6 +168,8 @@ export default function AdminDashboard() {
   const [contratistas, setContratistas] = useState<any[]>([]);
   const [vacantes, setVacantes] = useState<any[]>([]);
   const [contratos, setContratos] = useState<any[]>([]);
+  // PESTAÑA DATOS: ANALÍTICA DE USO O ESTADO DE RESULTADOS
+  const [vistaDatos, setVistaDatos] = useState<'Uso de la app' | 'Reporte financiero'>('Uso de la app');
   const [quejas, setQuejas] = useState<any[]>([]);
   const [personalSoporte, setPersonalSoporte] = useState<any[]>([]);
 
@@ -825,7 +828,18 @@ export default function AdminDashboard() {
 
         {/* ---------------------------------------------------------------- DATOS: ANALÍTICA CON GRÁFICAS */}
         {pestañaActiva === 'Datos' && (
-          <AnaliticaAdmin trabajadores={trabajadores} contratistas={contratistas} vacantes={vacantes} contratos={contratos} quejas={quejas} />
+          <View>
+            <View style={styles.selectorDatos}>
+              {(['Uso de la app', 'Reporte financiero'] as const).map(v => (
+                <TouchableOpacity key={v} style={[styles.selectorDatosBoton, vistaDatos === v && styles.selectorDatosActivo]} onPress={() => setVistaDatos(v)}>
+                  <Text style={[styles.selectorDatosTexto, vistaDatos === v && { color: COLOR.marino }]}>{v}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            {vistaDatos === 'Uso de la app'
+              ? <AnaliticaAdmin trabajadores={trabajadores} contratistas={contratistas} vacantes={vacantes} contratos={contratos} quejas={quejas} />
+              : <ReporteFinanciero trabajadores={trabajadores} contratistas={contratistas} contratos={contratos} esPrincipal={esPrincipal} />}
+          </View>
         )}
 
         {/* ---------------------------------------------------------------- REPORTES */}
@@ -1439,6 +1453,10 @@ export default function AdminDashboard() {
 }
 
 const styles = StyleSheet.create({
+  selectorDatos: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: '#E5E7EB', marginBottom: 14 },
+  selectorDatosBoton: { flex: 1, paddingVertical: 10, alignItems: 'center', borderBottomWidth: 3, borderBottomColor: 'transparent' },
+  selectorDatosActivo: { borderBottomColor: '#0D2340' },
+  selectorDatosTexto: { fontSize: 15, fontWeight: 'bold', color: '#9CA3AF' },
   container: { flex: 1, backgroundColor: '#F3F4F6' },
   loadingCenter: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F3F4F6' },
   loadingText: { marginTop: 10, color: COLOR.marino, fontWeight: 'bold' },
