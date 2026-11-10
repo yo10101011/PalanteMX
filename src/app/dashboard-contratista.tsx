@@ -17,7 +17,7 @@ import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, query,
 import { auth, db } from '../../firebaseConfig';
 import { subirFotoACloudinary } from '@/lib/cloudinary';
 import { eliminarCuentaEnServidor } from '@/lib/cuenta';
-import { abrirChatCon, accionContrato, AccionContrato, ESTADOS, claveDia, MENSAJES_INICIALES, sePuedeCalificar, sePuedeRepublicar, textoDiasObra, tieneReporteAbierto, diasObraDe, type DiasObra } from '@/lib/contratos';
+import { abrirChatCon, accionContrato, AccionContrato, ESTADOS, avisoRevisionCierre, claveDia, MENSAJES_INICIALES, sePuedeCalificar, sePuedeRepublicar, textoDiasObra, tieneReporteAbierto, diasObraDe, type DiasObra } from '@/lib/contratos';
 import { coincide } from '@/lib/busqueda';
 import { useMensajesSinLeer } from '@/lib/mensajes';
 import { distanciaKm, ESTADOS_MEXICO, nombreDeLugar, PERIODOS_PAGO, textoDias, textoDistancia, textoPrecio, actualizarMiUbicacion, ubicacionPrecisa } from '@/lib/ubicacion';
@@ -102,7 +102,7 @@ export default function DashboardContratista() {
   const [buscandoLugar, setBuscandoLugar] = useState(false);
   const [mapaVisible, setMapaVisible] = useState(false);
   const [vacanteCondiciones, setVacanteCondiciones] = useState<Record<string, string>>({});
-  const [seccionPerfil, setSeccionPerfil] = useState<'Reseñas' | 'Ajustes'>('Reseñas');
+  const [seccionPerfil, setSeccionPerfil] = useState<'Reseñas' | 'Obras' | 'Ajustes'>('Reseñas');
   // SE GUARDA EL ID (NO EL CONTRATO) PARA QUE LA VENTANA DE PAGOS MUESTRE LOS DATOS RECIÉN RECARGADOS
   const [idContratoPagos, setIdContratoPagos] = useState<string | null>(null);
   const [vacanteHorario, setVacanteHorario] = useState('');
@@ -584,7 +584,7 @@ export default function DashboardContratista() {
     const reportes: BotonContrato = { texto: 'Reportes', icono: 'document-text-outline', color: '#7C3AED', onPress: () => setContratoReportes(contrato) };
     const republicar: BotonContrato = { texto: 'Volver a publicar la obra', icono: 'refresh-circle-outline', color: '#2563EB', relleno: true, onPress: () => setContratoRepublicar(contrato) };
     // LOS REPORTES SOLO APARECEN SI LA OBRA TUVO ALGUNO (ABIERTO, POR CANCELACIÓN O CON AJUSTES DE DINERO)
-    const conReportes = tieneReporteAbierto(contrato) || !!contrato.id_queja || (contrato.ajustes_pago || []).length > 0;
+    const conReportes = tieneReporteAbierto(contrato) || !!contrato.id_queja || !!contrato.revision_cierre || (contrato.ajustes_pago || []).length > 0;
     const verReportes = conReportes ? [reportes] : [];
 
     switch (contrato.estado) {
@@ -640,7 +640,7 @@ export default function DashboardContratista() {
             key={contrato.id}
             contrato={contrato}
             otraParte={{ nombre: `${contrato.trabajador?.nombre || ''} ${contrato.trabajador?.apellidos || ''}`.trim() || 'Trabajador', foto: contrato.trabajador?.foto_rostro_url, detalle: contrato.trabajador?.oficio_principal }}
-            aviso={avisoCancelacion(contrato) || aviso}
+            aviso={avisoRevisionCierre(contrato) || avisoCancelacion(contrato) || aviso}
             botones={botonesDelContrato(contrato).filter(b => b.texto !== 'Calificar' || sePuedeCalificar(contrato.estado))}
             deshabilitado={procesando}
           />
@@ -859,7 +859,7 @@ export default function DashboardContratista() {
 
               {seccionContratos('Obras activas', [ESTADOS.ACTIVA])}
               {seccionContratos('Esperando que el trabajador confirme el fin', [ESTADOS.POR_CONFIRMAR_FIN], 'Marcaste la obra como terminada. Falta que el trabajador lo confirme.')}
-              {seccionContratos('Suspendidas', [ESTADOS.SUSPENDIDA], 'Se canceló y el administrador la está revisando.')}
+              {seccionContratos('Suspendidas / en revisión', [ESTADOS.SUSPENDIDA], 'El administrador la está revisando.')}
               {seccionContratos('Historial', [ESTADOS.FINALIZADA, ESTADOS.CANCELADA])}
 
               {!candidatos.some(c => [ESTADOS.ACTIVA, ESTADOS.POR_CONFIRMAR_FIN, ESTADOS.SUSPENDIDA, ESTADOS.FINALIZADA, ESTADOS.CANCELADA].includes(c.estado)) && (
@@ -923,9 +923,9 @@ export default function DashboardContratista() {
             <View>
               {/* DOS SECCIONES, COMO EN EL PERFIL DEL TRABAJADOR, PARA QUE NO SE AMONTONE */}
               <View style={styles.tabsContainer}>
-                {(['Reseñas', 'Ajustes'] as const).map(s => (
+                {(['Reseñas', 'Obras', 'Ajustes'] as const).map(s => (
                   <TouchableOpacity key={s} style={[styles.tabButton, seccionPerfil === s && styles.tabButtonActive]} onPress={() => setSeccionPerfil(s)}>
-                    <Text style={[styles.tabText, seccionPerfil === s && styles.tabTextActive]}>{s === 'Reseñas' ? `Reseñas (${userData?.resenas?.length || 0})` : 'Ajustes'}</Text>
+                    <Text style={[styles.tabText, seccionPerfil === s && styles.tabTextActive]}>{s === 'Reseñas' ? `Reseñas (${userData?.resenas?.length || 0})` : s === 'Obras' ? `Obras (${userData?.obras_realizadas?.length || 0})` : 'Ajustes'}</Text>
                   </TouchableOpacity>
                 ))}
               </View>
@@ -949,6 +949,26 @@ export default function DashboardContratista() {
                 ))
               ) : (
                 <Text style={{color: '#9CA3AF', textAlign: 'center', marginBottom: 20}}>Todavía no tienes reseñas. Aparecen cuando un trabajador te califica al terminar una obra.</Text>
+              ))}
+
+              {/* OBRAS TERMINADAS EN PALANTEMX (LAS AGREGA EL SERVIDOR AL TERMINAR CADA OBRA, A MANO O AUTOMÁTICAMENTE) */}
+              {seccionPerfil === 'Obras' && (userData?.obras_realizadas?.length > 0 ? (
+                [...userData.obras_realizadas].reverse().map((obra: any) => (
+                  <View key={obra.id_contrato} style={styles.reviewCard}>
+                    <View style={styles.reviewHeader}>
+                      {obra.foto_trabajo || obra.fotos?.[0] ? <Image source={{ uri: obra.foto_trabajo || obra.fotos[0] }} style={styles.reviewAvatar} /> : null}
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.reviewName}>{obra.titulo}</Text>
+                        <Text style={styles.reviewDate}>{obra.trabajador}{obra.oficio ? ` • ${obra.oficio}` : ''}</Text>
+                      </View>
+                    </View>
+                    <Text style={styles.reviewComment}>
+                      {[obra.fecha_inicio && obra.fecha_fin ? `Del ${obra.fecha_inicio} al ${obra.fecha_fin}` : obra.fecha_fin ? `Terminó el ${obra.fecha_fin}` : '', `${obra.dias_trabajados || 0} día(s) trabajado(s)`, obra.ubicacion].filter(Boolean).join(' • ')}
+                    </Text>
+                  </View>
+                ))
+              ) : (
+                <Text style={{color: '#9CA3AF', textAlign: 'center', marginBottom: 20}}>Todavía no tienes obras terminadas. Aparecen aquí cuando una obra termina.</Text>
               ))}
 
               {seccionPerfil === 'Ajustes' && (

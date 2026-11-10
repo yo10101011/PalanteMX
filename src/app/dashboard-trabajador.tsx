@@ -14,7 +14,7 @@ import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, query, updateDoc, 
 import { auth, db } from '../../firebaseConfig';
 import { subirFotoACloudinary } from '@/lib/cloudinary';
 import { eliminarCuentaEnServidor } from '@/lib/cuenta';
-import { abrirChatCon, accionContrato, AccionContrato, ESTADOS, MENSAJES_INICIALES, pagosPorConfirmar, sePuedeCalificar, tieneReporteAbierto } from '@/lib/contratos';
+import { abrirChatCon, accionContrato, AccionContrato, ESTADOS, avisoRevisionCierre, MENSAJES_INICIALES, pagosPorConfirmar, sePuedeCalificar, tieneReporteAbierto } from '@/lib/contratos';
 import { useMensajesSinLeer } from '@/lib/mensajes';
 import { DIAS_SEMANA, PERIODOS_PAGO, textoPrecio, actualizarMiUbicacion } from '@/lib/ubicacion';
 import { BarraSuperior } from '@/components/barra-superior';
@@ -373,7 +373,7 @@ export default function DashboardTrabajador() {
     const porConfirmar = pagosPorConfirmar(contrato).length;
     const pagos: BotonContrato = { texto: porConfirmar ? `Pagos (${porConfirmar} por confirmar)` : 'Pagos', icono: 'cash-outline', color: '#059669', relleno: porConfirmar > 0, onPress: () => setIdContratoPagos(contrato.id) };
     // LOS REPORTES SOLO APARECEN SI LA OBRA TUVO ALGUNO (ABIERTO, POR CANCELACIÓN O CON AJUSTES DE DINERO)
-    const conReportes = tieneReporteAbierto(contrato) || !!contrato.id_queja || (contrato.ajustes_pago || []).length > 0;
+    const conReportes = tieneReporteAbierto(contrato) || !!contrato.id_queja || !!contrato.revision_cierre || (contrato.ajustes_pago || []).length > 0;
     const verReportes: BotonContrato[] = conReportes ? [{ texto: 'Reportes', icono: 'document-text-outline', color: '#7C3AED', onPress: () => setContratoReportes(contrato) }] : [];
 
     switch (contrato.estado) {
@@ -430,7 +430,7 @@ export default function DashboardTrabajador() {
               key={contrato.id}
               contrato={contrato}
               otraParte={{ nombre: contratista.nombre, foto: contratista.foto, detalle: 'Contratista' }}
-              aviso={avisoCancelacion(contrato) || aviso}
+              aviso={avisoRevisionCierre(contrato) || avisoCancelacion(contrato) || aviso}
               botones={botonesDelContrato(contrato).filter(b => b.texto !== 'Calificar' || sePuedeCalificar(contrato.estado))}
               deshabilitado={procesando}
             />
@@ -656,7 +656,7 @@ export default function DashboardTrabajador() {
               {seccionContratos('Propuestas para ti', [ESTADOS.PROPUESTA], 'Un contratista te propone esta obra. Ve al chat, platiquen los detalles y, si están de acuerdo, acepta el trato ahí mismo.')}
               {seccionContratos('Obras activas', [ESTADOS.ACTIVA])}
               {seccionContratos('Por confirmar que terminó', [ESTADOS.POR_CONFIRMAR_FIN], 'El contratista marcó la obra como terminada. ¿Confirmas?')}
-              {seccionContratos('Suspendidas', [ESTADOS.SUSPENDIDA], 'Se canceló y el administrador la está revisando.')}
+              {seccionContratos('Suspendidas / en revisión', [ESTADOS.SUSPENDIDA], 'El administrador la está revisando.')}
               {seccionContratos('Historial', [ESTADOS.FINALIZADA, ESTADOS.CANCELADA])}
 
               {contratos.filter(c => c.estado !== ESTADOS.PENDIENTE && c.estado !== ESTADOS.RECHAZADA).length === 0 && (

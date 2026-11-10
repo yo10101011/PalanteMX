@@ -124,7 +124,17 @@ export const leerReportesDeObra = async (idContrato: string) => {
 // TEXTO CORTO DEL TIPO DE REPORTE (PARA LAS PARTES)
 export const TIPO_REPORTE_TEXTO: Record<string, string> = {
   cancelacion: 'Cancelación de la obra', bitacora: 'Día de bitácora rechazado', incumplimiento: 'No se cumplió lo acordado', pago: 'Pago',
+  cierre: 'Faltas al cerrar la obra',
 };
+
+// ---------------------------------------------------------------- CIERRE AUTOMÁTICO
+// AL DÍA SIGUIENTE DEL ÚLTIMO DÍA DE TRABAJO, EL SERVIDOR CIERRA LA OBRA: SI TODO ESTÁ EN ORDEN LA DA POR TERMINADA;
+// SI HUBO FALTAS, DÍAS EN DISPUTA O REPORTES ABIERTOS, LA DEJA SUSPENDIDA EN REVISIÓN (revision_cierre) HASTA QUE
+// EL ADMIN RESUELVA, Y ENTONCES SE TERMINA SOLA Y PASA AL PORTAFOLIO DE LOS DOS.
+export const enRevisionDeCierre = (contrato: any) => contrato?.estado === ESTADOS.SUSPENDIDA && !!contrato?.revision_cierre;
+export const avisoRevisionCierre = (contrato: any) => enRevisionDeCierre(contrato)
+  ? `La obra ya terminó, pero está en revisión del administrador por: ${contrato.revision_cierre.motivo}. Cuando lo resuelva, se dará por terminada y pasará al portafolio.`
+  : '';
 
 // ---------------------------------------------------------------- PAGOS
 // EL DINERO SE PAGA POR FUERA (EFECTIVO O TRANSFERENCIA). EN LA APP QUEDA LA EVIDENCIA: EL CONTRATISTA SUBE EL
@@ -179,7 +189,8 @@ export const accionContrato = async (accion: AccionContrato, datos: DatosAccion 
 //   ajuste: PESOS A FAVOR DE QUIEN TUVO LA RAZÓN (EXTRA PARA EL TRABAJADOR, O DESCUENTO AL TRABAJADOR). 0 = NADA
 //   bloquear: BLOQUEAR LA CUENTA DE QUIEN NO TUVO LA RAZÓN
 export const resolverReporte = (idQueja: string, decision: string, nota: string, ajuste = 0, bloquear = false) =>
-  llamarServidor('/reportes', { id_queja: idQueja, decision, nota, descuento: ajuste, bloquear }, "No se pudo resolver el reporte.");
+  // obra_terminada: ERA EL ÚLTIMO PENDIENTE DE UNA OBRA EN REVISIÓN DE CIERRE Y YA SE DIO POR TERMINADA
+  llamarServidor('/reportes', { id_queja: idQueja, decision, nota, descuento: ajuste, bloquear }, "No se pudo resolver el reporte.") as Promise<{ resuelta: boolean; obra_terminada?: boolean }>;
 
 // EL ADMIN CORRIGE LA COPIA DE RESEÑAS Y OBRAS TERMINADAS QUE GUARDA CADA PERFIL (VER /admin-perfiles EN EL SERVIDOR)
 export const adminPerfiles = (accion: 'eliminar_resena' | 'eliminar_obra' | 'recalcular' | 'recalcular_todos', datos: { uid?: string; id_resena?: string; id_contrato?: string } = {}) =>

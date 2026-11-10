@@ -62,9 +62,10 @@ const COLOR = {
   bloqueada: '#DC2626',
 };
 
-type TipoReporte = 'cancelacion' | 'bitacora' | 'incumplimiento' | 'pago' | 'otro';
+type TipoReporte = 'cancelacion' | 'cierre' | 'bitacora' | 'incumplimiento' | 'pago' | 'otro';
 const TIPOS_REPORTE: Record<TipoReporte, { texto: string; explicacion: string; color: string; icono: keyof typeof Ionicons.glyphMap }> = {
   cancelacion: { texto: 'Obras canceladas', explicacion: 'Alguien canceló una obra. Está detenida hasta que decidas si sigue o se cancela.', color: '#DC2626', icono: 'close-circle' },
+  cierre: { texto: 'Faltas al cerrar obra', explicacion: 'La obra llegó a su último día con faltas. Decide si se descuentan; al resolver, la obra se da por terminada sola.', color: '#B45309', icono: 'calendar' },
   bitacora: { texto: 'Bitácora rechazada', explicacion: 'El contratista dice que un día de la bitácora no es cierto. Decide si el día cuenta.', color: '#EA580C', icono: 'reader' },
   incumplimiento: { texto: 'No cumplió lo acordado', explicacion: 'Una de las partes no cumplió (material, pago, horario...). Decide quién tiene razón.', color: '#7C3AED', icono: 'flag' },
   pago: { texto: 'Pagos', explicacion: 'Un trabajador dice que no le pagaron, o una obra terminó sin pago confirmado.', color: '#0D9488', icono: 'cash' },
@@ -72,7 +73,7 @@ const TIPOS_REPORTE: Record<TipoReporte, { texto: string; explicacion: string; c
 };
 
 const esCancelacion = (q: any) => !!q?.id_contrato && (q.tipo === 'cancelacion' || (!q.tipo && q.motivo === 'Cancelación de obra'));
-const tipoDe = (q: any): TipoReporte => esCancelacion(q) ? 'cancelacion' : (['bitacora', 'incumplimiento', 'pago'].includes(q.tipo) ? q.tipo : 'otro');
+const tipoDe = (q: any): TipoReporte => esCancelacion(q) ? 'cancelacion' : (['cierre', 'bitacora', 'incumplimiento', 'pago'].includes(q.tipo) ? q.tipo : 'otro');
 
 // LOS REPORTES VIEJOS DEL CHAT PUEDEN TRAER 'Desconocido' EN LUGAR DE UN USUARIO
 const esUsuarioReal = (id?: string) => /^[A-Za-z0-9]{10,128}$/.test(id || '');
@@ -95,6 +96,11 @@ const opcionesDeReporte = (q: any): Opcion[] => {
   if (q.tipo === 'bitacora') return [
     { valor: 'a_favor_trabajador', texto: `Tiene razón ${reportado}: el día SÍ cuenta`, color: '#059669', favorece: 'acusado' },
     { valor: 'a_favor_contratista', texto: `Tiene razón ${reporta}: el día NO cuenta`, color: '#DC2626', favorece: 'reportante' },
+  ];
+  // FALTAS AL CERRAR LA OBRA: EN CUALQUIER CASO, AL RESOLVER LA OBRA SE DA POR TERMINADA
+  if (q.tipo === 'cierre') return [
+    { valor: 'procede', texto: `Las faltas son ciertas (puedes descontar del pago a ${reportado})`, color: '#DC2626', favorece: 'reportante' },
+    { valor: 'no_procede', texto: `${reportado} sí trabajó esos días (no se descuenta)`, color: '#059669', favorece: 'acusado' },
   ];
   return [
     { valor: 'procede', texto: `Tiene razón ${reporta}`, color: '#059669', favorece: 'reportante' },
@@ -498,17 +504,18 @@ export default function AdminDashboard() {
     }
     setProcesando(true);
     try {
+      let obraTerminada = false;
       if (esCancelacion(quejaResolviendo)) {
         await accionContrato(decision as 'admin_reactivar' | 'admin_cancelar', {
           id_contrato: quejaResolviendo.id_contrato, nota: notaAdmin.trim(), devolver: decision === 'admin_cancelar' ? parseInt(devolver) || 0 : 0,
           responsable: responsable || 'nadie', bloquear: bloquear && responsable !== 'nadie',
         });
       } else {
-        await resolverReporte(quejaResolviendo.id, decision, notaAdmin.trim(), permiteAjuste ? parseInt(ajuste) || 0 : 0, bloquear);
+        obraTerminada = !!(await resolverReporte(quejaResolviendo.id, decision, notaAdmin.trim(), permiteAjuste ? parseInt(ajuste) || 0 : 0, bloquear))?.obra_terminada;
       }
       setQuejaResolviendo(null);
       await cargarDatosAdmin();
-      Alert.alert("Reporte resuelto", "Se guardó en el historial y se les avisó a las dos partes.");
+      Alert.alert("Reporte resuelto", `Se guardó en el historial y se les avisó a las dos partes.${obraTerminada ? ' La obra ya no tenía más pendientes: quedó terminada y pasó al portafolio de los dos.' : ''}`);
     } catch (error: any) { Alert.alert("No se pudo", error?.message || "Intenta de nuevo."); }
     setProcesando(false);
   };

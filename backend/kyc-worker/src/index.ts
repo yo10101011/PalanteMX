@@ -61,7 +61,7 @@ export default {
   },
 
   // TAREAS AUTOMÁTICAS (CRONS DE wrangler.toml, GRATIS EN CLOUDFLARE):
-  //   9:00 AM (15:00 UTC): PAGOS PENDIENTES Y DÍAS DE TRABAJO QUE SE QUEDARON SIN BITÁCORA
+  //   9:00 AM (15:00 UTC): PAGOS PENDIENTES, DÍAS DE TRABAJO QUE SE QUEDARON SIN BITÁCORA Y CIERRE DE OBRAS YA VENCIDAS
   //   7:00 PM (01:00 UTC): RECORDATORIO A QUIEN HOY TRABAJA Y AÚN NO LLENA SU BITÁCORA
   async scheduled(evento: { cron?: string }, env: Env, ctx: { waitUntil: (promesa: Promise<unknown>) => void }) {
     if (evento?.cron === CRON_TARDE) {
@@ -70,7 +70,11 @@ export default {
     }
     ctx.waitUntil(revisarPagosPendientes(env).catch(error => console.log('Error revisando pagos pendientes', error)));
     ctx.waitUntil(recordarPagosVencidos(env).catch(error => console.log('Error recordando pagos', error)));
-    ctx.waitUntil(registrarBitacorasFaltantes(env).catch(error => console.log('Error revisando bitácoras faltantes', error)));
+    // PRIMERO SE REGISTRAN LAS FALTAS DE AYER Y DESPUÉS SE CIERRAN LAS OBRAS CUYO ÚLTIMO DÍA YA PASÓ (EN ESE ORDEN)
+    ctx.waitUntil((async () => {
+      await registrarBitacorasFaltantes(env).catch(error => console.log('Error revisando bitácoras faltantes', error));
+      await cerrarObrasVencidas(env).catch(error => console.log('Error cerrando obras terminadas', error));
+    })());
   },
 };
 
@@ -989,35 +993,11 @@ const aplicarAccion = async (env: Env, c: ContextoAccion): Promise<Response | nu
       const bloqueo = await bloqueadaPorReporte();
       if (bloqueo) return bloqueo;
       const fechaFin = ahora.toLocaleDateString('es-MX', { timeZone: 'America/Mexico_City' });
-      const writes: Record<string, unknown>[] = [
+      return guardar([
         cambioContrato({ estado: ESTADOS.FINALIZADA, fecha_fin: fechaFin, timestamp_fin: ahora.getTime() }),
         nuevaNotificacion(env, c.idContratista, 'Obra finalizada', `${await nombreDe('trabajador')} confirmó que "${tituloObra}" terminó. Ya pueden calificarse.`, { destino: { abrir: 'obra', id_contrato: idContrato } }),
-      ];
-
-      // LA OBRA TERMINADA SE AGREGA AL PERFIL PÚBLICO DEL TRABAJADOR (obras_realizadas), PARA QUE CUALQUIER CONTRATISTA
-      // LA VEA EN SU PERFIL. LOS CONTRATOS SON PRIVADOS (SOLO LAS DOS PARTES LOS LEEN), POR ESO SE COPIA UN RESUMEN.
-      const rutaTrabajador = `Usuarios/${c.idTrabajador}`;
-      if ((await leerDocumentos(env, [rutaTrabajador]))[rutaTrabajador]) {
-        const resumen = c.contrato.fields.vacante?.mapValue?.fields || {};
-        // FOTOS DE LA BITÁCORA (LOS DÍAS QUE NO SE DESCONTARON) Y DÍAS CONFIRMADOS: SON LA PRUEBA DEL TRABAJO EN SU PORTAFOLIO
-        const dias = await listarBitacora(env, c.rutaContrato);
-        const validos = dias.filter(d => d.fields.asistio?.booleanValue && texto(d.fields.revision) !== REVISION.DESCONTADA);
-        const obra = {
-          fotos: validos.map(d => texto(d.fields.evidencia)).filter(Boolean).slice(-6),
-          dias_trabajados: validos.length,
-          dias_confirmados: validos.filter(d => texto(d.fields.revision) === REVISION.CONFIRMADA).length,
-          id_contrato: idContrato,
-          titulo: tituloObra,
-          contratista: texto(c.contrato.fields.contratista) || texto(resumen.contratista),
-          ubicacion: texto(resumen.ubicacion),
-          pago: texto(resumen.pago),
-          foto_trabajo: texto(resumen.foto_trabajo) || (c.vacante ? texto(c.vacante.fields.foto_trabajo) : ''),
-          fecha_inicio: texto(c.contrato.fields.fecha_inicio),
-          fecha_fin: fechaFin,
-        };
-        writes.push({ transform: { document: `${nombreBase}/${rutaTrabajador}`, fieldTransforms: [{ fieldPath: 'obras_realizadas', appendMissingElements: { values: [aValorFirestore(obra)] } }] } });
-      }
-      return guardar(writes, ESTADOS.FINALIZADA);
+        ...(await escriturasPortafolio(env, c.contrato, idContrato, c.idTrabajador, c.idContratista, c.vacante, fechaFin)),
+      ], ESTADOS.FINALIZADA);
     }
     case 'rechazar_fin': {
       if (!c.soyTrabajador) return prohibido('Solo el trabajador puede decir que la obra aún no termina.');
@@ -1439,8 +1419,172 @@ const listarBitacora = async (env: Env, rutaContrato: string) => {
   const token = await obtenerTokenGoogle(env);
   const respuesta = await fetch(`${urlDocumentos(env)}/${rutaContrato}/Bitacora?pageSize=300`, { headers: { Authorization: `Bearer ${token}` } });
   if (!respuesta.ok) throw new Error(`Firestore respondió ${respuesta.status}: ${await respuesta.text()}`);
-  const { documents = [] } = (await respuesta.json()) as { documents?: { fields?: DocumentoLeido['fields']; createTime: string }[] };
-  return documents.map(d => ({ fields: d.fields || {} })).sort((a, b) => numero(a.fields.timestamp) - numero(b.fields.timestamp));
+  const { documents = [] } = (await respuesta.json()) as { documents?: { name: string; fields?: DocumentoLeido['fields']; createTime: string }[] };
+  // id = EL DÍA ('AAAA-MM-DD')
+  return documents.map(d => ({ id: d.name.split('/').pop() as string, fields: d.fields || {} })).sort((a, b) => numero(a.fields.timestamp) - numero(b.fields.timestamp));
+};
+
+// LA OBRA TERMINADA SE AGREGA AL PERFIL PÚBLICO DE LAS DOS PARTES (obras_realizadas): EL TRABAJADOR LA MUESTRA COMO
+// TRABAJO HECHO Y EL CONTRATISTA COMO OBRA QUE YA CONTRATÓ Y TERMINÓ. LOS CONTRATOS SON PRIVADOS (SOLO LAS DOS PARTES
+// LOS LEEN), POR ESO SE COPIA UN RESUMEN. appendMissingElements NO DUPLICA SI YA ESTABA.
+const escriturasPortafolio = async (env: Env, contrato: DocumentoLeido, idContrato: string, idTrabajador: string, idContratista: string, vacante: DocumentoLeido | null, fechaFin: string) => {
+  const nombreBase = `projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents`;
+  const rutaTrabajador = `Usuarios/${idTrabajador}`;
+  const rutaContratista = `Contratistas/${idContratista}`;
+  const perfiles = await leerDocumentos(env, [rutaTrabajador, rutaContratista]);
+  const resumen = contrato.fields.vacante?.mapValue?.fields || {};
+  // FOTOS DE LA BITÁCORA (LOS DÍAS QUE NO SE DESCONTARON) Y DÍAS CONFIRMADOS: SON LA PRUEBA DEL TRABAJO
+  const dias = await listarBitacora(env, `Postulaciones/${idContrato}`);
+  const validos = dias.filter(d => d.fields.asistio?.booleanValue && texto(d.fields.revision) !== REVISION.DESCONTADA);
+  const comun = {
+    fotos: validos.map(d => texto(d.fields.evidencia)).filter(Boolean).slice(-6),
+    dias_trabajados: validos.length,
+    dias_confirmados: validos.filter(d => texto(d.fields.revision) === REVISION.CONFIRMADA).length,
+    id_contrato: idContrato,
+    titulo: texto(contrato.fields.titulo_vacante),
+    ubicacion: texto(resumen.ubicacion),
+    pago: texto(resumen.pago),
+    foto_trabajo: texto(resumen.foto_trabajo) || (vacante ? texto(vacante.fields.foto_trabajo) : ''),
+    fecha_inicio: texto(contrato.fields.fecha_inicio),
+    fecha_fin: fechaFin,
+  };
+  const agregar = (ruta: string, obra: Record<string, unknown>) =>
+    ({ transform: { document: `${nombreBase}/${ruta}`, fieldTransforms: [{ fieldPath: 'obras_realizadas', appendMissingElements: { values: [aValorFirestore(obra)] } }] } });
+  const writes: Record<string, unknown>[] = [];
+  if (perfiles[rutaTrabajador]) writes.push(agregar(rutaTrabajador, { ...comun, contratista: texto(contrato.fields.contratista) || texto(resumen.contratista) }));
+  if (perfiles[rutaContratista]) {
+    const t = perfiles[rutaTrabajador];
+    writes.push(agregar(rutaContratista, {
+      ...comun,
+      trabajador: texto(contrato.fields.nombre_trabajador) || (t ? `${texto(t.fields.nombre)} ${texto(t.fields.apellidos)}`.trim() : 'Trabajador'),
+      oficio: texto(resumen.oficio) || (t ? texto(t.fields.oficio_principal) : ''),
+      id_trabajador: idTrabajador,
+    }));
+  }
+  return writes;
+};
+
+// ---------------------------------------------------------------- CIERRE AUTOMÁTICO DE OBRAS
+// AL DÍA SIGUIENTE DEL ÚLTIMO DÍA DE TRABAJO (fin_obra), UNA OBRA QUE SIGUE ACTIVA (O ESPERANDO QUE EL TRABAJADOR
+// CONFIRME EL FIN) SE CIERRA SOLA:
+//   - SIN PROBLEMAS (NINGUNA FALTA, NINGÚN DÍA EN DISPUTA, NINGÚN REPORTE ABIERTO) -> Finalizada + portafolio de los dos.
+//   - CON PROBLEMAS -> Suspendida "en revisión" (revision_cierre: { motivo }) y, si hubo faltas, un reporte automático
+//     para el admin. YA NO SE VE COMO ACTIVA. CUANDO EL ADMIN RESUELVE EL ÚLTIMO REPORTE ABIERTO DE LA OBRA, ÉSTA
+//     SE DA POR TERMINADA SOLA (finalizarSiYaNoHayReportes) Y PASA AL PORTAFOLIO.
+// LAS OBRAS SIN DÍA FINAL (fin_obra VACÍO) NO SE CIERRAN SOLAS: LAS TERMINAN EL CONTRATISTA Y EL TRABAJADOR.
+const cerrarObrasVencidas = async (env: Env) => {
+  const nombreBase = `projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents`;
+  const hoy = claveMexico(new Date());
+  const enCurso = await consultarDocumentos(env, 'Postulaciones', [['estado', 'IN', [ESTADOS.ACTIVA, ESTADOS.POR_CONFIRMAR_FIN]]], 300);
+  for (const obra of enCurso) {
+    const fin = texto(obra.fields.fin_obra);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(fin) || fin >= hoy) continue;
+    try {
+      const idTrabajador = texto(obra.fields.id_trabajador);
+      const idContratista = texto(obra.fields.id_contratista);
+      if (!idTrabajador || !idContratista) continue;
+      const titulo = texto(obra.fields.titulo_vacante);
+      const ruta = `Postulaciones/${obra.id}`;
+      const bitacora = await listarBitacora(env, ruta);
+      const registrados = new Map(bitacora.map(d => [d.id, d]));
+
+      // FALTAS: DÍAS DE TRABAJO SIN BITÁCORA, O CON "NO ASISTÍ" (TAMBIÉN LAS QUE PUSO EL SISTEMA), QUE EL CONTRATISTA
+      // NO CONFIRMÓ NI EL ADMIN YA DECIDIÓ
+      const faltas: string[] = [];
+      const inicio = texto(obra.fields.inicio_obra);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(inicio)) {
+        for (let d = new Date(`${inicio}T12:00:00-06:00`), n = 0; claveMexico(d) <= fin && n < 400; d = new Date(d.getTime() + 86_400_000), n++) {
+          const clave = claveMexico(d);
+          if (!esDiaDeTrabajo(obra, clave)) continue;
+          const dia = registrados.get(clave);
+          const revision = dia ? texto(dia.fields.revision) : '';
+          if (!dia || (!dia.fields.asistio?.booleanValue && revision !== REVISION.CONFIRMADA && revision !== REVISION.DESCONTADA)) faltas.push(clave);
+        }
+      }
+      const enDisputa = bitacora.filter(d => texto(d.fields.revision) === REVISION.EN_DISPUTA).length;
+      const abiertos = Math.max(numero(obra.fields.reportes_abiertos), 0);
+      const fechaFin = new Date().toLocaleDateString('es-MX', { timeZone: 'America/Mexico_City' });
+      const ultimoDia = fechaLarga(fin);
+
+      // TODO EN ORDEN: SE TERMINA SOLA
+      if (faltas.length === 0 && enDisputa === 0 && abiertos === 0) {
+        await confirmarEscrituras(env, [
+          {
+            update: { name: `${nombreBase}/${ruta}`, fields: aCamposFirestore({ estado: ESTADOS.FINALIZADA, fecha_fin: fechaFin, timestamp_fin: Date.now(), cierre_automatico: true }) },
+            updateMask: { fieldPaths: ['estado', 'fecha_fin', 'timestamp_fin', 'cierre_automatico'] },
+            currentDocument: { updateTime: obra.updateTime },
+          },
+          ...(await escriturasPortafolio(env, obra, obra.id, idTrabajador, idContratista, null, fechaFin)),
+          nuevaNotificacion(env, idTrabajador, 'Obra terminada', `"${titulo}" terminó el ${ultimoDia} sin faltas ni reportes, así que PalanteMX la dio por terminada. Ya está en tu portafolio. Confirma tus pagos en la obra → Pagos y califica al contratista.`, { destino: { abrir: 'obra', id_contrato: obra.id }, tipo: 'contrato', importante: true }),
+          nuevaNotificacion(env, idContratista, 'Obra terminada', `"${titulo}" terminó el ${ultimoDia} sin faltas ni reportes, así que PalanteMX la dio por terminada. Ya está en tu historial. Si falta algún pago, regístralo con su comprobante en la obra → Pagos, y califica al trabajador.`, { destino: { abrir: 'pagos', id_contrato: obra.id }, tipo: 'contrato', importante: true }),
+        ]);
+        continue;
+      }
+
+      // HAY ALGO PENDIENTE: QUEDA SUSPENDIDA EN REVISIÓN (YA NO "ACTIVA") HASTA QUE EL ADMIN LO RESUELVA
+      const partes: string[] = [];
+      if (faltas.length) partes.push(`${faltas.length} día(s) de trabajo sin asistencia registrada`);
+      if (enDisputa) partes.push(`${enDisputa} día(s) de bitácora en disputa`);
+      if (abiertos) partes.push(`${abiertos} reporte(s) sin resolver`);
+      const motivo = partes.join(', ');
+      const nombres = await nombresDePartes(env, idTrabajador, idContratista);
+      const writes: Record<string, unknown>[] = [];
+      let idQueja = '';
+      if (faltas.length) {
+        idQueja = crypto.randomUUID().replace(/-/g, '');
+        writes.push({
+          update: {
+            name: `${nombreBase}/Quejas_Soporte/${idQueja}`,
+            fields: aCamposFirestore({
+              tipo: 'cierre', motivo: 'Faltas al cerrar la obra',
+              descripcion: `La obra terminó el ${ultimoDia}. ${nombres.trabajador} (trabajador) no registró asistencia estos días de trabajo: ${faltas.map(fechaLarga).join(', ')}. Hay que decidir si esos días se descuentan del pago. Al resolver este reporte, la obra se da por terminada.`,
+              dias_falta: faltas,
+              id_reportante: idContratista, nombre_reportante: `${nombres.contratista} (reporte automático de PalanteMX)`, rol_reportante: 'Contratista',
+              id_acusado: idTrabajador, acusado: nombres.trabajador, rol_acusado: 'Trabajador',
+              id_contrato: obra.id, titulo_obra: titulo, estado: 'En Revisión Administrativa', fecha_reporte: new Date().toISOString(),
+            }),
+          },
+          currentDocument: { exists: false },
+        });
+      }
+      writes.push(
+        {
+          update: { name: `${nombreBase}/${ruta}`, fields: aCamposFirestore({ estado: ESTADOS.SUSPENDIDA, revision_cierre: { motivo, fecha: fechaFin, dias_falta: faltas, ...(idQueja ? { id_queja: idQueja } : {}) } }) },
+          updateMask: { fieldPaths: ['estado', 'revision_cierre'] },
+          ...(idQueja ? { updateTransforms: [contadorReportes(1)] } : {}),
+          currentDocument: { updateTime: obra.updateTime },
+        },
+        nuevaNotificacion(env, idTrabajador, 'Obra en revisión', `"${titulo}" terminó el ${ultimoDia}, pero hay pendientes: ${motivo}. La obra queda en revisión del administrador; cuando lo resuelva, se dará por terminada y pasará a tu portafolio.${faltas.length ? ' Toca aquí para dar tu versión.' : ''}`, { destino: { abrir: 'reportes', id_contrato: obra.id }, tipo: 'reporte', importante: true }),
+        nuevaNotificacion(env, idContratista, 'Obra en revisión', `"${titulo}" terminó el ${ultimoDia}, pero hay pendientes: ${motivo}. La obra queda en revisión del administrador; cuando lo resuelva, se dará por terminada. Puedes ver los reportes aquí.`, { destino: { abrir: 'reportes', id_contrato: obra.id }, tipo: 'reporte', importante: true }),
+      );
+      await confirmarEscrituras(env, writes);
+    } catch (error) {
+      console.log('No se pudo cerrar la obra', obra.id, error);
+    }
+  }
+};
+
+// SI LA OBRA ESTABA EN REVISIÓN DE CIERRE Y YA NO LE QUEDAN REPORTES ABIERTOS, SE DA POR TERMINADA Y PASA AL PORTAFOLIO
+const finalizarSiYaNoHayReportes = async (env: Env, idContrato: string) => {
+  const nombreBase = `projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents`;
+  const ruta = `Postulaciones/${idContrato}`;
+  const contrato = (await leerDocumentos(env, [ruta]))[ruta];
+  if (!contrato || texto(contrato.fields.estado) !== ESTADOS.SUSPENDIDA || !contrato.fields.revision_cierre?.mapValue) return;
+  if ((await reportesAbiertosDe(env, idContrato)) > 0) return;
+  const idTrabajador = texto(contrato.fields.id_trabajador);
+  const idContratista = texto(contrato.fields.id_contratista);
+  const titulo = texto(contrato.fields.titulo_vacante);
+  const fechaFin = new Date().toLocaleDateString('es-MX', { timeZone: 'America/Mexico_City' });
+  await confirmarEscrituras(env, [
+    {
+      update: { name: `${nombreBase}/${ruta}`, fields: aCamposFirestore({ estado: ESTADOS.FINALIZADA, fecha_fin: fechaFin, timestamp_fin: Date.now(), cierre_automatico: true, reportes_abiertos: 0 }) },
+      updateMask: { fieldPaths: ['estado', 'fecha_fin', 'timestamp_fin', 'cierre_automatico', 'reportes_abiertos'] },
+      currentDocument: { updateTime: contrato.updateTime },
+    },
+    ...(await escriturasPortafolio(env, contrato, idContrato, idTrabajador, idContratista, null, fechaFin)),
+    nuevaNotificacion(env, idTrabajador, 'Obra terminada', `El administrador resolvió los pendientes de "${titulo}". La obra quedó terminada y ya está en tu portafolio. Ya pueden calificarse.`, { destino: { abrir: 'obra', id_contrato: idContrato }, tipo: 'contrato' }),
+    nuevaNotificacion(env, idContratista, 'Obra terminada', `El administrador resolvió los pendientes de "${titulo}". La obra quedó terminada y ya está en tu historial. Revisa que los pagos estén completos y califica al trabajador.`, { destino: { abrir: 'pagos', id_contrato: idContrato }, tipo: 'contrato' }),
+  ]);
 };
 
 // CAMBIA EL CONTADOR reportes_abiertos DEL CONTRATO (LA APP LO USA PARA AVISAR Y BLOQUEAR EL BOTÓN DE TERMINAR)
@@ -1581,7 +1725,17 @@ const resolverReporte = async (request: Request, env: Env) => {
     if (esUsuario(acusado.id)) writes.push(nuevaNotificacion(env, acusado.id, 'Se resolvió un reporte sobre ti', `Reporte "${motivo}"${obra}, levantado por ${conRol(reportante)}: ${resolucion}\n\nNota del administrador: ${nota}`, extra));
 
     if (!(await confirmarEscrituras(env, writes))) return responder(409, { error: 'El reporte cambió mientras lo resolvías. Recarga e intenta de nuevo.' });
-    return responder(200, { resuelta: true });
+    // SI LA OBRA YA HABÍA TERMINADO Y ESTABA EN REVISIÓN, Y ÉSTE ERA SU ÚLTIMO REPORTE, SE DA POR TERMINADA
+    let terminada = false;
+    if (idContrato) {
+      try {
+        await finalizarSiYaNoHayReportes(env, idContrato);
+        terminada = texto((await leerDocumentos(env, [`Postulaciones/${idContrato}`]))[`Postulaciones/${idContrato}`]?.fields.estado) === ESTADOS.FINALIZADA;
+      } catch (error) {
+        console.log('No se pudo terminar la obra después de resolver el reporte', error);
+      }
+    }
+    return responder(200, { resuelta: true, obra_terminada: terminada });
   } catch (error) {
     console.log('Error resolviendo reporte', error);
     return responder(502, { error: 'No se pudo resolver el reporte. Intenta más tarde.' });
@@ -1784,7 +1938,8 @@ const recalcularPerfil = async (env: Env, uid: string) => {
   const promedio = resenas.length ? resenas.reduce((s, r) => s + r.estrellas, 0) / resenas.length : 0;
   const campos: Record<string, unknown> = { calificacion: promedio.toFixed(1), numero_resenas: resenas.length, resenas };
 
-  if (ruta.startsWith('Usuarios/')) {
+  // (LOS DOS ROLES: EL TRABAJADOR LAS MUESTRA COMO TRABAJO HECHO Y EL CONTRATISTA COMO OBRAS QUE CONTRATÓ)
+  {
     const obras = ((deFirestore(perfil.fields.obras_realizadas) as any[]) || []).filter(o => o?.id_contrato);
     const contratos = obras.length ? await leerDocumentos(env, obras.map(o => `Postulaciones/${o.id_contrato}`)) : {};
     campos.obras_realizadas = obras.filter(o => {
