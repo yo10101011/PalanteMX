@@ -5,6 +5,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Dimensions, Image, Modal, Platform, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { useMargenModal } from '@/lib/margen-modal';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 // FIREBASE
@@ -12,10 +13,12 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { signOut } from 'firebase/auth';
 import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, query, updateDoc, where } from 'firebase/firestore';
 import { auth, db } from '../../firebaseConfig';
+import { salirDeLaCuenta } from '@/lib/sesion';
 import { subirFotoACloudinary } from '@/lib/cloudinary';
 import { eliminarCuentaEnServidor } from '@/lib/cuenta';
 import { abrirChatCon, accionContrato, AccionContrato, ESTADOS, avisoRevisionCierre, MENSAJES_INICIALES, pagosPorConfirmar, sePuedeCalificar, tieneReporteAbierto } from '@/lib/contratos';
 import { useMensajesSinLeer } from '@/lib/mensajes';
+import { confianzaDe } from '@/lib/confianza';
 import { DIAS_SEMANA, PERIODOS_PAGO, textoPrecio, actualizarMiUbicacion } from '@/lib/ubicacion';
 import { BarraSuperior } from '@/components/barra-superior';
 import { registrarActividad } from '@/lib/actividad';
@@ -33,7 +36,10 @@ import { BotonContrato, TarjetaContrato } from '@/components/tarjeta-contrato';
 
 const { width } = Dimensions.get('window');
 
+const MAX_DESCRIPCION = 500; // LETRAS DE LA DESCRIPCIÓN DE SERVICIOS
+
 export default function DashboardTrabajador() {
+  const margenModal = useMargenModal();
   const params = useLocalSearchParams(); // LECTOR DE PARÁMETROS DE NAVEGACIÓN
   const [userData, setUserData] = useState<any>(null);
   const [cargando, setCargando] = useState(true);
@@ -53,6 +59,7 @@ export default function DashboardTrabajador() {
   const [editTarifa, setEditTarifa] = useState(''); // MI PRECIO EN PESOS (SOLO NÚMEROS)
   const [editPeriodo, setEditPeriodo] = useState('por día');
   const [editDias, setEditDias] = useState<string[]>([]); // DÍAS QUE PUEDO TRABAJAR
+  const [editDescripcion, setEditDescripcion] = useState(''); // QUÉ HAGO, EXPERIENCIA, HERRAMIENTA PROPIA...
 
   const [modalTrabajo, setModalTrabajo] = useState(false);
   const [obraEditandoId, setObraEditandoId] = useState<string | null>(null); 
@@ -131,6 +138,7 @@ export default function DashboardTrabajador() {
         setEditTarifa(data.tarifa_monto ? String(data.tarifa_monto) : '');
         setEditPeriodo(data.tarifa_periodo || 'por día');
         setEditDias(Array.isArray(data.dias_disponibles) ? data.dias_disponibles : []);
+        setEditDescripcion(data.descripcion_servicios || '');
 
         // CIUDAD Y ESTADO: LOS QUE EL USUARIO ELIGIÓ. SI NO HAY, SE CALCULAN DEL GPS DEL REGISTRO SIN DETENER LA PANTALLA
         // (SE GUARDA ubicacion_estado PORQUE CON ÉL LOS CONTRATISTAS FILTRAN A LOS TRABAJADORES)
@@ -216,6 +224,7 @@ export default function DashboardTrabajador() {
         oficio_principal: editOficio, ubicacion_texto: editUbicacion, ubicacion_estado: editEstado,
         tarifa_monto: parseInt(editTarifa) || null, tarifa_periodo: editPeriodo,
         dias_disponibles: DIAS_SEMANA.filter(d => editDias.includes(d)),
+        descripcion_servicios: editDescripcion.trim().slice(0, MAX_DESCRIPCION),
       });
       await cargarPerfil(); setModalEditar(false);
     } catch (error: any) { Alert.alert("No se pudo guardar", error?.message || "Intenta de nuevo."); }
@@ -326,7 +335,7 @@ export default function DashboardTrabajador() {
 
   const cerrarSesion = async () => {
     Alert.alert("Cerrar Sesión", "¿Estás seguro que deseas salir?", [
-      { text: "Cancelar", style: "cancel" }, { text: "Sí", onPress: async () => { await signOut(auth); router.replace('/' as any); } }
+      { text: "Cancelar", style: "cancel" }, { text: "Sí", onPress: salirDeLaCuenta }
     ]);
   };
 
@@ -353,6 +362,7 @@ export default function DashboardTrabajador() {
     id: contrato.id_contratista,
     nombre: contrato.contratista_data ? `${contrato.contratista_data.nombre} ${contrato.contratista_data.apellidos}` : (contrato.contratista || 'Contratista'),
     foto: contrato.contratista_data?.foto_rostro_url,
+    telefono: contrato.contratista_data?.numero_telefono,
   });
 
   const calificarContratista = (contrato: any) => {
@@ -429,7 +439,7 @@ export default function DashboardTrabajador() {
             <TarjetaContrato
               key={contrato.id}
               contrato={contrato}
-              otraParte={{ nombre: contratista.nombre, foto: contratista.foto, detalle: 'Contratista' }}
+              otraParte={{ nombre: contratista.nombre, foto: contratista.foto, detalle: 'Contratista', telefono: contratista.telefono }}
               aviso={avisoRevisionCierre(contrato) || avisoCancelacion(contrato) || aviso}
               botones={botonesDelContrato(contrato).filter(b => b.texto !== 'Calificar' || sePuedeCalificar(contrato.estado))}
               deshabilitado={procesando}
@@ -494,6 +504,27 @@ export default function DashboardTrabajador() {
                 onCompletar={() => setModalEditar(true)}
               />
 
+              {/* DESCRIPCIÓN DE MIS SERVICIOS (LA VEN LOS CONTRATISTAS EN MI PERFIL) */}
+              <TouchableOpacity style={{alignSelf: 'stretch', backgroundColor: '#F9FAFB', borderRadius: 12, padding: 12, marginTop: 10, borderWidth: 1, borderColor: '#E5E7EB'}} onPress={() => setModalEditar(true)}>
+                <Text style={{fontSize: 13, fontWeight: 'bold', color: '#6B7280', marginBottom: 4}}>SOBRE MIS SERVICIOS</Text>
+                <Text style={{fontSize: 15, color: userData?.descripcion_servicios ? '#374151' : '#2563EB', lineHeight: 21}}>
+                  {userData?.descripcion_servicios || 'Toca aquí para describir tus servicios: qué haces, tu experiencia y si tienes herramienta propia.'}
+                </Text>
+              </TouchableOpacity>
+
+              {/* MI ÍNDICE DE CONFIANZA (EL MISMO QUE VEN LOS CONTRATISTAS) Y CÓMO SUBIRLO */}
+              {userData && (() => {
+                const c = confianzaDe(userData);
+                return (
+                  <View style={{alignSelf: 'stretch', backgroundColor: c.fondo, borderRadius: 12, padding: 12, marginTop: 10, borderWidth: 1, borderColor: c.color}}>
+                    <Text style={{fontSize: 13, fontWeight: 'bold', color: c.color, marginBottom: 4}}>MI CONFIANZA: {c.titulo.toUpperCase()}</Text>
+                    <Text style={{fontSize: 14, color: '#374151', lineHeight: 20}}>
+                      {c.nivel === 'Nuevo' ? 'Termina tus primeras obras sin faltas ni reportes para subir tu nivel.' : `Cumpliste sin problemas ${userData.cumplimiento?.sin_problemas} de ${userData.cumplimiento?.obras} obras. Llena tu bitácora todos los días y evita cancelar tarde para mantenerlo alto.`}
+                    </Text>
+                  </View>
+                );
+              })()}
+
               <View style={styles.statsRow}>
                 <View style={styles.statBox}><Text style={styles.statNumber}>{userData?.calificacion || '0.0'}</Text><Text style={styles.statLabel}>Calificación</Text></View>
                 <View style={styles.statDivider} />
@@ -527,7 +558,7 @@ export default function DashboardTrabajador() {
                         <TarjetaContrato
                           key={contrato.id}
                           contrato={contrato}
-                          otraParte={{ nombre: datosContratista(contrato).nombre, foto: datosContratista(contrato).foto, detalle: 'Contratista' }}
+                          otraParte={{ nombre: datosContratista(contrato).nombre, foto: datosContratista(contrato).foto, detalle: 'Contratista', telefono: datosContratista(contrato).telefono }}
                           botones={[{ texto: 'Ver bitácora', icono: 'reader-outline', color: '#0D2340', onPress: () => setContratoBitacora(contrato) }]}
                         />
                       ))}
@@ -698,7 +729,7 @@ export default function DashboardTrabajador() {
         </TouchableOpacity>
       </View>
 
-      <Modal visible={!!obraExpandida} animationType="fade" transparent>
+      <Modal visible={!!obraExpandida} animationType="fade" transparent onRequestClose={() => setObraExpandida(null)}>
         <View style={styles.modalBgDark}>
           <View style={[styles.modalContainer, {maxHeight: '90%', padding: 0, overflow: 'hidden'}]}>
             <ScrollView showsVerticalScrollIndicator={false} bounces={false}>
@@ -755,8 +786,8 @@ export default function DashboardTrabajador() {
         </View>
       </Modal>
 
-      <Modal visible={modalEditar} animationType="slide" transparent>
-        <View style={styles.modalBg}>
+      <Modal visible={modalEditar} animationType="slide" transparent onRequestClose={() => setModalEditar(false)}>
+        <View style={[styles.modalBg, margenModal]}>
           <View style={styles.modalContainer}>
             <Text style={styles.modalTitle}>Editar Mi Perfil</Text>
             <ScrollView showsVerticalScrollIndicator={false}>
@@ -787,17 +818,26 @@ export default function DashboardTrabajador() {
               </View>
               <Text style={styles.modalLabel}>Oficio principal</Text>
               <SelectorOficio valor={editOficio} onCambio={setEditOficio} />
-              <View style={styles.modalBtnRow}>
-                <TouchableOpacity style={styles.modalBtnCancel} onPress={() => setModalEditar(false)}><Text style={styles.modalBtnTextC}>Cancelar</Text></TouchableOpacity>
-                <TouchableOpacity style={styles.modalBtnSave} onPress={guardarEdicionPerfil} disabled={procesando}>{procesando ? <ActivityIndicator color="#FFF" /> : <Text style={styles.modalBtnTextS}>Guardar</Text>}</TouchableOpacity>
-              </View>
+              <Text style={styles.modalLabel}>Describe tus servicios (lo ven los contratistas)</Text>
+              <TextInput
+                style={[styles.modalInput, {minHeight: 110, textAlignVertical: 'top'}]}
+                multiline maxLength={MAX_DESCRIPCION}
+                placeholder="Ej. Hago muros, colados y aplanados. 12 años de experiencia. Tengo herramienta propia y trabajo con un ayudante."
+                value={editDescripcion} onChangeText={setEditDescripcion}
+              />
+              <Text style={{fontSize: 13, color: '#9CA3AF', textAlign: 'right', marginTop: -6, marginBottom: 10}}>{editDescripcion.length}/{MAX_DESCRIPCION}</Text>
             </ScrollView>
+            {/* BOTONES FUERA DEL SCROLL: SIEMPRE VISIBLES AUNQUE EL FORMULARIO SEA LARGO */}
+            <View style={styles.modalBtnRow}>
+              <TouchableOpacity style={styles.modalBtnCancel} onPress={() => setModalEditar(false)}><Text style={styles.modalBtnTextC}>Cancelar</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.modalBtnSave} onPress={guardarEdicionPerfil} disabled={procesando}>{procesando ? <ActivityIndicator color="#FFF" /> : <Text style={styles.modalBtnTextS}>Guardar</Text>}</TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
 
-      <Modal visible={modalTrabajo} animationType="slide" transparent>
-        <View style={styles.modalBg}>
+      <Modal visible={modalTrabajo} animationType="slide" transparent onRequestClose={() => setModalTrabajo(false)}>
+        <View style={[styles.modalBg, margenModal]}>
           <View style={[styles.modalContainer, {maxHeight: '90%'}]}>
             <Text style={styles.modalTitle}>{obraEditandoId ? 'Editar Obra' : 'Añadir Proyecto'}</Text>
             <ScrollView showsVerticalScrollIndicator={false}>
@@ -846,8 +886,8 @@ export default function DashboardTrabajador() {
       <ModalReportesObra contrato={contratoReportes} onClose={() => { setContratoReportes(null); cargarPerfil(); }} />
       <ModalPagos contrato={contratos.find(c => c.id === idContratoPagos) || null} rol="trabajador" onClose={() => setIdContratoPagos(null)} onCambio={cargarPerfil} />
 
-      <Modal visible={modalQueja} animationType="fade" transparent>
-        <View style={styles.modalBg}>
+      <Modal visible={modalQueja} animationType="fade" transparent onRequestClose={() => setModalQueja(false)}>
+        <View style={[styles.modalBg, margenModal]}>
           <View style={[styles.modalContainer, {maxHeight: '90%'}]}>
             <View style={{flexDirection: 'row', alignItems: 'center', marginBottom: 15}}><Ionicons name="shield-half" size={24} color="#D32F2F" style={{marginRight: 10}}/><Text style={[styles.modalTitle, {marginBottom: 0}]}>Reporte Oficial</Text></View>
             <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
@@ -905,8 +945,8 @@ export default function DashboardTrabajador() {
         </View>
       </Modal>
 
-      <Modal visible={modalEvaluar} animationType="slide" transparent>
-        <View style={styles.modalBg}>
+      <Modal visible={modalEvaluar} animationType="slide" transparent onRequestClose={() => setModalEvaluar(false)}>
+        <View style={[styles.modalBg, margenModal]}>
           <View style={[styles.modalContainer, {maxHeight: '90%'}]}>
             <Text style={styles.modalTitle}>Evaluar a un Cliente</Text>
             <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
@@ -1051,7 +1091,7 @@ const styles = StyleSheet.create({
   
   modalBg: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', padding: 15 },
   modalBgDark: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', padding: 15 },
-  modalContainer: { backgroundColor: '#FFF', borderRadius: 20, padding: 25, elevation: 10 },
+  modalContainer: { backgroundColor: '#FFF', borderRadius: 20, padding: 25, elevation: 10, maxHeight: '100%' },
   modalTitle: { fontSize: 21, fontWeight: 'bold', color: '#0D2340', marginBottom: 20 },
   modalSubtitle: { fontSize: 16, color: '#6B7280', marginBottom: 15, fontStyle: 'italic' },
   modalLabel: { fontSize: 14, fontWeight: 'bold', color: '#6B7280', marginBottom: 5, marginTop: 5 },

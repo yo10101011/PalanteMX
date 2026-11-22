@@ -32,6 +32,7 @@ import {
   TouchableOpacity,
   View
 } from 'react-native';
+import { useMargenModal } from '@/lib/margen-modal';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 // IGNORAR EL ERROR FALSO DE FIREBASE WEBCHANNEL EN EXPO
@@ -42,6 +43,7 @@ LogBox.ignoreLogs(['@firebase/firestore', "WebChannelConnection RPC", "Name: und
 import { signOut } from 'firebase/auth';
 import { collection, deleteDoc, doc, getDoc, getDocs, setDoc, updateDoc } from 'firebase/firestore';
 import { auth, db } from '../../firebaseConfig';
+import { salirDeLaCuenta } from '@/lib/sesion';
 import { subirFotoACloudinary } from '@/lib/cloudinary';
 import { eliminarCuentaEnServidor } from '@/lib/cuenta';
 import { coincide } from '@/lib/busqueda';
@@ -50,6 +52,7 @@ import { ESTADOS_MEXICO } from '@/lib/ubicacion';
 import { AnaliticaAdmin } from '@/components/analitica-admin';
 import { ReporteFinanciero } from '@/components/reporte-financiero';
 import { PerfilTrabajador, quitarUnaObra } from '@/components/perfil-trabajador';
+import { AnalisisDatos } from '@/components/analisis-datos';
 import { VisorFoto } from '@/components/visor-foto';
 
 // ---------------------------------------------------------------- COLORES Y TIPOS
@@ -128,6 +131,7 @@ const PESTAÑAS = [
 ] as const;
 
 export default function AdminDashboard() {
+  const margenModal = useMargenModal();
   const [cargando, setCargando] = useState(true);
   const [refrescando, setRefrescando] = useState(false);
   const [procesando, setProcesando] = useState(false);
@@ -169,7 +173,7 @@ export default function AdminDashboard() {
   const [vacantes, setVacantes] = useState<any[]>([]);
   const [contratos, setContratos] = useState<any[]>([]);
   // PESTAÑA DATOS: ANALÍTICA DE USO O ESTADO DE RESULTADOS
-  const [vistaDatos, setVistaDatos] = useState<'Uso de la app' | 'Reporte financiero'>('Uso de la app');
+  const [vistaDatos, setVistaDatos] = useState<'Uso de la app' | 'Análisis' | 'Reporte financiero'>('Uso de la app');
   const [quejas, setQuejas] = useState<any[]>([]);
   const [personalSoporte, setPersonalSoporte] = useState<any[]>([]);
 
@@ -263,7 +267,7 @@ export default function AdminDashboard() {
   const cerrarSesionAdmin = () => {
     Alert.alert("Cerrar sesión", "¿Salir del panel de administración?", [
       { text: "Cancelar", style: "cancel" },
-      { text: "Salir", onPress: async () => { await signOut(auth); router.replace('/' as any); } },
+      { text: "Salir", onPress: salirDeLaCuenta },
     ]);
   };
 
@@ -830,7 +834,7 @@ export default function AdminDashboard() {
         {pestañaActiva === 'Datos' && (
           <View>
             <View style={styles.selectorDatos}>
-              {(['Uso de la app', 'Reporte financiero'] as const).map(v => (
+              {(['Uso de la app', 'Análisis', 'Reporte financiero'] as const).map(v => (
                 <TouchableOpacity key={v} style={[styles.selectorDatosBoton, vistaDatos === v && styles.selectorDatosActivo]} onPress={() => setVistaDatos(v)}>
                   <Text style={[styles.selectorDatosTexto, vistaDatos === v && { color: COLOR.marino }]}>{v}</Text>
                 </TouchableOpacity>
@@ -838,6 +842,8 @@ export default function AdminDashboard() {
             </View>
             {vistaDatos === 'Uso de la app'
               ? <AnaliticaAdmin trabajadores={trabajadores} contratistas={contratistas} vacantes={vacantes} contratos={contratos} quejas={quejas} />
+              : vistaDatos === 'Análisis'
+              ? <AnalisisDatos trabajadores={trabajadores} vacantes={vacantes} onActualizado={cargarDatosAdmin} />
               : <ReporteFinanciero trabajadores={trabajadores} contratistas={contratistas} contratos={contratos} esPrincipal={esPrincipal} />}
           </View>
         )}
@@ -1064,7 +1070,7 @@ export default function AdminDashboard() {
 
       {/* DECIDIR QUIÉN TIENE LA RAZÓN */}
       <Modal visible={!!quejaResolviendo} animationType="fade" transparent onRequestClose={() => setQuejaResolviendo(null)}>
-        <KeyboardAvoidingView style={styles.modalFondo} behavior="padding">
+        <KeyboardAvoidingView style={[styles.modalFondo, margenModal]} behavior="padding">
           <View style={[styles.modalCaja, { maxHeight: '92%' }]}>
             <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
               {quejaResolviendo && (
@@ -1288,7 +1294,7 @@ export default function AdminDashboard() {
 
       {/* DETALLE DE UNA VACANTE */}
       <Modal visible={!!vacanteExpandida} animationType="slide" transparent onRequestClose={() => setVacanteExpandida(null)}>
-        <View style={styles.modalFondo}>
+        <View style={[styles.modalFondo, margenModal]}>
           {vacanteExpandida && (
             <View style={[styles.modalCaja, { maxHeight: '90%', padding: 0, overflow: 'hidden' }]}>
               <View style={[styles.panelEncabezado, { backgroundColor: '#7C3AED' }]}>
@@ -1404,7 +1410,7 @@ export default function AdminDashboard() {
 
       {/* EDITAR MI PERFIL */}
       <Modal visible={modalEditarAdmin} animationType="slide" transparent onRequestClose={() => setModalEditarAdmin(false)}>
-        <KeyboardAvoidingView style={styles.modalFondo} behavior="padding">
+        <KeyboardAvoidingView style={[styles.modalFondo, margenModal]} behavior="padding">
           <View style={styles.modalCaja}>
             <Text style={styles.modalTitulo}>Editar mi perfil</Text>
             <Text style={styles.modalEtiqueta}>Nombre completo</Text>
@@ -1421,7 +1427,7 @@ export default function AdminDashboard() {
 
       {/* AGREGAR PERSONAL DE MONITOREO */}
       <Modal visible={modalCrear} animationType="slide" transparent onRequestClose={() => setModalCrear(false)}>
-        <KeyboardAvoidingView style={styles.modalFondo} behavior="padding">
+        <KeyboardAvoidingView style={[styles.modalFondo, margenModal]} behavior="padding">
           <View style={[styles.modalCaja, { maxHeight: '90%' }]}>
             <ScrollView showsVerticalScrollIndicator={false}>
               <Text style={styles.modalTitulo}>Agregar personal de monitoreo</Text>
@@ -1456,7 +1462,7 @@ const styles = StyleSheet.create({
   selectorDatos: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: '#E5E7EB', marginBottom: 14 },
   selectorDatosBoton: { flex: 1, paddingVertical: 10, alignItems: 'center', borderBottomWidth: 3, borderBottomColor: 'transparent' },
   selectorDatosActivo: { borderBottomColor: '#0D2340' },
-  selectorDatosTexto: { fontSize: 15, fontWeight: 'bold', color: '#9CA3AF' },
+  selectorDatosTexto: { fontSize: 14, fontWeight: 'bold', color: '#9CA3AF', textAlign: 'center' },
   container: { flex: 1, backgroundColor: '#F3F4F6' },
   loadingCenter: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F3F4F6' },
   loadingText: { marginTop: 10, color: COLOR.marino, fontWeight: 'bold' },

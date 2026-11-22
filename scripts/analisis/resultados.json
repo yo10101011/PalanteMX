@@ -1,0 +1,384 @@
+{
+ "contratos": 199,
+ "sin_problemas": 143,
+ "pct_sin_problemas": 0.719,
+ "contratos_prueba": 199,
+ "por_cumplimiento": {
+  "Sin obras anteriores": [
+   0.742,
+   62
+  ],
+  "50 % o menos": [
+   0.469,
+   49
+  ],
+  "51 a 75 %": [
+   0.818,
+   11
+  ],
+  "Más de 75 %": [
+   0.844,
+   77
+  ]
+ },
+ "por_distancia": {
+  "Hasta 10 km": [
+   0.732,
+   82
+  ],
+  "10 a 20 km": [
+   0.769,
+   65
+  ],
+  "20 a 35 km": [
+   0.75,
+   4
+  ],
+  "Más de 35 km": [
+   0.625,
+   48
+  ]
+ },
+ "parametros": {
+  "max_depth": 3,
+  "min_samples_leaf": 20,
+  "class_weight": "balanced",
+  "random_state": 0,
+  "monotonic_cst": "[0, 1, 1, -1]"
+ },
+ "evaluacion_prueba": {
+  "obras": 199,
+  "exactitud": 0.618,
+  "exactitud_balanceada": 0.582,
+  "problemas_detectados": "28 de 56",
+  "buenas_reconocidas": "95 de 143",
+  "matriz": [
+   [
+    28,
+    28
+   ],
+   [
+    48,
+    95
+   ]
+  ],
+  "base_siempre_sin_problemas": 0.719
+ },
+ "validacion_cruzada": {
+  "exactitud": 0.632,
+  "exactitud_balanceada": 0.59,
+  "desviacion_balanceada": 0.021,
+  "exito_si_predice_confiable": 0.775,
+  "exito_si_predice_riesgo": 0.615
+ },
+ "por_nivel_cv": {
+  "Alta": [
+   0.861,
+   52
+  ],
+  "Media": [
+   0.717,
+   42
+  ],
+  "Baja": [
+   0.512,
+   42
+  ],
+  "Nuevo": [
+   0.742,
+   62
+  ]
+ },
+ "importancia": {
+  "cumplimiento_previo": 0.761,
+  "calificacion_previa": 0.0,
+  "obras_previas": 0.042,
+  "distancia_km": 0.198
+ },
+ "arbol": {
+  "hoja": false,
+  "variable": "cumplimiento_previo",
+  "umbral": 63.5,
+  "si": {
+   "hoja": false,
+   "variable": "cumplimiento_previo",
+   "umbral": -0.5,
+   "si": {
+    "hoja": true,
+    "probabilidad": 0.742,
+    "nivel": "Nuevo",
+    "obras": 62
+   },
+   "no": {
+    "hoja": false,
+    "variable": "cumplimiento_previo",
+    "umbral": 12.5,
+    "si": {
+     "hoja": true,
+     "probabilidad": 0.357,
+     "nivel": "Baja",
+     "obras": 28
+    },
+    "no": {
+     "hoja": true,
+     "probabilidad": 0.625,
+     "nivel": "Media",
+     "obras": 24
+    }
+   }
+  },
+  "no": {
+   "hoja": false,
+   "variable": "distancia_km",
+   "umbral": 13.1,
+   "si": {
+    "hoja": false,
+    "variable": "obras_previas",
+    "umbral": 1.5,
+    "si": {
+     "hoja": true,
+     "probabilidad": 0.87,
+     "nivel": "Alta",
+     "obras": 23
+    },
+    "no": {
+     "hoja": true,
+     "probabilidad": 0.966,
+     "nivel": "Alta",
+     "obras": 29
+    }
+   },
+   "no": {
+    "hoja": true,
+    "probabilidad": 0.727,
+    "nivel": "Media",
+    "obras": 33
+   }
+  }
+ },
+ "zonas": {
+  "n": 18,
+  "siluetas": {
+   "2": 0.239,
+   "3": 0.313,
+   "4": 0.383,
+   "5": 0.353,
+   "6": 0.36
+  },
+  "k": 4,
+  "nombres": {
+   "1": "Faltan: instalaciones",
+   "2": "Faltan: obra negra",
+   "3": "Faltan: acabados, carpintería y herrería",
+   "4": "Oferta suficiente"
+  },
+  "medias": {
+   "1": {
+    "Obra negra": 1.5,
+    "Instalaciones": 10.0,
+    "Acabados": 1.0,
+    "Carpintería y herrería": 0.0
+   },
+   "2": {
+    "Obra negra": 6.5,
+    "Instalaciones": 2.0,
+    "Acabados": 1.88,
+    "Carpintería y herrería": 0.75
+   },
+   "3": {
+    "Obra negra": 1.19,
+    "Instalaciones": 1.99,
+    "Acabados": 4.38,
+    "Carpintería y herrería": 2.5
+   },
+   "4": {
+    "Obra negra": 0.67,
+    "Instalaciones": 1.04,
+    "Acabados": 0.76,
+    "Carpintería y herrería": 0.89
+   }
+  },
+  "tabla": [
+   {
+    "zona": "Guadalajara, Jalisco",
+    "grupo": 3,
+    "vacantes": 16,
+    "trabajadores": 3,
+    "presion_Obra negra": 3.0,
+    "presion_Instalaciones": 0.67,
+    "presion_Acabados": 3.5,
+    "presion_Carpintería y herrería": 4.0
+   },
+   {
+    "zona": "Toluca, Estado de México",
+    "grupo": 4,
+    "vacantes": 8,
+    "trabajadores": 9,
+    "presion_Obra negra": 0.5,
+    "presion_Instalaciones": 1.0,
+    "presion_Acabados": 0.67,
+    "presion_Carpintería y herrería": 0.0
+   },
+   {
+    "zona": "Coyoacán, Ciudad de México",
+    "grupo": 3,
+    "vacantes": 16,
+    "trabajadores": 6,
+    "presion_Obra negra": 0.33,
+    "presion_Instalaciones": 0.6,
+    "presion_Acabados": 7.0,
+    "presion_Carpintería y herrería": 5.0
+   },
+   {
+    "zona": "Iztapalapa, Ciudad de México",
+    "grupo": 2,
+    "vacantes": 23,
+    "trabajadores": 8,
+    "presion_Obra negra": 6.0,
+    "presion_Instalaciones": 2.0,
+    "presion_Acabados": 1.75,
+    "presion_Carpintería y herrería": 1.0
+   },
+   {
+    "zona": "Gustavo A. Madero, Ciudad de México",
+    "grupo": 3,
+    "vacantes": 8,
+    "trabajadores": 0,
+    "presion_Obra negra": 0.0,
+    "presion_Instalaciones": 3.0,
+    "presion_Acabados": 5.0,
+    "presion_Carpintería y herrería": 0.0
+   },
+   {
+    "zona": "Cuernavaca, Morelos",
+    "grupo": 3,
+    "vacantes": 13,
+    "trabajadores": 2,
+    "presion_Obra negra": 0.0,
+    "presion_Instalaciones": 2.5,
+    "presion_Acabados": 6.0,
+    "presion_Carpintería y herrería": 2.0
+   },
+   {
+    "zona": "Zinacantepec, Estado de México",
+    "grupo": 4,
+    "vacantes": 5,
+    "trabajadores": 4,
+    "presion_Obra negra": 0.5,
+    "presion_Instalaciones": 1.0,
+    "presion_Acabados": 1.0,
+    "presion_Carpintería y herrería": 0.0
+   },
+   {
+    "zona": "Pachuca de Soto, Hidalgo",
+    "grupo": 4,
+    "vacantes": 4,
+    "trabajadores": 2,
+    "presion_Obra negra": 1.0,
+    "presion_Instalaciones": 2.0,
+    "presion_Acabados": 0.33,
+    "presion_Carpintería y herrería": 0.0
+   },
+   {
+    "zona": "Morelia, Michoacán",
+    "grupo": 3,
+    "vacantes": 17,
+    "trabajadores": 4,
+    "presion_Obra negra": 0.5,
+    "presion_Instalaciones": 1.67,
+    "presion_Acabados": 4.5,
+    "presion_Carpintería y herrería": 2.0
+   },
+   {
+    "zona": "San Andrés Cholula, Puebla",
+    "grupo": 3,
+    "vacantes": 17,
+    "trabajadores": 4,
+    "presion_Obra negra": 0.67,
+    "presion_Instalaciones": 3.0,
+    "presion_Acabados": 3.0,
+    "presion_Carpintería y herrería": 3.0
+   },
+   {
+    "zona": "León, Guanajuato",
+    "grupo": 2,
+    "vacantes": 16,
+    "trabajadores": 3,
+    "presion_Obra negra": 7.0,
+    "presion_Instalaciones": 2.0,
+    "presion_Acabados": 2.0,
+    "presion_Carpintería y herrería": 0.5
+   },
+   {
+    "zona": "Monterrey, Nuevo León",
+    "grupo": 4,
+    "vacantes": 11,
+    "trabajadores": 6,
+    "presion_Obra negra": 1.0,
+    "presion_Instalaciones": 1.25,
+    "presion_Acabados": 0.33,
+    "presion_Carpintería y herrería": 3.0
+   },
+   {
+    "zona": "Zapopan, Jalisco",
+    "grupo": 3,
+    "vacantes": 17,
+    "trabajadores": 2,
+    "presion_Obra negra": 3.0,
+    "presion_Instalaciones": 2.5,
+    "presion_Acabados": 4.0,
+    "presion_Carpintería y herrería": 2.0
+   },
+   {
+    "zona": "Querétaro, Querétaro",
+    "grupo": 3,
+    "vacantes": 16,
+    "trabajadores": 4,
+    "presion_Obra negra": 2.0,
+    "presion_Instalaciones": 2.0,
+    "presion_Acabados": 2.0,
+    "presion_Carpintería y herrería": 2.0
+   },
+   {
+    "zona": "Apodaca, Nuevo León",
+    "grupo": 1,
+    "vacantes": 15,
+    "trabajadores": 4,
+    "presion_Obra negra": 1.5,
+    "presion_Instalaciones": 10.0,
+    "presion_Acabados": 1.0,
+    "presion_Carpintería y herrería": 0.0
+   },
+   {
+    "zona": "Naucalpan de Juárez, Estado de México",
+    "grupo": 4,
+    "vacantes": 5,
+    "trabajadores": 2,
+    "presion_Obra negra": 1.0,
+    "presion_Instalaciones": 0.0,
+    "presion_Acabados": 1.0,
+    "presion_Carpintería y herrería": 1.0
+   },
+   {
+    "zona": "Puebla, Puebla",
+    "grupo": 4,
+    "vacantes": 9,
+    "trabajadores": 7,
+    "presion_Obra negra": 0.67,
+    "presion_Instalaciones": 2.0,
+    "presion_Acabados": 1.0,
+    "presion_Carpintería y herrería": 0.25
+   },
+   {
+    "zona": "Corregidora, Querétaro",
+    "grupo": 4,
+    "vacantes": 5,
+    "trabajadores": 6,
+    "presion_Obra negra": 0.0,
+    "presion_Instalaciones": 0.0,
+    "presion_Acabados": 1.0,
+    "presion_Carpintería y herrería": 2.0
+   }
+  ]
+ }
+}

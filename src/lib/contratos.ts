@@ -45,6 +45,10 @@ export const ESTADOS = {
   CANCELADA: 'Cancelada',
 };
 
+// ESTADOS EN LOS QUE YA HUBO TRATO ACEPTADO POR LOS DOS: AHÍ SE MUESTRAN LOS BOTONES DE WHATSAPP Y LLAMADA
+export const ESTADOS_CON_TRATO = [ESTADOS.ACTIVA, ESTADOS.POR_CONFIRMAR_FIN, ESTADOS.FINALIZADA, ESTADOS.SUSPENDIDA];
+export const hayTrato = (contrato: any) => ESTADOS_CON_TRATO.includes(contrato?.estado);
+
 // TEXTO Y COLOR PARA MOSTRAR CADA ESTADO
 export const ESTILO_ESTADO: Record<string, { texto: string; color: string }> = {
   [ESTADOS.PENDIENTE]: { texto: 'SOLICITUD ENVIADA', color: '#F59E0B' },
@@ -193,8 +197,9 @@ export const resolverReporte = (idQueja: string, decision: string, nota: string,
   llamarServidor('/reportes', { id_queja: idQueja, decision, nota, descuento: ajuste, bloquear }, "No se pudo resolver el reporte.") as Promise<{ resuelta: boolean; obra_terminada?: boolean }>;
 
 // EL ADMIN CORRIGE LA COPIA DE RESEÑAS Y OBRAS TERMINADAS QUE GUARDA CADA PERFIL (VER /admin-perfiles EN EL SERVIDOR)
-export const adminPerfiles = (accion: 'eliminar_resena' | 'eliminar_obra' | 'recalcular' | 'recalcular_todos', datos: { uid?: string; id_resena?: string; id_contrato?: string } = {}) =>
-  llamarServidor('/admin-perfiles', { accion, ...datos }, "No se pudo completar.") as Promise<{ ok: boolean; perfiles?: number }>;
+// 'analisis' CORRE AL MOMENTO EL ANÁLISIS DE DATOS QUE EL SERVIDOR HACE CADA DÍA A LAS 9 AM (CONFIANZA Y ZONAS)
+export const adminPerfiles = (accion: 'eliminar_resena' | 'eliminar_obra' | 'recalcular' | 'recalcular_todos' | 'analisis', datos: { uid?: string; id_resena?: string; id_contrato?: string } = {}) =>
+  llamarServidor('/admin-perfiles', { accion, ...datos }, "No se pudo completar.") as Promise<{ ok: boolean; perfiles?: number; perfiles_actualizados?: number; grupos?: number; actualizado?: string }>;
 
 // PERSONAL DE MONITOREO (SOLO EL ADMIN PRINCIPAL): DAR DE ALTA (LE LLEGA UN CORREO PARA CREAR SU CONTRASEÑA),
 // REENVIAR ESE CORREO, O QUITARLO

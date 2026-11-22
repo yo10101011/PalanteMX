@@ -45,3 +45,8 @@ example
 # generated native folders
 /ios
 /android
+
+# DATOS EXPORTADOS PARA EL ANÁLISIS (NO SE SUBEN)
+scripts/analisis/datos.json
+scripts/analisis/datos_colab.json
+__pycache__/

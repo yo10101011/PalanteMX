@@ -4,6 +4,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Image, KeyboardAvoidingView, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { useMargenModal } from '@/lib/margen-modal';
 
 import { auth } from '../../firebaseConfig';
 import { SelectorFotos, subirFotos } from '@/components/selector-fotos';
@@ -18,6 +19,7 @@ type Props = {
 const conRol = (nombre?: string, rol?: string) => `${nombre || 'Sin nombre'} (${(rol || 'usuario').toLowerCase()})`;
 
 export function ModalReportesObra({ contrato, onClose }: Props) {
+  const margenModal = useMargenModal();
   const [reportes, setReportes] = useState<any[]>([]);
   const [cargando, setCargando] = useState(false);
   const [fotoGrande, setFotoGrande] = useState<string | null>(null);
@@ -63,7 +65,7 @@ export function ModalReportesObra({ contrato, onClose }: Props) {
 
   return (
     <Modal visible={!!contrato} animationType="slide" transparent onRequestClose={onClose}>
-      <KeyboardAvoidingView style={styles.fondo} behavior="padding">
+      <KeyboardAvoidingView style={[styles.fondo, margenModal]} behavior="padding">
         <View style={styles.panel}>
           <View style={styles.encabezado}>
             <View style={{ flex: 1 }}>

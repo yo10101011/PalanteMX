@@ -3,6 +3,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useMargenModal } from '@/lib/margen-modal';
 
 import { SelectorDiasObra } from '@/components/selector-dias-obra';
 import { accionContrato, claveDia, ESTADOS, textoDiasObra, type DiasObra } from '@/lib/contratos';
@@ -14,6 +15,7 @@ type Props = {
 };
 
 export function ModalRepublicar({ contrato, onClose, onPublicada }: Props) {
+  const margenModal = useMargenModal();
   const [dias, setDias] = useState<DiasObra>({ inicio: '', fin: '', dias: [] });
   const [enviando, setEnviando] = useState(false);
 
@@ -42,7 +44,7 @@ export function ModalRepublicar({ contrato, onClose, onPublicada }: Props) {
 
   return (
     <Modal visible={!!contrato} animationType="fade" transparent onRequestClose={onClose}>
-      <View style={styles.fondo}>
+      <View style={[styles.fondo, margenModal]}>
         <View style={styles.caja}>
           <ScrollView showsVerticalScrollIndicator={false}>
             <View style={styles.encabezado}>

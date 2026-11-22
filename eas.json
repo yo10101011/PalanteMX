@@ -1,0 +1,32 @@
+{
+  "cli": {
+    "version": ">= 16.0.0",
+    "appVersionSource": "local"
+  },
+  "build": {
+    "preview": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_KYC_API_URL": "https://palantemx-kyc.palantemx.workers.dev"
+      }
+    },
+    "ligera": {
+      "extends": "preview",
+      "env": {
+        "EXPO_PUBLIC_KYC_API_URL": "https://palantemx-kyc.palantemx.workers.dev",
+        "ORG_GRADLE_PROJECT_reactNativeArchitectures": "arm64-v8a"
+      }
+    },
+    "production": {
+      "android": {
+        "buildType": "app-bundle"
+      },
+      "env": {
+        "EXPO_PUBLIC_KYC_API_URL": "https://palantemx-kyc.palantemx.workers.dev"
+      }
+    }
+  }
+}

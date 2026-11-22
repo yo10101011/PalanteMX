@@ -9,9 +9,15 @@
 //   POST /contratos            -> todos los pasos de un contrato (proponer, postular, aceptar, terminar, cancelar,
 //                                 revisar la bitácora, reportar un problema...).
 //   POST /reportes             -> el admin resuelve un reporte y se les avisa a las dos partes.
-//   POST /admin-perfiles       -> el admin borra una reseña u obra de un perfil, o recalcula los perfiles.
+//   POST /admin-perfiles       -> el admin borra una reseña u obra de un perfil, recalcula los perfiles o el análisis.
+// Tareas diarias (9 am): pagos, faltas, cierre de obras y la ANALÍTICA DE DATOS EN LA NUBE (cumplimiento, árbol de
+// decisión de confianza de cada trabajador y agrupamiento de Ward de las zonas; ver analisisDiario).
 //   POST /equipo               -> el admin PRINCIPAL da de alta o quita personal de monitoreo (con cuenta propia).
 import { createRemoteJWKSet, importPKCS8, jwtVerify, SignJWT } from 'jose';
+// LOS DOS MODELOS DEL ANÁLISIS DE DATOS: LOS MISMOS ARCHIVOS QUE USA LA APP (EL ÁRBOL LO GENERA scripts/analisis)
+import { tramosConfianza, tramoPara, variablesPerfil } from '../../../src/lib/arbol-confianza';
+import { ENTRENADO } from '../../../src/lib/modelo-confianza';
+import { zonasConNecesidad } from '../../../src/lib/agrupamiento';
 
 interface Env {
   FIREBASE_PROJECT_ID: string;
@@ -61,7 +67,8 @@ export default {
   },
 
   // TAREAS AUTOMÁTICAS (CRONS DE wrangler.toml, GRATIS EN CLOUDFLARE):
-  //   9:00 AM (15:00 UTC): PAGOS PENDIENTES, DÍAS DE TRABAJO QUE SE QUEDARON SIN BITÁCORA Y CIERRE DE OBRAS YA VENCIDAS
+  //   9:00 AM (15:00 UTC): PAGOS PENDIENTES, DÍAS DE TRABAJO QUE SE QUEDARON SIN BITÁCORA, CIERRE DE OBRAS YA VENCIDAS
+//                        Y EL ANÁLISIS DE DATOS (CONFIANZA DE CADA TRABAJADOR Y ZONAS CON NECESIDAD)
   //   7:00 PM (01:00 UTC): RECORDATORIO A QUIEN HOY TRABAJA Y AÚN NO LLENA SU BITÁCORA
   async scheduled(evento: { cron?: string }, env: Env, ctx: { waitUntil: (promesa: Promise<unknown>) => void }) {
     if (evento?.cron === CRON_TARDE) {
@@ -70,6 +77,7 @@ export default {
     }
     ctx.waitUntil(revisarPagosPendientes(env).catch(error => console.log('Error revisando pagos pendientes', error)));
     ctx.waitUntil(recordarPagosVencidos(env).catch(error => console.log('Error recordando pagos', error)));
+    ctx.waitUntil(analisisDiario(env).catch(error => console.log('Error en el análisis de datos', error)));
     // PRIMERO SE REGISTRAN LAS FALTAS DE AYER Y DESPUÉS SE CIERRAN LAS OBRAS CUYO ÚLTIMO DÍA YA PASÓ (EN ESE ORDEN)
     ctx.waitUntil((async () => {
       await registrarBitacorasFaltantes(env).catch(error => console.log('Error revisando bitácoras faltantes', error));
@@ -294,9 +302,9 @@ const verificarIdentidad = async (request: Request, env: Env) => {
 
   // 3. VERIFICACIÓN. EL NOMBRE QUE SE REVISA EN LA INE ES EXACTAMENTE EL QUE SE VA A GUARDAR
   try {
-    await validarNombreEnINE(env, urlINEFrente, `${perfil.nombre} ${perfil.apellidos}`);
-    // ⚠️ KYC_MODO = "sin_rostro": LA COMPARACIÓN DE CARA ESTÁ PAUSADA A PROPÓSITO (SOLO PARA CREAR CUENTAS DE PRUEBA).
-    // EL NOMBRE SÍ SE SIGUE REVISANDO. HAY QUE VOLVER A ACTIVARLA ANTES DE USAR LA APP CON GENTE REAL.
+    const urlINEReverso = await urlPrivadaCloudinary(env, perfil.ineReverso.publicId, perfil.ineReverso.formato);
+    await validarINE(env, urlINEFrente, urlINEReverso, `${perfil.nombre} ${perfil.apellidos}`);
+    // KYC_MODO = "sin_rostro" PAUSA LA COMPARACIÓN DE CARA (SOLO PARA CREAR CUENTAS DE PRUEBA; LA INE Y EL NOMBRE SÍ SE REVISAN)
     if (env.KYC_MODO === 'sin_rostro') console.log('Comparación de rostro PAUSADA (KYC_MODO = sin_rostro)');
     else await validarRostro(env, urlINEFrente, perfil.urlSelfie);
   } catch (error) {
@@ -396,27 +404,52 @@ const validarPerfil = (d: Record<string, unknown>): PerfilValidado | null => {
   };
 };
 
-const validarNombreEnINE = async (env: Env, urlINEFrente: string, nombreCompleto: string) => {
+// MAYÚSCULAS, SIN ACENTOS Y SIN SIGNOS, PARA QUE "GÓMEZ" Y "GOMEZ" CUENTEN IGUAL Y EL RUIDO DEL OCR NO ESTORBE
+const normalizarTexto = (texto: string) =>
+  texto.toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Z0-9]+/g, ' ').trim();
+
+// LEE EL TEXTO DE UNA FOTO CON OCR.space. DEVUELVE null SI NO SE PUDO LEER.
+const leerTextoDeFoto = async (env: Env, url: string): Promise<string | null> => {
   const form = new FormData();
-  form.append('url', urlINEFrente);
+  form.append('url', url);
   form.append('language', 'spa');
   form.append('isOverlayRequired', 'false');
+  form.append('scale', 'true'); // AGRANDA LA FOTO POR DENTRO: LEE MEJOR LAS LETRAS CHICAS DE LA INE
+  const respuesta = await fetch('https://api.ocr.space/parse/image', { method: 'POST', headers: { apikey: env.OCR_KEY }, body: form });
+  const datos: any = await respuesta.json();
+  if (datos.IsErroredOnProcessing) return null;
+  return normalizarTexto(datos.ParsedResults?.map((r: any) => r.ParsedText || '').join(' ') || '');
+};
 
-  const ocrResponse = await fetch('https://api.ocr.space/parse/image', {
-    method: 'POST',
-    headers: { apikey: env.OCR_KEY },
-    body: form,
-  });
-  const ocrData: any = await ocrResponse.json();
+// PALABRAS QUE SOLO TRAE UNA INE (CUALQUIERA BASTA): "INSTITUTO NACIONAL ELECTORAL", "CLAVE DE ELECTOR",
+// "CREDENCIAL PARA VOTAR" Y "IDMEX" (LA LÍNEA DE ABAJO DEL REVERSO). UNA CREDENCIAL DE ESCUELA O DE TRABAJO NO LAS TIENE.
+const MARCAS_INE = ['ELECTOR', 'VOTAR', 'IDMEX'];
+// LA CLAVE DE ELECTOR: 6 LETRAS, 8 NÚMEROS, H/M Y 3 NÚMEROS (EJ. GMCRED90031509H100)
+const CLAVE_ELECTOR = /[A-Z]{6}[0-9]{8}[HM][0-9]{3}/;
+// DATOS QUE TRAE LA INE (SE PIDEN AL MENOS 2 PARA NO DEPENDER DE UNA SOLA PALABRA QUE EL OCR HAYA LEÍDO MAL)
+const DATOS_INE = ['INSTITUTO', 'NACIONAL', 'CREDENCIAL', 'MEXICO', 'CURP', 'DOMICILIO', 'SECCION', 'VIGENCIA', 'REGISTRO', 'NOMBRE', 'SEXO', 'NACIMIENTO', 'EMISION', 'LOCALIDAD', 'MUNICIPIO'];
 
-  if (ocrData.IsErroredOnProcessing) throw new ErrorKYC('Documento ilegible. Escanea la INE con mejor iluminación.');
+// REVISA QUE LA FOTO SEA UNA INE (NO OTRA CREDENCIAL) Y QUE TRAIGA EL NOMBRE QUE SE ESTÁ REGISTRANDO.
+// ES TOLERANTE: BASTA UNA MARCA DE LA INE EN EL FRENTE O EN EL REVERSO, Y 2 PALABRAS DEL NOMBRE (CON O SIN ACENTOS).
+const validarINE = async (env: Env, urlINEFrente: string, urlINEReverso: string, nombreCompleto: string) => {
+  const [frente, reverso] = await Promise.all([
+    leerTextoDeFoto(env, urlINEFrente),
+    leerTextoDeFoto(env, urlINEReverso).catch(() => null), // SI EL REVERSO NO SE LEE, NO SE RECHAZA POR ESO
+  ]);
+  if (frente === null || frente.length < 10) throw new ErrorKYC('No se pudo leer tu INE. Escanéala de nuevo con buena luz y sin reflejos.');
 
-  const textoINE: string = ocrData.ParsedResults?.[0]?.ParsedText?.toUpperCase() || '';
-  let coincidencias = 0;
-  nombreCompleto.toUpperCase().split(' ').forEach(palabra => {
-    if (palabra.length > 2 && textoINE.includes(palabra)) coincidencias++;
-  });
-  if (coincidencias < 2) throw new ErrorKYC('Fraude: El nombre no coincide con el documento oficial escaneado.');
+  const texto = `${frente} ${reverso || ''}`;
+  const sinEspacios = texto.replace(/ /g, '');
+  const tieneMarca = MARCAS_INE.some(m => texto.includes(m)) || CLAVE_ELECTOR.test(sinEspacios);
+  const datos = DATOS_INE.filter(p => texto.includes(p)).length;
+  console.log(`Revisión de INE: marca ${tieneMarca}, datos ${datos}`);
+  if (!tieneMarca || datos < 2) {
+    throw new ErrorKYC('La foto no parece una INE. Solo se acepta la credencial para votar (INE): escanea el frente y el reverso con buena luz.');
+  }
+
+  const coincidencias = normalizarTexto(nombreCompleto).split(' ')
+    .filter(palabra => palabra.length > 2 && frente.includes(palabra)).length;
+  if (coincidencias < 2) throw new ErrorKYC('El nombre que escribiste no coincide con el de tu INE. Escríbelo tal como aparece en ella.');
 };
 
 const validarRostro = async (env: Env, urlINEFrente: string, urlSelfie: string) => {
@@ -1750,6 +1783,7 @@ const resolverReporte = async (request: Request, env: Env) => {
 //   eliminar_obra    { uid, id_contrato }        -> quita la obra del perfil (y no vuelve a aparecer al recalcular)
 //   recalcular       { uid }                     -> rearma reseñas y obras de un perfil con lo que de verdad existe
 //   recalcular_todos {}                          -> lo mismo para todos (p. ej. después de limpiar Firebase a mano)
+//   analisis         {}                          -> corre ya el análisis de datos de las 9 am (confianza y zonas)
 // =========================================================================
 const adminPerfiles = async (request: Request, env: Env) => {
   const sesion = await verificarSesion(request, env);
@@ -1803,6 +1837,10 @@ const adminPerfiles = async (request: Request, env: Env) => {
         const ids = [...(await listarIds(env, 'Usuarios')), ...(await listarIds(env, 'Contratistas'))];
         for (const id of ids) await recalcularPerfil(env, id);
         return responder(200, { ok: true, perfiles: ids.length });
+      }
+      case 'analisis': {
+        // SOLO ESCRIBE RESULTADOS CALCULADOS (NO BORRA NI CAMBIA DATOS DE NADIE): CUALQUIER ADMIN LO PUEDE PEDIR
+        return responder(200, { ok: true, ...(await analisisDiario(env)) });
       }
       default:
         return responder(400, { error: 'Acción desconocida.' });
@@ -1948,10 +1986,115 @@ const recalcularPerfil = async (env: Env, uid: string) => {
     });
   }
 
+  if (ruta.startsWith('Usuarios/')) {
+    const contratos = await consultarDocumentos(env, 'Postulaciones', [['id_trabajador', 'EQUAL', uid]], 500);
+    const quejas = await consultarDocumentos(env, 'Quejas_Soporte', [['id_acusado', 'EQUAL', uid]], 500);
+    campos.cumplimiento = calcularCumplimiento(contratos, new Set(quejas.map(q => texto(q.fields.id_contrato)).filter(Boolean)), uid);
+    campos.confianza = confianzaDePerfil({ ...campos });
+  }
+
   await confirmarEscrituras(env, [{
     update: { name: `${nombreBase}/${ruta}`, fields: aCamposFirestore(campos) },
     updateMask: { fieldPaths: Object.keys(campos) },
   }]);
+};
+
+// ---------------------------------------------------------------- CUMPLIMIENTO DE CADA TRABAJADOR (ÍNDICE DE CONFIANZA)
+// DE LAS OBRAS QUE YA TERMINÓ EN LA APP, QUÉ PORCENTAJE FUE SIN PROBLEMAS **POR SU PARTE**: SIN FALTAS AL CERRAR LA OBRA,
+// SIN REPORTES EN SU CONTRA Y SIN CANCELAR TARDE. LOS CONTRATOS SON PRIVADOS, POR ESO LO CALCULA EL SERVIDOR Y SOLO
+// PUBLICA EL RESULTADO EN EL PERFIL (cumplimiento, CAMPO PROTEGIDO EN LAS REGLAS). LA APP LO USA EN EL ÁRBOL DE DECISIÓN
+// DE src/lib/confianza.ts (ENTRENADO EN scripts/analisis). MISMA REGLA QUE tuvo_problemas() DE datos_analisis.py.
+const calcularCumplimiento = (contratos: { id: string; fields: Record<string, ValorFirestore> }[], acusadoEn: Set<string>, uid: string) => {
+  let obras = 0, sinProblemas = 0;
+  for (const c of contratos) {
+    const estado = texto(c.fields.estado);
+    const tardia = !!c.fields.cancelacion_tardia?.booleanValue;
+    const empezo = !!c.fields.timestamp_inicio;
+    if (!empezo || !(estado === 'Finalizada' || (estado === 'Cancelada' && tardia))) continue; // SOLO OBRAS QUE YA EMPEZARON Y TERMINARON
+    obras++;
+    const problema = !!c.fields.revision_cierre || acusadoEn.has(c.id) || (texto(c.fields.cancelado_por) === uid && tardia);
+    if (!problema) sinProblemas++;
+  }
+  return { obras, sin_problemas: sinProblemas, porcentaje: obras ? Math.round(100 * sinProblemas / obras) : null, actualizado: new Date().toISOString() };
+};
+
+// TODOS LOS DOCUMENTOS DE UNA COLECCIÓN, SOLO CON LOS CAMPOS PEDIDOS (PARA LAS TAREAS DIARIAS)
+const consultarTodo = async (env: Env, coleccion: string, campos: string[]) => {
+  const token = await obtenerTokenGoogle(env);
+  const respuesta = await fetch(`${urlDocumentos(env)}:runQuery`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ structuredQuery: { from: [{ collectionId: coleccion }], select: { fields: campos.map(fieldPath => ({ fieldPath })) } } }),
+  });
+  if (!respuesta.ok) throw new Error(`Firestore respondió ${respuesta.status}: ${await respuesta.text()}`);
+  const resultados = (await respuesta.json()) as { document?: { name: string; fields?: Record<string, ValorFirestore> } }[];
+  return resultados.filter(r => r.document).map(r => ({ id: r.document!.name.split('/').pop() as string, fields: r.document!.fields || {} }));
+};
+
+// ---------------------------------------------------------------- ANÁLISIS DE DATOS EN LA NUBE (CADA DÍA A LAS 9 AM)
+// 1) CUMPLIMIENTO de cada trabajador (de sus obras terminadas, % sin problemas por su parte).
+// 2) CONFIANZA: recorre el ÁRBOL DE DECISIÓN con su cumplimiento, calificación y obras, y guarda el nivel por tramos
+//    de distancia en el perfil (campo protegido confianza). La app solo lo muestra.
+// 3) ZONAS CON NECESIDAD: AGRUPAMIENTO JERÁRQUICO DE WARD de los municipios según las vacantes por trabajador de
+//    cada grupo de oficios. El resultado queda en Sistema/Analisis (lo lee el panel del administrador).
+// Solo se escriben los perfiles que cambiaron. También se puede pedir al momento desde el panel (accion 'analisis').
+const confianzaDePerfil = (perfil: Record<string, unknown>) => ({
+  tramos: tramosConfianza(variablesPerfil(perfil)),
+  modelo: ENTRENADO.fecha,
+  actualizado: new Date().toISOString(),
+});
+
+const analisisDiario = async (env: Env) => {
+  const nombreBase = `projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents`;
+  const [usuarios, contratos, quejas, vacantes] = await Promise.all([
+    consultarTodo(env, 'Usuarios', ['cumplimiento', 'confianza', 'calificacion', 'numero_resenas', 'obras_realizadas',
+      'oficio_principal', 'ubicacion_texto', 'ubicacion_estado', 'estado_cuenta']),
+    consultarTodo(env, 'Postulaciones', ['id_trabajador', 'estado', 'cancelacion_tardia', 'timestamp_inicio', 'revision_cierre', 'cancelado_por']),
+    consultarTodo(env, 'Quejas_Soporte', ['id_contrato', 'id_acusado']),
+    consultarTodo(env, 'Vacantes', ['categoria', 'ubicacion']),
+  ]);
+  const porTrabajador = new Map<string, typeof contratos>();
+  for (const c of contratos) { const t = texto(c.fields.id_trabajador); if (t) porTrabajador.set(t, [...(porTrabajador.get(t) || []), c]); }
+  const acusado = new Map<string, Set<string>>();
+  for (const q of quejas) { const a = texto(q.fields.id_acusado); const k = texto(q.fields.id_contrato); if (a && k) acusado.set(a, (acusado.get(a) || new Set()).add(k)); }
+
+  // 1) Y 2) CUMPLIMIENTO Y CONFIANZA DE CADA TRABAJADOR
+  const escrituras: Record<string, unknown>[] = [];
+  const trabajadores: Record<string, unknown>[] = [];
+  const niveles: Record<string, number> = { Alta: 0, Media: 0, Baja: 0, Nuevo: 0 };
+  for (const u of usuarios) {
+    const perfil = Object.fromEntries(Object.entries(u.fields).map(([k, v]) => [k, deFirestore(v)])) as Record<string, any>;
+    const cumplimiento = calcularCumplimiento(porTrabajador.get(u.id) || [], acusado.get(u.id) || new Set(), u.id);
+    const confianza = confianzaDePerfil({ ...perfil, cumplimiento });
+    trabajadores.push({ ...perfil, cumplimiento, confianza });
+    if (perfil.estado_cuenta !== 'Bloqueada') niveles[tramoPara(confianza.tramos, 10).nivel]++;
+
+    const campos: Record<string, unknown> = {};
+    const antes = perfil.cumplimiento as { obras?: number; sin_problemas?: number } | undefined;
+    if (!antes || antes.obras !== cumplimiento.obras || antes.sin_problemas !== cumplimiento.sin_problemas) campos.cumplimiento = cumplimiento;
+    const tramosAntes = (perfil.confianza as { tramos?: unknown; modelo?: string } | undefined);
+    if (JSON.stringify(tramosAntes?.tramos) !== JSON.stringify(confianza.tramos) || tramosAntes?.modelo !== confianza.modelo) campos.confianza = confianza;
+    if (Object.keys(campos).length) {
+      escrituras.push({ update: { name: `${nombreBase}/Usuarios/${u.id}`, fields: aCamposFirestore(campos) }, updateMask: { fieldPaths: Object.keys(campos) } });
+    }
+  }
+
+  // 3) ZONAS CON NECESIDAD (WARD)
+  const grupos = zonasConNecesidad(vacantes.map(v => ({ categoria: texto(v.fields.categoria), ubicacion: texto(v.fields.ubicacion) })), trabajadores);
+  const resumen = {
+    actualizado: new Date().toISOString(),
+    trabajadores: usuarios.length,
+    vacantes: vacantes.length,
+    contratos: contratos.length,
+    niveles_confianza: niveles,
+    zonas: grupos,
+    modelo: { obras: ENTRENADO.obras, fecha: ENTRENADO.fecha, exactitud_balanceada: ENTRENADO.exactitud_balanceada },
+  };
+  escrituras.push({ update: { name: `${nombreBase}/Sistema/Analisis`, fields: aCamposFirestore(resumen) } });
+
+  for (let i = 0; i < escrituras.length; i += 400) await confirmarEscrituras(env, escrituras.slice(i, i + 400));
+  console.log(`Análisis: ${escrituras.length - 1} perfiles actualizados, ${grupos.length} grupos de zonas`);
+  return { perfiles_actualizados: escrituras.length - 1, grupos: grupos.length, actualizado: resumen.actualizado };
 };
 
 // CONSULTA DOCUMENTOS CON FILTROS (TODOS DEBEN CUMPLIRSE). op: 'EQUAL' COMPARA CON UN VALOR, 'IN' CON UNA LISTA.

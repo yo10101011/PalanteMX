@@ -5,6 +5,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { useMargenModal } from '@/lib/margen-modal';
 
 import { SelectorFotos, subirFotos } from '@/components/selector-fotos';
 import { accionContrato, cancelacionATiempo, dineroYaPagado, ESTADOS, HORAS_AVISO_CANCELACION, horasParaInicio, textoAvisoCancelacion } from '@/lib/contratos';
@@ -17,6 +18,7 @@ type Props = {
 };
 
 export function ModalCancelarContrato({ contrato, onClose, onCancelado }: Props) {
+  const margenModal = useMargenModal();
   const [motivo, setMotivo] = useState('');
   const [fotos, setFotos] = useState<string[]>([]);
   const [enviando, setEnviando] = useState(false);
@@ -42,7 +44,7 @@ export function ModalCancelarContrato({ contrato, onClose, onCancelado }: Props)
 
   return (
     <Modal visible={!!contrato} animationType="fade" transparent onRequestClose={onClose}>
-      <KeyboardAvoidingView style={styles.fondo} behavior="padding">
+      <KeyboardAvoidingView style={[styles.fondo, margenModal]} behavior="padding">
         <View style={[styles.caja, { maxHeight: '92%' }]}>
           <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
           <View style={styles.encabezado}>

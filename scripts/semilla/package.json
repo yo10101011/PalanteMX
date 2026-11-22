@@ -1,0 +1,13 @@
+{
+  "name": "palantemx-semilla",
+  "private": true,
+  "type": "module",
+  "description": "Crea (y borra) usuarios y obras de prueba en Firebase. Necesita cuenta-servicio.json en esta carpeta.",
+  "scripts": {
+    "crear": "node crear-pruebas.mjs",
+    "borrar": "node borrar-pruebas.mjs"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.0.0"
+  }
+}

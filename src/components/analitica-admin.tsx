@@ -11,7 +11,7 @@ import { claveDia, ESTADO_PAGO, ESTADOS } from '@/lib/contratos';
 type Props = { trabajadores: any[]; contratistas: any[]; vacantes: any[]; contratos: any[]; quejas: any[] };
 
 const DIAS_CORTOS = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'];
-const TIPOS_QUEJA: Record<string, string> = { cancelacion: 'Cancelaciones', bitacora: 'Bitácora', incumplimiento: 'Incumplimiento', pago: 'Pagos', otro: 'Chat y otros' };
+const TIPOS_QUEJA: Record<string, string> = { cancelacion: 'Cancelaciones', bitacora: 'Bitácora', incumplimiento: 'Incumplimiento', pago: 'Pagos', cierre: 'Faltas al cerrar obra', otro: 'Chat y otros' };
 
 // LAS FECHAS LLEGAN DE VARIAS FORMAS (TIMESTAMP DE FIRESTORE, TEXTO ISO O MILISEGUNDOS)
 const aFecha = (v: any): Date | null => {
@@ -73,8 +73,9 @@ export function AnaliticaAdmin({ trabajadores, contratistas, vacantes, contratos
     .map(([etiqueta, n]) => ({ etiqueta, valores: [n] }));
 
   const tipoQueja = (q: any) => q.tipo || (q.id_contrato && q.motivo === 'Cancelación de obra' ? 'cancelacion' : 'otro');
-  const quejasPorTipo = Object.entries(conteo(quejas.map(tipoQueja))).sort((a, b) => b[1] - a[1])
-    .map(([t, n]) => ({ etiqueta: TIPOS_QUEJA[t] || 'Chat y otros', valores: [n] }));
+  // SE AGRUPA POR EL NOMBRE QUE SE MUESTRA (VARIOS TIPOS PUEDEN CAER EN "Chat y otros" Y NO DEBEN REPETIRSE)
+  const quejasPorTipo = Object.entries(conteo(quejas.map(q => TIPOS_QUEJA[tipoQueja(q)] || 'Chat y otros'))).sort((a, b) => b[1] - a[1])
+    .map(([etiqueta, n]) => ({ etiqueta, valores: [n] }));
 
   return (
     <View>

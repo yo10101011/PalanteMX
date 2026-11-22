@@ -3,19 +3,25 @@
 // EL CONTENIDO VA DENTRO DE UN ScrollView QUE PONE QUIEN LO USA.
 import { Ionicons } from '@expo/vector-icons';
 import { useState } from 'react';
-import { Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
+import { BotonesContacto } from '@/components/botones-contacto';
 import { DatosTrabajador } from '@/components/datos-trabajador';
+import { TarjetaObraTerminada } from '@/components/tarjeta-obra-terminada';
 import { VisorFoto } from '@/components/visor-foto';
+import { confianzaDe, TEXTO_MODELO } from '@/lib/confianza';
 import { textoPrecio } from '@/lib/ubicacion';
 
 type Props = {
   trabajador: any;
   distancia?: string;                         // P. EJ. "a 12 km" (DESDE QUIEN LO VE)
+  distanciaKm?: number | null;                // LA MISMA DISTANCIA EN KM (PARA EL ÍNDICE DE CONFIANZA)
   onEliminarObra?: (obra: any) => void;       // SOLO EL ADMIN PUEDE BORRAR OBRAS DEL PORTAFOLIO
   obrasEnCurso?: any[];                       // CONTRATOS QUE AÚN NO TERMINA (SOLO EL ADMIN PUEDE VERLOS)
   onEliminarObraPalante?: (obra: any) => void; // SOLO EL ADMIN: QUITAR UNA OBRA TERMINADA EN PALANTEMX
   onEliminarResena?: (resena: any) => void;    // SOLO EL ADMIN: BORRAR UNA RESEÑA (LA CALIFICACIÓN SE RECALCULA)
+  // WHATSAPP Y LLAMADA: SIN ESTE DATO NO SE MUESTRA NADA (ADMIN); null = AÚN NO HAY TRATO (SALE UNA NOTA); TEXTO = SU TELÉFONO
+  telefonoContacto?: string | null;
 };
 
 // QUITA DEL PORTAFOLIO SOLO LA OBRA INDICADA (LA PRIMERA IGUAL A ELLA). NO SE COMPARA SOLO POR id_obra PORQUE LAS
@@ -26,12 +32,13 @@ export const quitarUnaObra = (portafolio: any[], obra: any) => {
   return indice === -1 ? portafolio : portafolio.filter((_, i) => i !== indice);
 };
 
-export function PerfilTrabajador({ trabajador: t, distancia, onEliminarObra, obrasEnCurso, onEliminarObraPalante, onEliminarResena }: Props) {
+export function PerfilTrabajador({ trabajador: t, distancia, distanciaKm, onEliminarObra, obrasEnCurso, onEliminarObraPalante, onEliminarResena, telefonoContacto }: Props) {
   const [fotoGrande, setFotoGrande] = useState<string | null>(null);
   const obrasPalante: any[] = [...(t?.obras_realizadas || [])].reverse();
   const portafolio: any[] = (t?.portafolio || []).filter((o: any) => o && typeof o === 'object');
   const resenas: any[] = [...(t?.resenas || [])].reverse();
   const ubicacion = [t?.ubicacion_texto, t?.ubicacion_estado].filter(Boolean).join(', ');
+  const confianza = confianzaDe(t, distanciaKm);
 
   return (
     <View>
@@ -61,6 +68,27 @@ export function PerfilTrabajador({ trabajador: t, distancia, onEliminarObra, obr
         </View>
       </View>
 
+      {/* ÍNDICE DE CONFIANZA (ÁRBOL DE DECISIÓN CON SU HISTORIAL EN LA APP) */}
+      <View style={[styles.tarjeta, { backgroundColor: confianza.fondo, borderColor: confianza.color }]}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 6 }}>
+          <Ionicons name={confianza.nivel === 'Nuevo' ? 'sparkles-outline' : 'shield-checkmark-outline'} size={22} color={confianza.color} />
+          <Text style={{ fontSize: 17, fontWeight: 'bold', color: confianza.color, marginLeft: 8, flex: 1 }}>{confianza.titulo}</Text>
+          {confianza.nivel !== 'Nuevo' && <Text style={{ fontSize: 15, fontWeight: 'bold', color: confianza.color }}>{t?.cumplimiento?.porcentaje}% cumplimiento</Text>}
+        </View>
+        <Text style={styles.descripcion}>{confianza.detalle}</Text>
+        <Text style={{ fontSize: 13, color: '#6B7280', marginTop: 6 }}>{TEXTO_MODELO}</Text>
+      </View>
+
+      {/* DESCRIPCIÓN DE SUS SERVICIOS (LA ESCRIBE ÉL EN "EDITAR PERFIL") */}
+      <View style={styles.tarjeta}>
+        <Text style={[styles.seccion, { marginTop: 0, marginBottom: 6 }]}>Sobre sus servicios</Text>
+        <Text style={t?.descripcion_servicios ? styles.descripcion : styles.vacio}>
+          {t?.descripcion_servicios || 'Todavía no escribe una descripción de sus servicios.'}
+        </Text>
+      </View>
+
+      {telefonoContacto !== undefined && <BotonesContacto telefono={telefonoContacto} nombre={t?.nombre} />}
+
       {obrasEnCurso && (
         <>
           <Text style={styles.seccion}>Obras en proceso ({obrasEnCurso.length})</Text>
@@ -77,25 +105,8 @@ export function PerfilTrabajador({ trabajador: t, distancia, onEliminarObra, obr
       {/* OBRAS TERMINADAS DENTRO DE PALANTEMX (LAS AGREGA EL SERVIDOR AL FINALIZAR CADA CONTRATO) */}
       <Text style={styles.seccion}>Obras terminadas en PalanteMX ({obrasPalante.length})</Text>
       {obrasPalante.length === 0 ? <Text style={styles.vacio}>Todavía no termina obras dentro de PalanteMX.</Text> : obrasPalante.map((obra, i) => (
-        <View key={i} style={[styles.tarjeta, { padding: 0, overflow: 'hidden' }]}>
-          {onEliminarObraPalante && (
-            <TouchableOpacity style={styles.borrar} onPress={() => onEliminarObraPalante(obra)}><Ionicons name="trash" size={18} color="#FFF" /></TouchableOpacity>
-          )}
-          {obra.foto_trabajo ? <TouchableOpacity onPress={() => setFotoGrande(obra.foto_trabajo)}><Image source={{ uri: obra.foto_trabajo }} style={styles.fotoObra} /></TouchableOpacity> : null}
-          <View style={{ padding: 14 }}>
-            <Text style={styles.obraTitulo}>{obra.titulo}</Text>
-            <Text style={styles.obraDato}>Para: {obra.contratista}{obra.ubicacion ? ` • ${obra.ubicacion}` : ''}</Text>
-            <Text style={styles.obraDato}>Del {obra.fecha_inicio || '—'} al {obra.fecha_fin}</Text>
-            {obra.dias_trabajados ? <Text style={[styles.obraDato, { color: '#059669', fontWeight: 'bold' }]}>{obra.dias_trabajados} días trabajados ({obra.dias_confirmados || 0} confirmados por el contratista)</Text> : null}
-            {obra.fotos?.length > 0 && (
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 8 }}>
-                {obra.fotos.map((f: string, j: number) => (
-                  <TouchableOpacity key={j} onPress={() => setFotoGrande(f)}><Image source={{ uri: f }} style={styles.miniatura} /></TouchableOpacity>
-                ))}
-              </ScrollView>
-            )}
-          </View>
-        </View>
+        <TarjetaObraTerminada key={obra.id_contrato || i} obra={obra} vistaDe="trabajador" onVerFoto={setFotoGrande}
+          onEliminar={onEliminarObraPalante ? () => onEliminarObraPalante(obra) : undefined} />
       ))}
 
       {/* PORTAFOLIO QUE SUBIÓ EL TRABAJADOR (TRABAJOS DE ANTES O FUERA DE LA PLATAFORMA) */}
@@ -160,14 +171,13 @@ const styles = StyleSheet.create({
   statTexto: { fontSize: 13, color: '#9CA3AF', fontWeight: 'bold' },
   seccion: { fontSize: 17, fontWeight: 'bold', color: '#0D2340', marginTop: 8, marginBottom: 10 },
   vacio: { color: '#9CA3AF', textAlign: 'center', marginBottom: 12 },
-  fotoObra: { width: '100%', height: 150, backgroundColor: '#E5E7EB' },
   obraTitulo: { fontSize: 17, fontWeight: 'bold', color: '#0D2340' },
   obraDato: { fontSize: 14, color: '#6B7280', marginTop: 2 },
-  miniatura: { width: 70, height: 70, borderRadius: 8, marginRight: 8, backgroundColor: '#E5E7EB' },
   mitad: { width: '100%', height: '100%', backgroundColor: '#E5E7EB' },
   etiqueta: { position: 'absolute', bottom: 8, left: 8, backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
   etiquetaTexto: { color: '#FFF', fontSize: 13, fontWeight: 'bold' },
   borrar: { position: 'absolute', top: 8, right: 8, zIndex: 5, backgroundColor: 'rgba(220,38,38,0.9)', padding: 7, borderRadius: 16 },
   fotoResena: { width: 38, height: 38, borderRadius: 19, marginRight: 10, backgroundColor: '#E5E7EB' },
+  descripcion: { fontSize: 15, color: '#374151', lineHeight: 22 },
   comentario: { fontSize: 15, color: '#4B5563', fontStyle: 'italic', marginTop: 8 },
 });

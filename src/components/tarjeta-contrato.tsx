@@ -2,11 +2,15 @@
 // LA USAN LOS PANELES DEL TRABAJADOR Y DEL CONTRATISTA, CADA UNO CON SUS PROPIOS BOTONES.
 import { Ionicons } from '@expo/vector-icons';
 import { useState } from 'react';
-import { Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Image, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { VisorFoto } from '@/components/visor-foto';
 import { VistaCondiciones } from '@/components/condiciones-obra';
-import { ajustesDePago, estiloEstado, pagosPorConfirmar, textoDiasObra, tieneReporteAbierto } from '@/lib/contratos';
+import { abrirWhatsApp, llamar, telefonoValido } from '@/components/botones-contacto';
+
+const COLOR_PELIGRO = '#DC2626'; // CANCELAR / RECHAZAR
+import { ajustesDePago, estiloEstado, hayTrato, pagosPorConfirmar, textoDiasObra, tieneReporteAbierto } from '@/lib/contratos';
 
 export type BotonContrato = {
   texto: string;
@@ -18,7 +22,7 @@ export type BotonContrato = {
 
 type Props = {
   contrato: any;
-  otraParte: { nombre: string; foto?: string; detalle?: string };
+  otraParte: { nombre: string; foto?: string; detalle?: string; telefono?: string };
   aviso?: string; // TEXTO DESTACADO (P. EJ. "ESPERANDO A QUE EL TRABAJADOR ACEPTE")
   botones: BotonContrato[];
   deshabilitado?: boolean;
@@ -28,6 +32,24 @@ export function TarjetaContrato({ contrato, otraParte, aviso, botones, deshabili
   const estado = estiloEstado(contrato.estado);
   const vacante = contrato.vacante || {};
   const [fotoGrande, setFotoGrande] = useState<string | null>(null);
+  const [menuAbierto, setMenuAbierto] = useState(false);
+  const insets = useSafeAreaInsets();
+
+  // LOS BOTONES SE ACOMODAN EN TRES GRUPOS PARA QUE NO SE VEAN AMONTONADOS:
+  //   principales = LOS DE COLOR SÓLIDO (SI NO HAY, EL PRIMERO); contacto = CHAT + WHATSAPP + LLAMAR; resto = "MÁS OPCIONES"
+  const esChat = (b: BotonContrato) => b.texto === 'Chatear';
+  const conRelleno = botones.filter(b => b.relleno);
+  const principales = conRelleno.length ? conRelleno : botones.filter(b => !esChat(b)).slice(0, 1);
+  const contacto: BotonContrato[] = [
+    ...botones.filter(b => esChat(b) && !principales.includes(b)).map(b => ({ ...b, texto: 'Chat' })),
+    ...(hayTrato(contrato) && telefonoValido(otraParte.telefono) ? [
+      { texto: 'WhatsApp', icono: 'logo-whatsapp' as const, color: '#16A34A', onPress: () => abrirWhatsApp(otraParte.telefono!, `Hola ${otraParte.nombre.split(' ')[0]}, te escribo por la obra "${contrato.titulo_vacante || vacante.titulo || ''}" de PalanteMX.`) },
+      { texto: 'Llamar', icono: 'call-outline' as const, color: '#0D2340', onPress: () => llamar(otraParte.telefono!) },
+    ] : []),
+  ];
+  // LOS DE PELIGRO (CANCELAR, RECHAZAR) VAN AL FINAL DE LA LISTA
+  const resto = botones.filter(b => !principales.includes(b) && !esChat(b))
+    .sort((a, b) => Number(a.color === COLOR_PELIGRO) - Number(b.color === COLOR_PELIGRO));
 
   return (
     <View style={[styles.tarjeta, { borderLeftColor: estado.color }]}>
@@ -89,20 +111,60 @@ export function TarjetaContrato({ contrato, otraParte, aviso, botones, deshabili
         </View>
       ) : null}
 
-      {botones.length > 0 && (
-        <View style={styles.botones}>
-          {botones.map((boton, i) => (
-            <TouchableOpacity
-              key={i}
-              style={[styles.boton, boton.relleno ? { backgroundColor: boton.color, borderColor: boton.color } : { borderColor: boton.color }, deshabilitado && { opacity: 0.5 }]}
-              onPress={boton.onPress}
-              disabled={deshabilitado}>
-              <Ionicons name={boton.icono} size={16} color={boton.relleno ? '#FFF' : boton.color} />
-              <Text style={[styles.botonTexto, { color: boton.relleno ? '#FFF' : boton.color }]}>{boton.texto}</Text>
+      {/* 1. LO PRINCIPAL (BOTÓN DE COLOR) A TODO LO ANCHO */}
+      {principales.map((boton, i) => (
+        <TouchableOpacity key={i} style={[styles.botonPrincipal, { backgroundColor: boton.color }, deshabilitado && { opacity: 0.5 }]} onPress={boton.onPress} disabled={deshabilitado}>
+          <Ionicons name={boton.icono} size={18} color="#FFF" />
+          <Text style={styles.botonPrincipalTexto}>{boton.texto}</Text>
+        </TouchableOpacity>
+      ))}
+
+      {/* 2. CONTACTO EN UNA SOLA FILA: CHAT, Y WHATSAPP / LLAMAR SOLO CUANDO YA HAY TRATO ACEPTADO POR LOS DOS */}
+      {contacto.length > 0 && (
+        <View style={styles.filaContacto}>
+          {contacto.map((c, i) => (
+            <TouchableOpacity key={i} style={[styles.botonContacto, { borderColor: c.color }, deshabilitado && { opacity: 0.5 }]} onPress={c.onPress} disabled={deshabilitado}>
+              <Ionicons name={c.icono} size={18} color={c.color} />
+              <Text style={[styles.botonContactoTexto, { color: c.color }]}>{c.texto}</Text>
             </TouchableOpacity>
           ))}
         </View>
       )}
+
+      {/* 3. TODO LO DEMÁS, EN "MÁS OPCIONES" (SE ABRE UNA LISTA DESDE ABAJO). SI SOLO QUEDA UNO, SE MUESTRA DIRECTO */}
+      {resto.length === 1 ? (
+        <TouchableOpacity style={[styles.botonMas, { borderColor: resto[0].color }, deshabilitado && { opacity: 0.5 }]} onPress={resto[0].onPress} disabled={deshabilitado}>
+          <Ionicons name={resto[0].icono} size={17} color={resto[0].color} />
+          <Text style={[styles.botonMasTexto, { color: resto[0].color }]}>{resto[0].texto}</Text>
+        </TouchableOpacity>
+      ) : resto.length > 1 ? (
+        <TouchableOpacity style={[styles.botonMas, deshabilitado && { opacity: 0.5 }]} onPress={() => setMenuAbierto(true)} disabled={deshabilitado}>
+          <Ionicons name="ellipsis-horizontal-circle-outline" size={18} color="#0D2340" />
+          <Text style={styles.botonMasTexto}>Más opciones ({resto.length})</Text>
+          <Ionicons name="chevron-down" size={16} color="#0D2340" />
+        </TouchableOpacity>
+      ) : null}
+
+      <Modal visible={menuAbierto} transparent animationType="slide" onRequestClose={() => setMenuAbierto(false)}>
+        <TouchableOpacity style={styles.menuFondo} activeOpacity={1} onPress={() => setMenuAbierto(false)}>
+          <TouchableOpacity activeOpacity={1} style={[styles.menu, { paddingBottom: 28 + insets.bottom }]}>
+            <View style={styles.menuAsa} />
+            <Text style={styles.menuTitulo} numberOfLines={2}>{contrato.titulo_vacante || vacante.titulo}</Text>
+            <Text style={styles.menuSubtitulo}>{otraParte.nombre}</Text>
+            {resto.map((boton, i) => {
+              const peligro = boton.color === COLOR_PELIGRO;
+              return (
+                <TouchableOpacity key={i} style={[styles.menuFila, peligro && styles.menuFilaPeligro]} onPress={() => { setMenuAbierto(false); setTimeout(boton.onPress, 250); }}>
+                  <View style={[styles.menuIcono, { backgroundColor: `${boton.color}1A` }]}><Ionicons name={boton.icono} size={20} color={boton.color} /></View>
+                  <Text style={[styles.menuTexto, peligro && { color: COLOR_PELIGRO }]}>{boton.texto}</Text>
+                  <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
+                </TouchableOpacity>
+              );
+            })}
+            <TouchableOpacity style={styles.menuCerrar} onPress={() => setMenuAbierto(false)}><Text style={styles.menuCerrarTexto}>Cerrar</Text></TouchableOpacity>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
 
       <VisorFoto uri={fotoGrande} onClose={() => setFotoGrande(null)} />
     </View>
@@ -127,7 +189,22 @@ const styles = StyleSheet.create({
   aviso: { fontSize: 14, fontWeight: 'bold', marginTop: 10 },
   franja: { flexDirection: 'row', alignItems: 'flex-start', borderWidth: 1, borderRadius: 10, padding: 8, marginTop: 10 },
   franjaTexto: { fontSize: 14, fontWeight: '600', marginLeft: 6, flex: 1 },
-  botones: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 12, marginHorizontal: -4 },
-  boton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderRadius: 10, paddingVertical: 9, paddingHorizontal: 10, margin: 4, flexGrow: 1 },
-  botonTexto: { fontSize: 14, fontWeight: 'bold', marginLeft: 5 },
+  botonPrincipal: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', borderRadius: 12, paddingVertical: 12, marginTop: 12 },
+  botonPrincipalTexto: { color: '#FFF', fontSize: 16, fontWeight: 'bold', marginLeft: 8 },
+  filaContacto: { flexDirection: 'row', marginTop: 10, marginHorizontal: -4 },
+  botonContacto: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderRadius: 10, paddingVertical: 9, marginHorizontal: 4 },
+  botonContactoTexto: { fontSize: 14, fontWeight: 'bold', marginLeft: 5 },
+  botonMas: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#CBD5E1', backgroundColor: '#F8FAFC', borderRadius: 10, paddingVertical: 10, marginTop: 10 },
+  botonMasTexto: { fontSize: 15, fontWeight: 'bold', color: '#0D2340', marginHorizontal: 6 },
+  menuFondo: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' },
+  menu: { backgroundColor: '#FFF', borderTopLeftRadius: 22, borderTopRightRadius: 22, paddingHorizontal: 18, paddingBottom: 28, paddingTop: 10 },
+  menuAsa: { alignSelf: 'center', width: 44, height: 5, borderRadius: 3, backgroundColor: '#D1D5DB', marginBottom: 12 },
+  menuTitulo: { fontSize: 18, fontWeight: 'bold', color: '#0D2340' },
+  menuSubtitulo: { fontSize: 14, color: '#6B7280', marginTop: 2, marginBottom: 10 },
+  menuFila: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderTopWidth: 1, borderColor: '#F1F5F9' },
+  menuFilaPeligro: { marginTop: 6, borderColor: '#FEE2E2' },
+  menuIcono: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center', marginRight: 12 },
+  menuTexto: { flex: 1, fontSize: 16, fontWeight: '600', color: '#1F2937' },
+  menuCerrar: { marginTop: 12, backgroundColor: '#F3F4F6', borderRadius: 12, paddingVertical: 13, alignItems: 'center' },
+  menuCerrarTexto: { fontSize: 16, fontWeight: 'bold', color: '#374151' },
 });

@@ -20,6 +20,7 @@ import {
   TouchableOpacity,
   View
 } from 'react-native';
+import { useMargenModal } from '@/lib/margen-modal';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 // IGNORAR EL ERROR FALSO DE FIREBASE WEBCHANNEL EN EXPO
@@ -47,6 +48,7 @@ import { useTecladoVisible } from '@/lib/teclado';
 import { SelectorFotos, subirFotos } from '@/components/selector-fotos';
 
 export default function Mensajes() {
+  const margenModal = useMargenModal();
   const params = useLocalSearchParams();
   const insets = useSafeAreaInsets();
   const tecladoVisible = useTecladoVisible(); // CON TECLADO ABIERTO NO HACE FALTA EL ESPACIO DE LA BARRA DE NAVEGACIÓN
@@ -644,8 +646,8 @@ export default function Mensajes() {
 
         </KeyboardAvoidingView>
 
-        <Modal visible={modalOpciones} transparent animationType="fade">
-          <TouchableOpacity style={styles.modalBgDark} activeOpacity={1} onPress={() => setModalOpciones(false)}>
+        <Modal visible={modalOpciones} transparent animationType="fade" onRequestClose={() => setModalOpciones(false)}>
+          <TouchableOpacity style={[styles.modalBgDark, margenModal]} activeOpacity={1} onPress={() => setModalOpciones(false)}>
             <View style={styles.bottomSheet}>
               <Text style={styles.sheetTitle}>Opciones del Chat</Text>
               <TouchableOpacity style={styles.sheetOption} onPress={abrirModalReporteChat}>
@@ -660,8 +662,8 @@ export default function Mensajes() {
           </TouchableOpacity>
         </Modal>
 
-        <Modal visible={modalReporte} animationType="slide" transparent>
-          <View style={styles.modalBgDarkCenter}>
+        <Modal visible={modalReporte} animationType="slide" transparent onRequestClose={() => setModalReporte(false)}>
+          <View style={[styles.modalBgDarkCenter, margenModal]}>
             <View style={[styles.modalContainer, {maxHeight: '90%'}]}>
               <View style={{flexDirection: 'row', alignItems: 'center', marginBottom: 15}}>
                 <Ionicons name="warning" size={24} color="#F59E0B" style={{marginRight: 10}}/>
@@ -690,8 +692,8 @@ export default function Mensajes() {
           </View>
         </Modal>
 
-        <Modal visible={modalAdjuntos} transparent animationType="fade">
-          <TouchableOpacity style={styles.modalBgDark} activeOpacity={1} onPress={() => setModalAdjuntos(false)}>
+        <Modal visible={modalAdjuntos} transparent animationType="fade" onRequestClose={() => setModalAdjuntos(false)}>
+          <TouchableOpacity style={[styles.modalBgDark, margenModal]} activeOpacity={1} onPress={() => setModalAdjuntos(false)}>
             <View style={styles.attachmentSheet}>
               <View style={styles.attachRow}>
                 <TouchableOpacity style={styles.attachItem} onPress={seleccionarImagen}>
@@ -802,8 +804,8 @@ export default function Mensajes() {
         )}
       </View>
 
-      <Modal visible={modalNuevoChat} animationType="slide" transparent>
-        <View style={styles.modalBgDark}>
+      <Modal visible={modalNuevoChat} animationType="slide" transparent onRequestClose={() => setModalNuevoChat(false)}>
+        <View style={[styles.modalBgDark, margenModal]}>
           <SafeAreaView style={{flex: 1, backgroundColor: '#F3F4F6', borderRadius: 20, overflow: 'hidden', marginTop: 50}}>
             <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#0D2340', padding: 15}}><Text style={{color: '#FFF', fontWeight: 'bold', fontSize: 17}}>Nuevo Mensaje</Text><TouchableOpacity onPress={() => setModalNuevoChat(false)}><Ionicons name="close" size={28} color="#FFF"/></TouchableOpacity></View>
             <View style={{padding: 20, flex: 1}}>
@@ -916,7 +918,7 @@ const styles = StyleSheet.create({
   navText: { fontSize: 13, color: '#6B7280', marginTop: 4, fontWeight: '600' },
   modalBgDark: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)' },
   modalBgDarkCenter: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', padding: 20 },
-  modalContainer: { backgroundColor: '#FFF', borderRadius: 20, padding: 25, elevation: 10 },
+  modalContainer: { backgroundColor: '#FFF', borderRadius: 20, padding: 25, elevation: 10, maxHeight: '100%' },
   modalTitle: { fontSize: 21, fontWeight: 'bold', color: '#0D2340', marginBottom: 20 },
   modalLabel: { fontSize: 14, fontWeight: 'bold', color: '#6B7280', marginBottom: 5, marginTop: 5 },
   modalInput: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, padding: 12, marginBottom: 10, fontSize: 16, color: '#1F2937' },

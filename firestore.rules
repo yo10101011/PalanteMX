@@ -50,6 +50,7 @@ service cloud.firestore {
     // CAMPOS DEL PERFIL QUE EL DUEÑO NO PUEDE TOCAR (LOS PONE EL SERVIDOR O EL ADMIN).
     // LAS RESEÑAS (calificacion, numero_resenas, resenas) SOLO LAS ESCRIBE EL WORKER, QUE REVISA QUE HAYAN TRABAJADO JUNTOS.
     // obras_realizadas (OBRAS TERMINADAS EN LA PLATAFORMA) TAMBIÉN LA ESCRIBE SOLO EL WORKER, AL FINALIZAR UN CONTRATO.
+    // cumplimiento Y confianza (ANÁLISIS DE DATOS: ÁRBOL DE DECISIÓN) LOS CALCULA EL WORKER CADA DÍA A LAS 9 AM.
     // ¿LA CLAVE 'AAAA-MM-DD' ES EL DÍA DE HOY EN EL CENTRO DE MÉXICO (UTC-6)? ASÍ NADIE LLENA UN DÍA QUE YA PASÓ
     function esHoyEnMexico(clave) {
       let t = request.time - duration.value(6, 'h');
@@ -59,7 +60,8 @@ service cloud.firestore {
 
     function camposProtegidos() {
       return ['rol_usuario', 'nombre', 'apellidos', 'correo', 'nombre_usuario', 'kyc_aprobado',
-              'estado_cuenta', 'fecha_registro', 'calificacion', 'numero_resenas', 'resenas', 'obras_realizadas'];
+              'estado_cuenta', 'fecha_registro', 'calificacion', 'numero_resenas', 'resenas', 'obras_realizadas',
+              'cumplimiento', 'confianza'];
     }
 
     // REGLAS COMPARTIDAS POR /Usuarios (TRABAJADORES) Y /Contratistas

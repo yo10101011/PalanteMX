@@ -11,10 +11,10 @@ CLOUDINARY_CLOUD_NAME = "ylqsvel1"
 # La "apiKey" web de Firebase: es la misma que está en firebaseConfig.js dentro de la app, no es secreta.
 FIREBASE_WEB_API_KEY = "AIzaSyCnlqzM3GCDGICbgUmCrsKPMobxvCqneIc"
 # Qué tan parecida debe ser la selfie a la foto de la INE:
-#   "sin_rostro" = NO se compara la cara (pausado solo para crear cuentas de prueba; el nombre sí se revisa)
-#   "pruebas"    = más tolerante (para crear cuentas de prueba con INE viejas o borrosas)
-#   "estricto"   = el nivel normal y seguro. ⚠️ REGRESARLO A "estricto" ANTES DE USAR LA APP CON GENTE REAL.
-KYC_MODO = "sin_rostro"
+#   "sin_rostro" = NO se compara la cara (pausado solo para crear cuentas de prueba; la INE y el nombre sí se revisan)
+#   "pruebas"    = tolerante: la cara debe parecerse, pero acepta fotos de INE viejas o con poca luz (ACTUAL)
+#   "estricto"   = el nivel más exigente de Face++
+KYC_MODO = "pruebas"
 
 # Tarea diaria (gratis en el plan Free de Cloudflare): revisa obras terminadas sin pago confirmado.
 # 15:00 UTC = 9:00 de la mañana en el centro de México.

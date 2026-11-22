@@ -12,6 +12,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, ScrollView, Share, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { useMargenModal } from '@/lib/margen-modal';
 
 import { db } from '../../firebaseConfig';
 import { BarrasHorizontales, Indicador } from '@/components/graficas';
@@ -71,6 +72,7 @@ type Periodo = { tipo: 'mes' | 'anio' | 'todo'; anio: number; mes: number };
 type Props = { trabajadores: any[]; contratistas: any[]; contratos: any[]; esPrincipal: boolean };
 
 export function ReporteFinanciero({ trabajadores, contratistas, contratos, esPrincipal }: Props) {
+  const margenModal = useMargenModal();
   const hoy = new Date();
   const [periodo, setPeriodo] = useState<Periodo>({ tipo: 'mes', anio: hoy.getFullYear(), mes: hoy.getMonth() });
   const [config, setConfig] = useState<ConfigFinanzas>(CONFIG_INICIAL);
@@ -81,7 +83,8 @@ export function ReporteFinanciero({ trabajadores, contratistas, contratos, esPri
 
   useEffect(() => {
     getDoc(doc(db, 'Sistema', 'Finanzas'))
-      .then(snap => { if (snap.exists()) setConfig({ ...CONFIG_INICIAL, ...(snap.data() as Partial<ConfigFinanzas>) }); })
+      // es_prueba LO PONE EL SCRIPT DE DATOS DE PRUEBA: SE QUITA PARA QUE, SI EL ADMIN LO EDITA, YA CUENTE COMO REAL
+      .then(snap => { if (snap.exists()) { const { es_prueba, ...datos } = snap.data(); setConfig({ ...CONFIG_INICIAL, ...(datos as Partial<ConfigFinanzas>) }); } })
       .catch(error => console.log('Error cargando la configuración de finanzas:', error))
       .finally(() => setCargandoConfig(false));
   }, []);
@@ -372,7 +375,7 @@ export function ReporteFinanciero({ trabajadores, contratistas, contratos, esPri
 
       {/* INGRESOS POR COMERCIALES DE UN MES */}
       <Modal visible={!!comercialMes} animationType="slide" transparent onRequestClose={() => setComercialMes(null)}>
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.fondo}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={[styles.fondo, margenModal]}>
           <View style={styles.ventana}>
             <View style={styles.ventanaEncabezado}>
               <Text style={styles.ventanaTitulo}>Ingresos por comerciales</Text>
@@ -396,7 +399,7 @@ export function ReporteFinanciero({ trabajadores, contratistas, contratos, esPri
 
       {/* CONFIGURACIÓN (SOLO EL PRINCIPAL) */}
       <Modal visible={!!editando} animationType="slide" transparent onRequestClose={() => setEditando(null)}>
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.fondo}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={[styles.fondo, margenModal]}>
           <View style={styles.ventana}>
             <View style={styles.ventanaEncabezado}>
               <Text style={styles.ventanaTitulo}>Gastos, impuestos y proyección</Text>

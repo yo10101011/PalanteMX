@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, AppState, KeyboardAvoidingView, Modal, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 // FIREBASE
@@ -10,6 +10,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { onAuthStateChanged, sendPasswordResetEmail, signInWithCustomToken, signInWithEmailAndPassword, signOut, User } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import { auth, db } from '../../firebaseConfig';
+import { desbloquearSesion, sesionBloqueada } from '@/lib/sesion';
 
 // ERROR CON UN MENSAJE QUE SÍ SE LE PUEDE MOSTRAR AL USUARIO TAL CUAL (VIENE DE NUESTRO SERVIDOR)
 class ErrorParaUsuario extends Error {}
@@ -33,7 +34,7 @@ const iniciarSesionConUsuario = async (identificador: string, password: string) 
 // DECIDE A DÓNDE VA CADA QUIEN DESPUÉS DE INICIAR SESIÓN (ADMIN, CONTRATISTA O TRABAJADOR)
 const redirigirSegunRol = async (uid: string) => {
   const adminDoc = await getDoc(doc(db, 'Administradores', uid));
-  if (adminDoc.exists()) { router.replace('/admin' as any); return; }
+  if (adminDoc.exists()) { await desbloquearSesion(); router.replace('/admin' as any); return; }
 
   const contratistaDoc = await getDoc(doc(db, 'Contratistas', uid));
   const perfilDoc = contratistaDoc.exists() ? contratistaDoc : await getDoc(doc(db, 'Usuarios', uid));
@@ -49,6 +50,7 @@ const redirigirSegunRol = async (uid: string) => {
     return;
   }
 
+  await desbloquearSesion();
   router.replace((contratistaDoc.exists() ? '/dashboard-contratista' : '/dashboard-trabajador') as any);
 };
 
@@ -112,7 +114,13 @@ export default function LoginScreen() {
       const nivel = await LocalAuthentication.getEnrolledLevelAsync();
       if (nivel === LocalAuthentication.SecurityLevel.NONE) return;
       const resultado = await LocalAuthentication.authenticateAsync({ promptMessage: 'Acceso seguro a PalanteMX', cancelLabel: 'Usar contraseña' });
-      if (!resultado.success) return; // SI CANCELA O FALLA, SE QUEDA EN EL LOGIN Y PUEDE ENTRAR CON CONTRASEÑA
+      if (!resultado.success) {
+        // SI LA PERSONA CANCELA NO SE MUESTRA NADA; OTROS ERRORES SÍ SE EXPLICAN
+        if (!['user_cancel', 'system_cancel', 'app_cancel'].includes(resultado.error)) {
+          Alert.alert("No se pudo usar la huella", resultado.error === 'lockout' ? "Hubo demasiados intentos. Espera un momento o entra con tu contraseña." : "Intenta de nuevo o entra con tu contraseña.");
+        }
+        return;
+      }
       setCargando(true);
       await redirigirSegunRol(usuario.uid);
     } catch (error) {
@@ -123,13 +131,27 @@ export default function LoginScreen() {
 
   // AL ABRIR LA APP: SI YA HABÍA SESIÓN, SE PIDE LA HUELLA Y SE ENTRA DIRECTO
   useEffect(() => {
-    const dejarDeEscuchar = onAuthStateChanged(auth, (usuario) => {
+    let cancelado = false;
+    let temporizador: ReturnType<typeof setTimeout> | undefined;
+    let escuchaApp: { remove: () => void } | undefined;
+    // LA VENTANA DE HUELLA SOLO SE PUEDE ABRIR CON LA APP YA EN PRIMER PLANO; AL ARRANCAR, ANDROID
+    // TODAVÍA NO LA TIENE LISTA, ASÍ QUE SE ESPERA A QUE ESTÉ ACTIVA Y UN MOMENTO MÁS
+    const pedirCuandoEsteLista = (usuario: User) => {
+      const pedir = () => { temporizador = setTimeout(() => { if (!cancelado) entrarConSesionGuardada(usuario); }, 600); };
+      if (AppState.currentState === 'active') { pedir(); return; }
+      escuchaApp = AppState.addEventListener('change', estado => {
+        if (estado === 'active') { escuchaApp?.remove(); pedir(); }
+      });
+    };
+    const dejarDeEscuchar = onAuthStateChanged(auth, async (usuario) => {
       dejarDeEscuchar(); // SOLO IMPORTA EL ESTADO AL ABRIR LA PANTALLA
+      if (cancelado) return;
       setUsuarioGuardado(usuario);
       setRevisandoSesion(false);
-      if (usuario) entrarConSesionGuardada(usuario);
+      // DESPUÉS DE "CERRAR SESIÓN" NO SE PIDE LA HUELLA SOLA (SERÍA MOLESTO); EL BOTÓN SÍ FUNCIONA
+      if (usuario && !(await sesionBloqueada())) pedirCuandoEsteLista(usuario);
     });
-    return dejarDeEscuchar;
+    return () => { cancelado = true; dejarDeEscuchar(); escuchaApp?.remove(); if (temporizador) clearTimeout(temporizador); };
   }, []);
 
   const handleBiometria = async () => {
@@ -138,8 +160,9 @@ export default function LoginScreen() {
       Alert.alert("Primero inicia sesión", "Entra una vez con tu contraseña. Después podrás entrar con tu huella sin escribirla.");
       return;
     }
-    const hayHuella = (await LocalAuthentication.hasHardwareAsync()) && (await LocalAuthentication.isEnrolledAsync());
-    if (!hayHuella) { Alert.alert("Aviso", "Tu celular no tiene huella o reconocimiento facial configurado."); return; }
+    // VALE HUELLA, CARA O EL PIN/PATRÓN DEL CELULAR; SIN NINGÚN BLOQUEO NO HAY CÓMO COMPROBAR QUIÉN ES
+    const nivel = await LocalAuthentication.getEnrolledLevelAsync().catch(() => LocalAuthentication.SecurityLevel.NONE);
+    if (nivel === LocalAuthentication.SecurityLevel.NONE) { Alert.alert("Aviso", "Tu celular no tiene huella, reconocimiento facial ni PIN configurado. Actívalo en los ajustes del celular o entra con tu contraseña."); return; }
     await entrarConSesionGuardada(usuario);
   };
 

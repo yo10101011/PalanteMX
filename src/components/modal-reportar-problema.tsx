@@ -4,6 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Picker } from '@react-native-picker/picker';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { useMargenModal } from '@/lib/margen-modal';
 
 import { SelectorFotos, subirFotos } from '@/components/selector-fotos';
 import { accionContrato } from '@/lib/contratos';
@@ -20,6 +21,7 @@ type Props = {
 };
 
 export function ModalReportarProblema({ contrato, rol, onClose }: Props) {
+  const margenModal = useMargenModal();
   const [categoria, setCategoria] = useState(CATEGORIAS[rol][0]);
   const [motivo, setMotivo] = useState('');
   const [fotos, setFotos] = useState<string[]>([]);
@@ -41,7 +43,7 @@ export function ModalReportarProblema({ contrato, rol, onClose }: Props) {
 
   return (
     <Modal visible={!!contrato} animationType="fade" transparent onRequestClose={onClose}>
-      <KeyboardAvoidingView style={styles.fondo} behavior="padding">
+      <KeyboardAvoidingView style={[styles.fondo, margenModal]} behavior="padding">
         <View style={styles.caja}>
           <View style={styles.encabezado}>
             <Ionicons name="flag" size={22} color="#EA580C" style={{ marginRight: 8 }} />

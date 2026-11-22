@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Image, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -18,6 +18,7 @@ import { BuscadorConSugerencias } from '@/components/buscador-sugerencias';
 import { CampanaNotificaciones } from '@/components/campana-notificaciones';
 import { FiltrosBusqueda, TODOS_LOS_ESTADOS } from '@/components/filtros-busqueda';
 import { VisorFoto } from '@/components/visor-foto';
+import { MapaCercanos, puntoAproximado } from '@/components/mapa-cercanos';
 
 // ORDEN DE LAS VACANTES
 const ORDENES_VACANTES = [
@@ -47,6 +48,16 @@ export default function FeedTrabajador() {
   const [vacantesAbiertas, setVacantesAbiertas] = useState<string[]>([]); // TARJETAS CON "VER DETALLES" ABIERTO
   const [contratistas, setContratistas] = useState<Record<string, any>>({}); // PARA LA CALIFICACIÓN DE CADA CONTRATISTA
   const [fotoGrande, setFotoGrande] = useState<string | null>(null);
+  const [mapaAbierto, setMapaAbierto] = useState(false); // MAPA DE VACANTES CERCANAS
+  const listaVacantes = useRef<ScrollView>(null);
+  const posicionTarjeta = useRef<Record<string, number>>({}); // DÓNDE QUEDA CADA VACANTE EN LA LISTA (PARA IR A ELLA DESDE EL MAPA)
+
+  // DESDE EL MAPA: CIERRA EL MAPA, ABRE LOS DETALLES DE ESA VACANTE Y BAJA HASTA ELLA
+  const irAVacante = (id: string) => {
+    setMapaAbierto(false);
+    setVacantesAbiertas(v => v.includes(id) ? v : [...v, id]);
+    setTimeout(() => listaVacantes.current?.scrollTo({ y: Math.max((posicionTarjeta.current[id] ?? 0) - 10, 0), animated: true }), 350);
+  };
 
   // LOS MISMOS OFICIOS DE TODA LA APP. LAS VACANTES VIEJAS DICEN "ALBAÑILERÍA", "PLOMERÍA"...: LA BÚSQUEDA TOLERANTE
   // HACE QUE "ALBAÑIL" TAMBIÉN LAS ENCUENTRE
@@ -245,8 +256,9 @@ export default function FeedTrabajador() {
                 </ScrollView>
               </View>
 
-              <ScrollView 
-                showsVerticalScrollIndicator={false} 
+              <ScrollView
+                ref={listaVacantes}
+                showsVerticalScrollIndicator={false}
                 contentContainerStyle={styles.feedContainer}
                 refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={['#00D06C']} />}
               >
@@ -256,11 +268,17 @@ export default function FeedTrabajador() {
                   precio={pagoMinimo} onPrecio={setPagoMinimo} etiquetaPrecio="Pago mínimo"
                   miEstado={miPerfil?.ubicacion_estado}
                 />
-                <Text style={styles.feedResultsText}>{vacantesFiltradas.length} oportunidades publicadas</Text>
+                <View style={{flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12}}>
+                  <Text style={[styles.feedResultsText, {marginBottom: 0, flex: 1, marginRight: 8}]}>{vacantesFiltradas.length} oportunidades publicadas</Text>
+                  {/* MAPA CON LAS VACANTES CERCANAS (LOS MISMOS FILTROS DE ARRIBA) */}
+                  <TouchableOpacity style={{flexDirection: 'row', alignItems: 'center', backgroundColor: '#0D2340', borderRadius: 18, paddingHorizontal: 14, paddingVertical: 7}} onPress={() => setMapaAbierto(true)}>
+                    <Ionicons name="map" size={16} color="#FFF" /><Text style={{color: '#FFF', fontWeight: 'bold', fontSize: 14, marginLeft: 6}}>Ver en el mapa</Text>
+                  </TouchableOpacity>
+                </View>
 
                 {vacantesFiltradas.length > 0 ? (
                   vacantesFiltradas.map((item, index) => (
-                    <View key={index} style={styles.jobCard}>
+                    <View key={item.id || index} style={styles.jobCard} onLayout={e => { posicionTarjeta.current[item.id] = e.nativeEvent.layout.y; }}>
                       
                       {/* CABECERA: FOTO DEL CONTRATISTA Y EMPRESA */}
                       <View style={styles.jobHeader}>
@@ -450,6 +468,32 @@ export default function FeedTrabajador() {
       </View>
 
       <VisorFoto uri={fotoGrande} onClose={() => setFotoGrande(null)} />
+
+      {/* MAPA DE VACANTES: EN EL LUGAR DE LA OBRA QUE MARCÓ EL CONTRATISTA. LAS VIEJAS SIN LUGAR DE OBRA SALEN EN UNA
+          ZONA APROXIMADA ALREDEDOR DEL CONTRATISTA (NO EN SU CASA EXACTA) */}
+      <MapaCercanos
+        visible={mapaAbierto}
+        titulo="Vacantes cerca de ti"
+        miPunto={miPerfil?.ubicacion}
+        textoBoton="ver la vacante"
+        leyenda={[{ color: '#00A355', texto: 'Vacante' }]}
+        marcadores={vacantesFiltradas.flatMap(v => {
+          const contratista = contratistas[v.id_contratista];
+          const exacto = typeof v.coordenadas?.latitud === 'number' ? v.coordenadas : null;
+          const casa = !exacto && typeof contratista?.ubicacion?.latitud === 'number' ? contratista.ubicacion : null;
+          if (!exacto && !casa) return [];
+          return [{
+            id: v.id,
+            punto: exacto || puntoAproximado(casa, v.id),
+            aproximado: !exacto,
+            titulo: v.titulo,
+            detalle: [v.pago || 'Pago a convenir', v.categoria, v.distancia != null ? textoDistancia(v.distancia) : ''].filter(Boolean).join(' · '),
+            foto: v.foto_trabajo || contratista?.foto_rostro_url,
+          }];
+        })}
+        onElegir={irAVacante}
+        onCerrar={() => setMapaAbierto(false)}
+      />
     </SafeAreaView>
   );
 }
